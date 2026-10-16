@@ -1,0 +1,9 @@
+{
+  "repositories": {
+    "contrib": {
+      "url": "https://github.com/aros-development-team/contrib.git",
+      "commit": "be30bc6ad191303ca8753bd3f15e4c78b1278f57",
+      "sparse": ["workbench/libs/xad/"]
+    }
+  }
+}
