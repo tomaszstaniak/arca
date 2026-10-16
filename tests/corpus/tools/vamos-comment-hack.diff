@@ -1,0 +1,16 @@
+66c66,75
+<         mem.w_cstr(comment_addr, "")
+---
+>         # test-data hack: comments and protection from $AMIMETA_DIR/<name>.json
+>         meta = {}
+>         try:
+>             import json
+>             with open(os.path.join(os.environ.get("AMIMETA_DIR", "/nonexistent"),
+>                                    os.path.basename(sys_path) + ".json")) as mf:
+>                 meta = json.load(mf)
+>         except OSError:
+>             pass
+>         mem.w_cstr(comment_addr, meta.get("comment", ""))
+90a100,101
+>         if "prot" in meta:
+>             prot = DosProtection(meta["prot"])
