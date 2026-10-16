@@ -25,6 +25,16 @@ src/engines/xad_static.c and xad_static.h (part of this program)
   Initialisation of the statically linked XAD.
   Licence: GNU Lesser General Public License 2.1 or later, like XAD.
 
+7-Zip 26.04 (unarc-7z, a separate program; experiments/7z-backend)
+  Copyright (C) Igor Pavlov.
+  Licence: GNU Lesser General Public License 2.1 or later, some files public
+  domain (licenses/7-Zip-License.txt). The RAR decoders carry the unRAR
+  licence restriction (licenses/7-Zip-unRAR-License.txt): they may not be used
+  to make a program that creates RAR archives; unarc-7z only extracts.
+  Unmodified sources, pinned in deps.lock; the AROS glue is ours (MIT).
+  Unarc and unarc-cli work without it (libarchive then reads 7z and RAR,
+  without passwords).
+
 Limpet SDK 0.3.0 (src/third_party/limpet, unarc-cli only)
   Copyright (c) 2026 Tomasz Staniak.
   Licence: MIT (licenses/LimpetSDK-LICENSE.txt). Unmodified.
