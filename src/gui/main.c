@@ -67,6 +67,7 @@ static char b_planname[UA_PATHMAX];      /* names the new folder (a set's name) 
 static ua_list blist;
 static ua_plan bplan;
 static ua_format b_fmt;                 /* the format the listing found */
+static int pw_restart_list;             /* read the browser's archive again (password) */
 static int b_loaded, b_status = -1;      /* UA_OPEN_* of the listing */
 static ULONG b_count;                     /* entries received so far */
 static UBYTE *b_sel;                      /* selected, by entry index */
@@ -301,6 +302,122 @@ static void say(const char *fmt, ...)
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
     MUI_RequestA(app, NULL, 0, APPNAME, "_OK", buf, NULL);
+}
+
+/* ------------------------------------------------------------- passwords */
+
+/* The password for one archive, as UTF-8 for the archive handlers. Kept
+ * while the program runs so that listing and extracting ask once; never
+ * logged, never saved, cleared at the end. */
+static char pw[512];
+static char pw_for[UA_PATHMAX];
+
+static const char *pw_of(const char *archive)
+{
+    return pw[0] && !strcmp(pw_for, archive) ? pw : NULL;
+}
+
+#define ID_PW_OK     0x7a01
+#define ID_PW_CANCEL 0x7a02
+
+/* A small window of its own, asked while no job runs. Zune's string gadget
+ * holds ISO-8859-1 text; the handlers take UTF-8. */
+static int ask_password(const char *archive, int wrong)
+{
+    Object *w, *str, *ok, *cancel, *sleepers[3];
+    ULONG sigs = 0, id = 0, other[8];
+    int i, got = 0, nother = 0;
+
+    /* A new answer replaces the old one; a cancelled window leaves none. */
+    memset(pw, 0, sizeof(pw));
+    pw_for[0] = 0;
+
+    w = WindowObject,
+        MUIA_Window_Title, (IPTR)"Password",
+        WindowContents, (IPTR)(VGroup,
+            Child, (IPTR)(TextObject, MUIA_Text_Contents, (IPTR)(wrong ?
+                "That password does not open it. Try again:" :
+                "This archive is encrypted. Password:"), End),
+            Child, (IPTR)(TextObject, MUIA_Text_Contents, (IPTR)leafname(archive),
+                MUIA_Text_SetMin, FALSE, End),
+            Child, (IPTR)(str = StringObject, StringFrame, MUIA_String_Secret, TRUE,
+                MUIA_String_MaxLen, 250, MUIA_CycleChain, 1, End),
+            Child, (IPTR)(HGroup,
+                Child, (IPTR)(ok = SimpleButton("_OK")),
+                Child, (IPTR)HSpace(0),
+                Child, (IPTR)(cancel = SimpleButton("_Cancel")),
+            End),
+        End),
+    End;
+    if (!w)
+        return 0;
+    DoMethod(app, OM_ADDMEMBER, (IPTR)w);
+    DoMethod(ok, MUIM_Notify, MUIA_Pressed, FALSE, (IPTR)app, 2, MUIM_Application_ReturnID, ID_PW_OK);
+    DoMethod(str, MUIM_Notify, MUIA_String_Acknowledge, MUIV_EveryTime, (IPTR)app, 2,
+             MUIM_Application_ReturnID, ID_PW_OK);
+    DoMethod(cancel, MUIM_Notify, MUIA_Pressed, FALSE, (IPTR)app, 2, MUIM_Application_ReturnID,
+             ID_PW_CANCEL);
+    DoMethod(w, MUIM_Notify, MUIA_Window_CloseRequest, TRUE, (IPTR)app, 2,
+             MUIM_Application_ReturnID, ID_PW_CANCEL);
+    sleepers[0] = wstart; sleepers[1] = wbrowse; sleepers[2] = wprog;
+    for (i = 0; i < 3; i++)
+        SetAttrs(sleepers[i], MUIA_Window_Sleep, TRUE, TAG_DONE);
+    SetAttrs(w, MUIA_Window_Open, TRUE, MUIA_Window_ActiveObject, (IPTR)str, TAG_DONE);
+    /* Its own event loop while the other windows sleep. Waiting only when
+     * nothing came; IDs meant for the main loop (a drop on the start window,
+     * say) are kept and given back to it afterwards. */
+    for (;;) {
+        id = DoMethod(app, MUIM_Application_NewInput, (IPTR)&sigs);
+        if (id == ID_PW_OK || id == ID_PW_CANCEL || id == (ULONG)MUIV_Application_ReturnID_Quit)
+            break;
+        if (id) {
+            if (nother < 8)
+                other[nother++] = id;
+            continue;
+        }
+        if (sigs)
+            sigs = Wait(sigs);
+    }
+    if (id == ID_PW_OK) {
+        STRPTR t = NULL;
+        size_t n = 0;
+        const UBYTE *c;
+        GetAttr(MUIA_String_Contents, str, (IPTR *)&t);
+        for (c = (const UBYTE *)(t ? (char *)t : ""); *c && n + 2 < sizeof(pw); c++) {
+            if (*c < 0x80) {
+                pw[n++] = (char)*c;
+            } else {
+                pw[n++] = (char)(0xC0 | (*c >> 6));
+                pw[n++] = (char)(0x80 | (*c & 0x3F));
+            }
+        }
+        pw[n] = 0;
+        got = n != 0;
+        if (got)
+            snprintf(pw_for, sizeof(pw_for), "%s", archive);
+    }
+    {
+        /* Overwrite the gadget's buffer before emptying it: setting "" alone
+         * leaves the old bytes behind the terminator. */
+        STRPTR t = NULL;
+        char blank[256];
+        GetAttr(MUIA_String_Contents, str, (IPTR *)&t);
+        memset(blank, ' ', sizeof(blank) - 1);
+        blank[t ? (strlen((char *)t) < sizeof(blank) ? strlen((char *)t) : sizeof(blank) - 1) : 0] = 0;
+        SetAttrs(str, MUIA_String_Contents, (IPTR)blank, TAG_DONE);
+        SetAttrs(str, MUIA_String_Contents, (IPTR)"", TAG_DONE);
+    }
+    SetAttrs(w, MUIA_Window_Open, FALSE, TAG_DONE);
+    DoMethod(app, OM_REMMEMBER, (IPTR)w);
+    MUI_DisposeObject(w);
+    for (i = 0; i < 3; i++)
+        SetAttrs(sleepers[i], MUIA_Window_Sleep, FALSE, TAG_DONE);
+    if (id == (ULONG)MUIV_Application_ReturnID_Quit)
+        quitting = 1;
+    for (i = 0; i < nother; i++)
+        DoMethod(app, MUIM_Application_ReturnID, other[i]);
+    dbg("password asked: %s", got ? "given" : "not given");
+    return got;
 }
 
 /* ------------------------------------------------------------- preferences */
@@ -599,7 +716,8 @@ static void b_show_active(void)
     if (e->map_flags & UA_MAP_UNSAFE)
         snprintf(on, sizeof(on), "Not extracted: the path would leave the destination.");
     else if (e->encrypted)
-        snprintf(on, sizeof(on), "Not extracted: encrypted; passwords are not supported yet.");
+        snprintf(on, sizeof(on), e->skip ? "Not extracted: encrypted, and this format's reader "
+                 "takes no password." : "Encrypted: the password is asked before extracting.");
     else if (e->target && b_loaded)
         snprintf(on, sizeof(on), "On disk: %s%s%s%s", e->target[0] ? e->target : "(the folder itself)",
                  e->map_flags & UA_MAP_COLLISION ? " (renamed: another entry has the same name)" :
@@ -659,8 +777,11 @@ static void browse(const char *archive)
 static void start_list(const char *archive)
 {
     uj_job *j = uj_new(UJ_LIST, archive, jport);
-    if (j)
+    if (j) {
         j->test_delay = test_delay;
+        if (pw_of(archive))
+            snprintf(j->password, sizeof(j->password), "%s", pw);
+    }
     if (!j || uj_start(j) < 0) {
         uj_free(j);
         settext(t_bstatus, "Not enough memory to read the archive.");
@@ -707,9 +828,12 @@ static void start_extract(const char *archive, const char *dest, int recover, in
     }
     snprintf(j->dest, sizeof(j->dest), "%s", dest);
     j->recover = recover;
+    if (pw_of(archive))
+        snprintf(j->password, sizeof(j->password), "%s", pw);
     if (from_browser) {
         uj_lend_list(j, &blist, &bplan);
         j->fmt = b_fmt;
+        j->list.password = j->password[0] ? j->password : NULL;
     }
     if (uj_start(j) < 0) {
         if (from_browser)
@@ -1101,6 +1225,18 @@ static void list_done(uj_job *j)
         return;
     }
     b_status = j->open_status;
+    if (j->open_status == UA_OPEN_PASSWORD) {
+        int wrong = j->list.pw_state == UA_PW_WRONG;
+        uj_take_list(j, &blist, &bplan);
+        if (ask_password(b_archive, wrong)) {
+            pw_restart_list = 1;     /* on_done starts it again once this job is freed */
+            settext(t_bstatus, "Reading the archive...");
+        } else {
+            settext(t_bstatus, "The list of entries is encrypted; nothing can be shown "
+                    "without its password.");
+        }
+        return;
+    }
     if (j->open_status == UA_OPEN_OK || j->open_status == UA_OPEN_PARTIAL) {
         uj_take_list(j, &blist, &bplan);
         snprintf(b_planname, sizeof(b_planname), "%s", j->planname);
@@ -1158,6 +1294,10 @@ static void extract_done(uj_job *j)
     } else if (j->open_status == UA_OPEN_CANCELLED) {
         snprintf(head, sizeof(head), "Cancelled");
         snprintf(body, sizeof(body), "Stopped while reading the archive. Nothing was written.");
+    } else if (j->open_status == UA_OPEN_PASSWORD) {
+        snprintf(head, sizeof(head), "Password needed");
+        snprintf(body, sizeof(body), "The archive is encrypted and no password was given.\n"
+                 "Nothing was written.");
     } else if (j->open_status == UA_OPEN_NOENGINE) {
         snprintf(head, sizeof(head), "Not an archive Unarc can read");
         snprintf(body, sizeof(body), "Format: %s. Nothing was written.", ua_format_name(j->fmt));
@@ -1197,6 +1337,12 @@ static void extract_done(uj_job *j)
     if (r->overwritten)
         snprintf(body + strlen(body), sizeof(body) - strlen(body), "\n%lu files were replaced.",
                  (unsigned long)r->overwritten);
+    if ((r->errors || r->failed) && j->plan.with_password && pw_of(j->archive)) {
+        memset(pw, 0, sizeof(pw));
+        pw_for[0] = 0;
+        snprintf(body + strlen(body), sizeof(body) - strlen(body),
+                 "\nThe password may be wrong; it will be asked again.");
+    }
     detail_text(j, head);
     snprintf(r_head, sizeof(r_head), "%s", head);
     r_ok = !strcmp(head, "Done") || !strcmp(head, "Done, with notes");
@@ -1249,6 +1395,18 @@ static void on_done(uj_job *j)
             open_win(wprog, 0);
             prog_closing = 0;
         }
+    } else if (j->open_status == UA_OPEN_PASSWORD && !j->lent && !quitting &&
+               ask_password(j->archive, j->list.pw_state == UA_PW_WRONG)) {
+        /* Nothing was written; the same extraction again, with the password. */
+        char a[UA_PATHMAX], d[UA_PATHMAX];
+        int rec = j->recover;
+        snprintf(a, sizeof(a), "%s", j->archive);
+        snprintf(d, sizeof(d), "%s", j->dest);
+        uj_free(j);
+        start_extract(a, d, rec, 0);
+        if (!job && qcur >= 0)
+            queue_after();
+        return;
     } else {
         SetAttrs(t_pcount, MUIA_ShowMe, TRUE, TAG_DONE);
         extract_done(j);
@@ -1260,6 +1418,10 @@ static void on_done(uj_job *j)
         }
     }
     uj_free(j);
+    if (pw_restart_list) {
+        pw_restart_list = 0;
+        start_list(b_archive);
+    }
 }
 
 static void poll_jobs(void)
@@ -2187,6 +2349,15 @@ static void b_replan(void)
     b_note_selection();
 }
 
+/* Encrypted entries among those about to be extracted: a password first.
+ * 0 when the user gave none (nothing is started). */
+static int b_password_ready(void)
+{
+    if (!ua_list_encrypted_wanted(&blist) || pw_of(b_archive))
+        return 1;
+    return ask_password(b_archive, 0);
+}
+
 /* Browser: extract the selection or everything, to the folder in "To". */
 static void b_start_extract(int all)
 {
@@ -2222,6 +2393,8 @@ static void b_start_extract(int all)
         }
         ua_plan_unique(&blist, &bplan);   /* counts the collisions of what is extracted */
     }
+    if (!b_password_ready())
+        return;
     start_extract(b_archive, dest, 0, 1);
 }
 
@@ -2270,6 +2443,10 @@ static void b_drag_extract(void)
     }
     if (ua_plan_unique(&blist, &bplan)) {
         say("Not enough memory.");
+        b_replan();
+        return;
+    }
+    if (!b_password_ready()) {
         b_replan();
         return;
     }
@@ -2629,6 +2806,7 @@ int main(int argc, char **argv)
     const IPTR want = 128 * 1024;
     s_argc = argc;
     s_argv = argv;
+    ua_7z_init();
     /* Started from an icon with a small stack, or from a 40 KB Shell. */
     if (have < want) {
         struct StackSwapStruct sss;
@@ -2643,7 +2821,12 @@ int main(int argc, char **argv)
         memset(&ssa, 0, sizeof(ssa));
         rc = NewStackSwap(&sss, (LONG_FUNC)trampoline, &ssa);
         FreeVec(stk);
+        memset(pw, 0, sizeof(pw));
         return rc;
     }
-    return gui_main(argc, argv);
+    {
+        int rc = gui_main(argc, argv);
+        memset(pw, 0, sizeof(pw));
+        return rc;
+    }
 }

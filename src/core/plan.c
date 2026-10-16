@@ -276,9 +276,14 @@ int ua_plan_make(ua_list *l, const char *archive, const char *dest, int nowrap,
             continue;
         }
         if (e->encrypted) {
-            e->skip = 1;
-            p->encrypted++;
-            continue;
+            /* Only an engine that takes a password can extract it; the
+             * front end then asks for one before extracting. */
+            if (!l->engine || !(l->engine->caps(l->format) & UA_CAP_PASSWORD)) {
+                e->skip = 1;
+                p->encrypted++;
+                continue;
+            }
+            p->with_password++;
         }
         t = map_path(e->name_src, e->name_kind, &e->map_flags);
         if (!t) {

@@ -44,6 +44,7 @@ void uj_take_list(uj_job *j, ua_list *l, ua_plan *p)
 {
     *l = j->list;
     *p = j->plan;
+    l->password = NULL;          /* pointed at j->password, freed with the job */
     memset(&j->list, 0, sizeof(j->list));
     j->have_plan = 0;
     j->lent = 0;
@@ -61,6 +62,7 @@ void uj_free(uj_job *j)
         ua_list_free(&j->list);
     ua_volumes_free(&j->vols);
     free(j->log);
+    memset(j->password, 0, sizeof(j->password));
     free(j);
 }
 
@@ -288,6 +290,7 @@ static int do_list(uj_job *j, int batches)
     }
     j->list.reading = on_reading;
     j->list.reading_ctx = j;
+    j->list.password = j->password[0] ? j->password : NULL;
     j->open_status = ua_read_list(first, j->fmt, batches ? UA_OP_LIST : UA_OP_EXTRACT,
                                   j->recover, NULL, &j->list, note, j);
     j->t_listed = uj_ticks_since(&j->started);
@@ -328,6 +331,14 @@ static void do_extract(uj_job *j)
 
     if (!j->have_plan && do_list(j, 0) < 0)
         return;
+    /* Encrypted entries and no password: stop before anything is written;
+     * the GUI asks and starts the job again. */
+    if (!j->lent && ua_list_encrypted_wanted(&j->list) && !j->list.password) {
+        j->open_status = UA_OPEN_PASSWORD;
+        j->list.pw_state = UA_PW_NEEDED;
+        j->extract_rc = -1;
+        return;
+    }
     if (j->list.disk_image) {
         snprintf(j->err, sizeof(j->err), "this archive holds a disk image; writing disk images "
                  "is not implemented yet");

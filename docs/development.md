@@ -42,7 +42,13 @@ collect-aros itself can exit 0 with symbols left unresolved, which is also why
 - `src/core/`: the model, format recognition and engine choice (`registry.c`,
   `session.c`), name conversion (`names.c`), the extraction plan (`plan.c`), the
   only code that writes extracted files (`fsl.c`) and packing (`pack.c`).
-- `src/engines/`: libarchive and a statically linked XAD (`xad_static.c`, LGPL).
+- `src/engines/`: libarchive, a statically linked XAD (`xad_static.c`, LGPL), and
+  `be_7z.c`, which runs the separate program `unarc-7z` (7-Zip's 7z and RAR
+  handlers, `experiments/7z-backend/`) for 7z and RAR when it is installed next
+  to Unarc and unarc-cli. It reads the program's line protocol (PROTOCOL.md
+  there) from a `PIPE:` handle; the archive path goes as hex, the selection
+  through a file in `T:`, the password through a second pipe. Without the
+  program, libarchive reads 7z and RAR as before (no passwords).
 - `src/cli/`: `unarc-cli`, the Shell program.
 - `src/gui/`: `Unarc`, the Zune program; `job.c` runs each job in a worker process.
 
@@ -50,7 +56,7 @@ collect-aros itself can exit 0 with symbols left unresolved, which is also why
 
     unarc-cli ARCHIVE,FILES/M,TO/K,LIST/S,PACK/S,FORMAT/K,LEVEL/K/N,RECOVER/S,ENGINE/K,
               OVERWRITE/S,SKIP/S,RENAME/S,NOWRAP/S,CANCELAFTER/K/N,STATS/S,QUIET/S,
-              DIAGOUT/S,FORMATS/S,HELP/S
+              DIAGOUT/S,FORMATS/S,HELP/S,PASSWORD/K
 
 - `unarc-cli HELP` prints usage with examples; `FORMATS` what each format supports.
 - `LIST` shows the entries, name changes and where extraction would go; it writes
@@ -71,6 +77,14 @@ collect-aros itself can exit 0 with symbols left unresolved, which is also why
   since Limpet shows UTF-8. Limpet sends typed commands to the Shell as UTF-8
   (its README), so a non-ASCII name typed there will not match the ISO-8859-1
   name on disk; not handled here and not tested.
+- Passwords (7z, RAR, through unarc-7z): an encrypted entry list is asked for
+  at once; encrypted entries before anything is written. On an interactive
+  console the password is read without echo (Limpet's UTF-8 as it is,
+  ISO-8859-1 converted to UTF-8); in scripts `PASSWORD` gives it. Without one,
+  encrypted entries are left out and reported (RC 5), and an encrypted entry
+  list ends with RC 20. A wrong password for data shows as an error on each
+  entry it affects (RC 10). The GUI asks in a window of its own, keeps the
+  password for that archive while it runs, and never saves or logs it.
 - Return codes: 0 done, 5 done with notes (skipped, renamed, recovered), 10 partly
   done, cancelled or stopped, 20 nothing done.
 - A multi-volume archive can be named by any of its volumes. The set is found

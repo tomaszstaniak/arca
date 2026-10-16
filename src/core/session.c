@@ -57,13 +57,14 @@ int ua_read_list(const char *archive, ua_format fmt, ua_op op, int recover,
     void (*reading)(void *, ULONG) = l->reading;
     void *reading_ctx = l->reading_ctx;
     char **vols = l->volumes;
+    const char *password = l->password;
 
     slow_ticks = -1;
     memset(l, 0, sizeof(*l));
     if (engine) {
         eng[0] = ua_engine_by_name(engine);
         if (!eng[0]) {
-            note(ctx, "unknown engine \"%s\" (libarchive, xad)", engine);
+            note(ctx, "unknown engine \"%s\" (libarchive, xad, 7-zip)", engine);
             return UA_OPEN_ERROR;
         }
         neng = 1;
@@ -80,12 +81,23 @@ int ua_read_list(const char *archive, ua_format fmt, ua_op op, int recover,
         t.reading = reading;
         t.reading_ctx = reading_ctx;
         t.volumes = vols;              /* borrowed while listing */
+        t.password = password;
         r = eng[i]->list(archive, &t, err, sizeof(err));
         if (r == UA_LIST_CANCELLED) {
             ua_list_free(&t);
             ua_list_free(l);
             note(ctx, "Reading stopped by the user");
             return UA_OPEN_CANCELLED;
+        }
+        if (r == UA_LIST_PASSWORD) {
+            int pw = t.pw_state;
+            note(ctx, "Engine %s: %s", eng[i]->name, err);
+            ua_list_free(&t);
+            ua_list_free(l);
+            l->pw_state = pw;
+            l->password = password;
+            l->volumes = vols;          /* still the caller's, for a retry */
+            return UA_OPEN_PASSWORD;
         }
         if (r == UA_LIST_OK && recover && got >= 0 && l->n >= t.n) {
             note(ctx, "Engine %s: %lu entries; keeping %s with %lu", eng[i]->name,
@@ -128,6 +140,7 @@ int ua_read_list(const char *archive, ua_format fmt, ua_op op, int recover,
             ua_list_free(&t);
         }
     }
+    l->password = password;
     if (got >= 0) {
         l->format = fmt;
         l->partial = got == 1;

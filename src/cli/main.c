@@ -31,10 +31,10 @@
 
 #define TEMPLATE "ARCHIVE,FILES/M,TO/K,LIST/S,PACK/S,FORMAT/K,LEVEL/K/N,RECOVER/S,ENGINE/K," \
                  "OVERWRITE/S,SKIP/S,RENAME/S,NOWRAP/S,CANCELAFTER/K/N,STATS/S,QUIET/S," \
-                 "DIAGOUT/S,FORMATS/S,HELP/S,TESTSWAP/K"
+                 "DIAGOUT/S,FORMATS/S,HELP/S,TESTSWAP/K,PASSWORD/K"
 enum { A_ARCHIVE, A_FILES, A_TO, A_LIST, A_PACK, A_FORMAT, A_LEVEL, A_RECOVER, A_ENGINE,
        A_OVERWRITE, A_SKIP, A_RENAME, A_NOWRAP, A_CANCELAFTER, A_STATS, A_QUIET, A_DIAGOUT,
-       A_FORMATS, A_HELP, A_TESTSWAP, A_COUNT };
+       A_FORMATS, A_HELP, A_TESTSWAP, A_PASSWORD, A_COUNT };
 
 static int diag_out;      /* DIAGOUT: diagnostics also to standard output */
 
@@ -246,6 +246,92 @@ static void ui_note(void *ctx, const char *fmt, ...)
 
 static ua_volumes vs;        /* the volume set of the archive, if it is one */
 
+/* ---- passwords ----
+ * The archive handlers take a password as UTF-8. A Limpet window sends UTF-8;
+ * CON: and the Shell's own line send ISO-8859-1, which is converted. The
+ * password is kept in this buffer only, and cleared before the program ends. */
+static char password[512];
+
+static void set_password(const char *in)
+{
+    size_t n = 0;
+    const unsigned char *p = (const unsigned char *)in;
+    for (; *p && n + 2 < sizeof(password); p++) {
+        if (*p < 0x80 || utf8_stderr) {
+            password[n++] = (char)*p;
+        } else {
+            password[n++] = (char)(0xC0 | (*p >> 6));
+            password[n++] = (char)(0x80 | (*p & 0x3F));
+        }
+    }
+    password[n] = 0;
+}
+
+/* Asks on the console without echo. 1 with a password, 0 when there is no
+ * console to ask or the user gave nothing, -1 on Ctrl-C (stop the job). */
+static int ask_password(const char *archive)
+{
+    BPTR in = Input();
+    char line[sizeof(password) / 2];
+    size_t n = 0;
+    int esc = 0;
+    UBYTE c;
+
+    if (!IsInteractive(in))
+        return 0;
+    diag("Password for %s (not shown): ", FilePart((STRPTR)archive));
+    SetMode(in, 1);
+    SetSignal(0, SIGBREAKF_CTRL_C);
+    for (;;) {
+        /* In raw mode Ctrl-C comes as a signal, not as a byte. */
+        if (!WaitForChar(in, 100000)) {
+            if (SetSignal(0, SIGBREAKF_CTRL_C) & SIGBREAKF_CTRL_C) {
+                n = 0;
+                esc = -1;
+                break;
+            }
+            continue;
+        }
+        if (Read(in, &c, 1) != 1)
+            break;
+        if (esc) {                       /* a control sequence: up to its final byte */
+            if (c >= 0x40 && c <= 0x7e && !(esc == 1 && c == '['))
+                esc = 0;
+            else
+                esc = 2;
+            continue;
+        }
+        /* 0x9B starts a control sequence in CON:; in Limpet's UTF-8 it is a
+         * continuation byte (as in "\xc5\x9b"), so only ESC counts there. */
+        if (c == 0x1b || (c == 0x9b && !utf8_stderr)) {
+            esc = 1;
+            continue;
+        }
+        if (c == '\r' || c == '\n')
+            break;
+        if (c == 3) {                    /* Ctrl-C */
+            n = 0;
+            break;
+        }
+        if (c == 8 || c == 127) {
+            if (n)
+                n--;
+            continue;
+        }
+        if (c >= 0x20 && n + 1 < sizeof(line))
+            line[n++] = (char)c;
+    }
+    SetMode(in, 0);
+    diag("\n");
+    line[n] = 0;
+    if (n)
+        set_password(line);
+    memset(line, 0, sizeof(line));
+    if (esc < 0)
+        return -1;
+    return n != 0;
+}
+
 static int run(IPTR *args)
 {
     const char *archive = (const char *)args[A_ARCHIVE];
@@ -284,7 +370,7 @@ static int run(IPTR *args)
         return 20;
     }
     if (args[A_ENGINE] && !ua_engine_by_name((const char *)args[A_ENGINE])) {
-        diag("unknown engine \"%s\" (libarchive, xad)\n", (char *)args[A_ENGINE]);
+        diag("unknown engine \"%s\" (libarchive, xad, 7-zip)\n", (char *)args[A_ENGINE]);
         return 20;
     }
     out("Archive: %s\nFormat:  %s\n", archive, ua_format_name(fmt));
@@ -297,7 +383,35 @@ static int run(IPTR *args)
         diag("No engine can %s this format.\n", op == UA_OP_LIST ? "list" : "extract");
         return 20;
     }
+    if (args[A_PASSWORD]) {
+        char *a = (char *)args[A_PASSWORD];
+        set_password(a);
+        memset(a, 0, strlen(a));       /* the copy in ReadArgs' buffer */
+        l.password = password;
+    }
     st = ua_read_list(archive, fmt, op, recover, (const char *)args[A_ENGINE], &l, ui_note, NULL);
+    {
+        int tries = 0;
+        while (st == UA_OPEN_PASSWORD) {
+            if (l.pw_state == UA_PW_WRONG)
+                diag("That password does not open the list of entries.\n");
+            int a = tries++ >= 3 ? 0 : ask_password(archive);
+            if (a < 0) {
+                diag("Stopped; nothing was written.\n");
+                return 10;
+            }
+            if (!a) {
+                diag("The list of entries is encrypted; give the password with PASSWORD.\n"
+                     "Nothing was written.\n");
+                return 20;
+            }
+            l.password = password;
+            if (vs.count)
+                l.volumes = vs.path;
+            st = ua_read_list(archive, fmt, op, recover, (const char *)args[A_ENGINE], &l,
+                              ui_note, NULL);
+        }
+    }
     if (st == UA_OPEN_DAMAGED) {
         diag("The archive is damaged. Nothing was written.\n"
             "RECOVER extracts what can still be read, into a new folder.\n");
@@ -394,6 +508,28 @@ static int run(IPTR *args)
             o.progress = args[A_QUIET] ? NULL : ui_progress;
             if (args[A_CANCELAFTER])
                 o.cancel_after = (UQUAD)*(LONG *)args[A_CANCELAFTER];
+            /* Encrypted entries: ask now, before anything is written. With no
+             * console and no PASSWORD they are left out and reported. */
+            if (ua_list_encrypted_wanted(&l) && !l.password) {
+                int a = ask_password(archive);
+                if (a < 0) {
+                    diag("Stopped; nothing was written.\n");
+                    ua_list_free(&l);
+                    return 10;
+                }
+                if (a) {
+                    l.password = password;
+                } else {
+                    for (k = 0; k < l.n; k++)
+                        if (l.v[k].encrypted && !l.v[k].skip && !l.v[k].excluded) {
+                            l.v[k].skip = 1;
+                            p.encrypted++;
+                            p.with_password--;
+                            if (p.planned)
+                                p.planned--;
+                        }
+                }
+            }
             out("Extracting to: %s (%s%s)\n", p.root, rule_name(p.kind),
                 p.root_renamed ? ", name taken, numbered" : "");
             for (k = 0; k < l.n && !args[A_QUIET]; k++) {
@@ -402,8 +538,8 @@ static int run(IPTR *args)
                 const char *nm = shown ? shown : e->name_src;
                 if (e->map_flags & UA_MAP_UNSAFE)
                     diag("refused (path leaves the destination): %s\n", nm);
-                else if (e->encrypted)
-                    diag("not extracted (encrypted; passwords not implemented yet): %s\n", nm);
+                else if (e->encrypted && e->skip)
+                    diag("not extracted (encrypted, no password): %s\n", nm);
                 else if (e->map_flags && e->target) {
                     flags_str(e->map_flags, fl, sizeof(fl));
                     diag("name changed (%s): \"%s\" -> \"%s\"\n", fl + 1, nm, e->target);
@@ -537,6 +673,9 @@ static void help(void)
         "  unarc-cli RAM:src.tar.gz PACK Work:src LEVEL 9\n\n"
         "A multi-volume archive (name.part1.rar ..., name.rar + name.r00 ..., name.7z.001 ...)\n"
         "can be given by any of its volumes; all of them must be in the same drawer.\n\n"
+        "Encrypted 7z and RAR archives: the password is asked on the console (not shown),\n"
+        "or given with PASSWORD <text> in scripts. Without one, encrypted entries are left\n"
+        "out and reported.\n\n"
         "Existing files are never replaced without OVERWRITE, SKIP, RENAME or an answer on\n"
         "the console; in a script, a conflict without one of them is skipped and reported.\n"
         "Results go to standard output, progress and messages to the console (DIAGOUT\n"
@@ -553,13 +692,14 @@ static void formats(void)
     out("Extracting (what this program has been tested with is in its documentation):\n");
     for (i = 0; i < sizeof(all) / sizeof(all[0]); i++) {
         ULONG c = ua_format_caps(all[i]);
-        out("  %-8s %s%s%s\n", ua_format_name(all[i]),
+        out("  %-8s %s%s%s%s\n", ua_format_name(all[i]),
             c & UA_CAP_EXTRACT ? "list, extract" : c & UA_CAP_LIST ? "list only" : "no",
             c & UA_CAP_AMIGA_PROT ? "; Amiga protection bits and comments" : "",
+            c & UA_CAP_PASSWORD ? "; passwords" : "",
             c & UA_CAP_DISKIMAGE ? "; disk images are not written yet" : "");
     }
     out("  Multi-volume: RAR and RAR 5 sets, 7z split into .001, .002, ...\n"
-        "  Encrypted entries are not extracted yet (no passwords).\n"
+        "  Passwords need unarc-7z next to this program (7z and RAR).\n"
         "Packing:\n"
         "  zip      names (UTF-8), dates, owner rwx as Unix permissions; LEVEL 0-9\n"
         "  tar.gz   names (UTF-8), dates, owner/group/other rwx; LEVEL 1-9\n"
@@ -595,6 +735,7 @@ int main(void)
     }
     diag_out = run_args[A_DIAGOUT] != 0;
     detect_consoles();
+    ua_7z_init();
     if (run_args[A_HELP] || run_args[A_FORMATS] || !run_args[A_ARCHIVE]) {
         if (run_args[A_FORMATS])
             formats();
@@ -627,6 +768,7 @@ int main(void)
     } else {
         rc = run(run_args);
     }
+    memset(password, 0, sizeof(password));
     FreeArgs(rda);
     xad_static_close();
     return rc;

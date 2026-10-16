@@ -6,15 +6,17 @@
  * A later engine is tried only when an earlier one fails before anything was
  * written; the caller enforces that (see main.c / the job layer). */
 #include <string.h>
+#include <strings.h>
 #include <stdlib.h>
 #include "ua.h"
 
 extern const ua_engine ua_engine_libarchive;
 extern const ua_engine ua_engine_libarchive_stream;
 extern const ua_engine ua_engine_xad;
+extern const ua_engine ua_engine_7z;
 
 static const ua_engine *const all_engines[] = {
-    &ua_engine_libarchive, &ua_engine_libarchive_stream, &ua_engine_xad, NULL
+    &ua_engine_libarchive, &ua_engine_libarchive_stream, &ua_engine_xad, &ua_engine_7z, NULL
 };
 
 /* Preference per format, most suitable first. Engines missing a capability
@@ -27,8 +29,10 @@ static const struct pref {
     { UA_FMT_LZX,   { &ua_engine_xad } },
     { UA_FMT_DMS,   { &ua_engine_xad } },
     { UA_FMT_ZIP,   { &ua_engine_libarchive, &ua_engine_xad } }, /* UTF-8, zipx, AES later */
-    { UA_FMT_7Z,    { &ua_engine_libarchive } },
-    { UA_FMT_RAR,   { &ua_engine_libarchive } },
+    /* 7-Zip's own handlers when unarc-7z is installed: every method and
+     * encryption of both formats. libarchive otherwise. */
+    { UA_FMT_7Z,    { &ua_engine_7z, &ua_engine_libarchive } },
+    { UA_FMT_RAR,   { &ua_engine_7z, &ua_engine_libarchive } },
     { UA_FMT_TAR,   { &ua_engine_libarchive, &ua_engine_xad } },
     { UA_FMT_GZIP,  { &ua_engine_libarchive, &ua_engine_xad } },
     { UA_FMT_BZIP2, { &ua_engine_libarchive, &ua_engine_xad } },
@@ -114,7 +118,7 @@ const ua_engine *ua_engine_by_name(const char *name)
 {
     int i;
     for (i = 0; all_engines[i]; i++)
-        if (strcmp(all_engines[i]->name, name) == 0)
+        if (strcasecmp(all_engines[i]->name, name) == 0)   /* AmigaDOS keywords ignore case */
             return all_engines[i];
     return NULL;
 }
@@ -160,6 +164,15 @@ void ua_list_free(ua_list *l)
     }
     free(l->v);
     memset(l, 0, sizeof(*l));
+}
+
+ULONG ua_list_encrypted_wanted(const ua_list *l)
+{
+    ULONG i, n = 0;
+    for (i = 0; i < l->n; i++)
+        if (l->v[i].encrypted && !l->v[i].excluded && !l->v[i].skip && l->v[i].target)
+            n++;
+    return n;
 }
 
 ULONG ua_format_caps(ua_format f)

@@ -32,6 +32,7 @@ typedef enum { UA_OP_LIST, UA_OP_EXTRACT } ua_op;
 #define UA_LIST_FAILED     -1   /* recognised, nothing usable */
 #define UA_LIST_UNKNOWN     2   /* this engine does not know the format */
 #define UA_LIST_CANCELLED   3   /* stopped by Ctrl-C while reading */
+#define UA_LIST_PASSWORD    4   /* the entry list is encrypted: see ua_list.pw_state */
 
 /* Capability bits an engine declares per format. The GUI reads these; it never
  * asks an engine by name. */
@@ -98,7 +99,15 @@ typedef struct ua_list {
      * keeps its own copy (volumes_owned) for extraction. */
     char **volumes;
     int volumes_owned;
+    /* Set by the caller before listing or extracting, owned by the caller,
+     * never logged; NULL when none was given. Engines with UA_CAP_PASSWORD
+     * use it for encrypted entry lists and data. */
+    const char *password;
+    int pw_state;            /* UA_PW_*: why a listing ended in UA_LIST_PASSWORD */
 } ua_list;
+
+#define UA_PW_NEEDED  1      /* encrypted, and no password was given */
+#define UA_PW_WRONG   2      /* the password given did not open it */
 
 /* What the file layer tells an engine before each entry's data. */
 typedef enum { UA_W_WRITE, UA_W_SKIP, UA_W_CANCEL } ua_wdecision;
@@ -141,6 +150,7 @@ const ua_engine *ua_engine_by_name(const char *name);
 #define UA_OPEN_NOENGINE  3   /* no engine handles this format and operation */
 #define UA_OPEN_ERROR     4   /* every engine failed, or an unknown engine was named */
 #define UA_OPEN_CANCELLED 5   /* stopped while reading (Ctrl-C) */
+#define UA_OPEN_PASSWORD  6   /* the entry list needs a (right) password: list.pw_state */
 typedef void (*ua_note)(void *ctx, const char *fmt, ...);
 /* 0, or -1 with the DOS error when the file cannot be opened. */
 int ua_sniff_file(const char *archive, ua_format *fmt, LONG *ioerr);
@@ -199,6 +209,11 @@ void ua_volumes_free(ua_volumes *v);
 
 /* list.c */
 ua_entry *ua_list_add(ua_list *l);
+/* Encrypted entries that the plan will extract (they need a password). */
+ULONG ua_list_encrypted_wanted(const ua_list *l);
+/* be_7z.c: find the unarc-7z program next to this one. Call once from the
+ * main program's own process before opening archives. */
+void ua_7z_init(void);
 /* Extraction reopens the archive and walks it again. Each header it meets must
  * be the entry the list (and the plan, and the user's selection) was made
  * from: same name, type and, when both know it, size. An archive replaced or
@@ -224,6 +239,7 @@ typedef struct ua_plan {
     char rootname[256];      /* created folder name, when kind != DEST */
     int root_renamed;        /* rootname differs from the archive's own name */
     ULONG planned, unsafe, encrypted, collisions, converted, lossy;
+    ULONG with_password;     /* encrypted entries planned: a password is needed */
 } ua_plan;
 int ua_plan_make(ua_list *l, const char *archive, const char *dest, int nowrap,
                  ua_plan *p, char *err, int errlen);
