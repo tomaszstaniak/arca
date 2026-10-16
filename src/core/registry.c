@@ -148,6 +148,11 @@ ua_entry *ua_list_add(ua_list *l)
 void ua_list_free(ua_list *l)
 {
     ULONG i;
+    if (l->volumes_owned && l->volumes) {
+        for (i = 0; l->volumes[i]; i++)
+            free(l->volumes[i]);
+        free(l->volumes);
+    }
     for (i = 0; i < l->n; i++) {
         free(l->v[i].name_src);
         free(l->v[i].comment);
@@ -164,4 +169,16 @@ ULONG ua_format_caps(ua_format f)
     for (i = 0; all_engines[i]; i++)
         c |= all_engines[i]->caps(f);
     return c;
+}
+
+int ua_entry_matches(const ua_entry *e, const char *name, ua_etype type, int size_valid,
+                     UQUAD size)
+{
+    if (!e->name_src || !name || strcmp(e->name_src, name) != 0)
+        return 0;
+    if (e->type != type)
+        return 0;
+    if (e->size_valid && size_valid && e->size != size)
+        return 0;
+    return 1;
 }

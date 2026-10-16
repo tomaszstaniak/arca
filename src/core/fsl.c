@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <stdarg.h>
 #include <proto/exec.h>
 #include <proto/dos.h>
@@ -53,7 +54,89 @@ typedef struct fsl {
     LONG write_err;
     int root_created;
     int name_max;            /* longest name the volume takes safely; 0 = no limit known */
+    /* Directories whose name had to change (shortened for the volume, or
+     * moved aside because a shortened one took their name): archive path ->
+     * path on disk, both relative to the root. Every entry under such a
+     * directory goes through the same mapping, so two directories that only
+     * differ after the limit never share one directory on disk. */
+    struct dmap { char *from, *to; } *dmap;
+    ULONG ndmap, capdmap;
 } fsl;
+
+static const char *dmap_find(fsl *f, const char *from)
+{
+    ULONG i;
+    for (i = 0; i < f->ndmap; i++)
+        if (strcmp(f->dmap[i].from, from) == 0)
+            return f->dmap[i].to;
+    return NULL;
+}
+
+/* Is 'to' (a path on disk) already the mapped home of another directory? */
+static int dmap_taken(fsl *f, const char *to)
+{
+    ULONG i;
+    for (i = 0; i < f->ndmap; i++)
+        if (strcasecmp(f->dmap[i].to, to) == 0)
+            return 1;
+    return 0;
+}
+
+static int dmap_add(fsl *f, const char *from, const char *to)
+{
+    if (f->ndmap == f->capdmap) {
+        ULONG c = f->capdmap ? f->capdmap * 2 : 16;
+        struct dmap *n = realloc(f->dmap, c * sizeof(*n));
+        if (!n)
+            return 0;
+        f->dmap = n;
+        f->capdmap = c;
+    }
+    f->dmap[f->ndmap].from = ua_strdup(from);
+    f->dmap[f->ndmap].to = ua_strdup(to);
+    if (!f->dmap[f->ndmap].from || !f->dmap[f->ndmap].to) {
+        free(f->dmap[f->ndmap].from);
+        free(f->dmap[f->ndmap].to);
+        return 0;
+    }
+    f->ndmap++;
+    return 1;
+}
+
+static void dmap_free(fsl *f)
+{
+    ULONG i;
+    for (i = 0; i < f->ndmap; i++) {
+        free(f->dmap[i].from);
+        free(f->dmap[i].to);
+    }
+    free(f->dmap);
+    f->dmap = NULL;
+    f->ndmap = f->capdmap = 0;
+}
+
+/* name cut to max characters with " k" (k > 1) kept inside the limit; with
+ * keep_ext a short extension stays at the end. */
+static void shortened(const char *name, int k, int max, int keep_ext, char *out, size_t n)
+{
+    char ext[16] = "", tail[24];
+    const char *dot = keep_ext ? strrchr(name, '.') : NULL;
+    size_t nl = strlen(name), room;
+    if (dot && dot != name && strlen(dot) <= 8)
+        snprintf(ext, sizeof(ext), "%s", dot);
+    else
+        dot = NULL;
+    if (k > 1)
+        snprintf(tail, sizeof(tail), " %d%s", k, ext);
+    else
+        snprintf(tail, sizeof(tail), "%s", ext);
+    room = max > 0 && (size_t)max > strlen(tail) ? (size_t)max - strlen(tail) : 0;
+    if (max <= 0)
+        room = nl;
+    if (room > nl - strlen(ext))
+        room = nl - strlen(ext);
+    snprintf(out, n, "%.*s%s", (int)room, name, tail);
+}
 
 static void msg(fsl *f, const char *fmt, ...)
 {
@@ -188,8 +271,9 @@ static BPTR dir_lock(fsl *f, const char *rel, int create)
 {
     BPTR cur;
     const char *p = rel;
-    char sofar[UA_PATHMAX];
-    size_t sl = 0;
+    char sofar[UA_PATHMAX];  /* the path on disk so far */
+    char orig[UA_PATHMAX];   /* the same path as the archive names it */
+    size_t sl = 0, ol = 0;
 
     if (f->dir_valid && strcmp(f->dir_rel, rel) == 0)
         return f->dir;
@@ -203,6 +287,7 @@ static BPTR dir_lock(fsl *f, const char *rel, int create)
     }
     cur = DupLock(f->root);
     sofar[0] = 0;
+    orig[0] = 0;
     while (cur && *p) {
         const char *slash = strchr(p, '/');
         size_t n = slash ? (size_t)(slash - p) : strlen(p);
@@ -217,12 +302,43 @@ static BPTR dir_lock(fsl *f, const char *rel, int create)
         }
         memcpy(comp, p, n);
         comp[n] = 0;
-        /* Directory names are shortened without a uniqueness check, so that
-         * every entry of the same directory lands in the same place. */
-        if (f->name_max && n > (size_t)f->name_max) {
-            char s[UA_PATHMAX];
-            show(f, s, sizeof(s), rel);
-            fit_name(f, BNULL, comp, sizeof(comp), s);
+        snprintf(orig + ol, sizeof(orig) - ol, "%s%s", ol ? "/" : "", comp);
+        ol = strlen(orig);
+        {
+            const char *m = dmap_find(f, orig);
+            char want[UA_PATHMAX];
+            if (m) {
+                /* Mapped before: the same directory as the earlier entries. */
+                const char *leafm = strrchr(m, '/');
+                snprintf(comp, sizeof(comp), "%s", leafm ? leafm + 1 : m);
+            } else {
+                int too_long = f->name_max && n > (size_t)f->name_max;
+                snprintf(want, sizeof(want), "%s%s%s", sofar, sl ? "/" : "", comp);
+                if (too_long || dmap_taken(f, want)) {
+                    /* A new name that neither an earlier mapped directory nor
+                     * anything on the volume has. */
+                    char cand[256], s2[UA_PATHMAX];
+                    int k;
+                    for (k = 1; k < 1000; k++) {
+                        shortened(comp, k, too_long ? f->name_max :
+                                  (f->name_max ? f->name_max : 255), 0, cand, sizeof(cand));
+                        if (!too_long && k == 1)
+                            continue;
+                        snprintf(want, sizeof(want), "%s%s%s", sofar, sl ? "/" : "", cand);
+                        if (!dmap_taken(f, want) && what_is_rel(cur, cand, NULL, 0) == 0)
+                            break;
+                    }
+                    show(f, s2, sizeof(s2), orig);
+                    msg(f, "folder name changed for this volume: \"%s\" -> \"%s\"", s2, cand);
+                    f->r->renamed++;
+                    snprintf(comp, sizeof(comp), "%s", cand);
+                    if (!dmap_add(f, orig, want)) {
+                        msg(f, "error: out of memory");
+                        UnLock(cur);
+                        return BNULL;
+                    }
+                }
+            }
         }
         snprintf(sofar + sl, sizeof(sofar) - sl, "%s%s", sl ? "/" : "", comp);
         sl = strlen(sofar);
@@ -502,8 +618,8 @@ static int s_seek(ua_sink *s, UQUAD skip)
 /* Is name (relative to dir) a file of exactly 'want' bytes? Return codes are
  * not enough: on an FFS test disk (afs-handler, ABIv11 2026.09) the first file
  * written into a just-created directory once stayed as an empty temporary file
- * while Open, Write, Close and Rename had all reported success. Sizes from 2 GB
- * up do not fit fib_Size and are only checked for being a file. */
+ * while Open, Write, Close and Rename had all reported success. The size is
+ * compared in full: ABIv11's fib_Size is 64 bits (UA_FIB_SIZE). */
 static int written_ok(fsl *f, const char *name, UQUAD want, char *why, size_t wn)
 {
     BPTR old = CurrentDir(f->dir), l = Lock((STRPTR)name, SHARED_LOCK);
@@ -519,9 +635,9 @@ static int written_ok(fsl *f, const char *name, UQUAD want, char *why, size_t wn
         snprintf(why, wn, "it cannot be examined after writing it");
     else if (fib->fib_DirEntryType > 0)
         snprintf(why, wn, "a directory has its name after writing it");
-    else if (want < 0x7FFFFFFFULL && (UQUAD)(ULONG)fib->fib_Size != want)
-        snprintf(why, wn, "the volume holds %lu bytes of %lu written",
-                 (unsigned long)(ULONG)fib->fib_Size, (unsigned long)want);
+    else if (UA_FIB_SIZE(fib) != want)
+        snprintf(why, wn, "the volume holds %llu bytes of %llu written",
+                 (unsigned long long)UA_FIB_SIZE(fib), (unsigned long long)want);
     else
         ok = 1;
     FreeDosObject(DOS_FIB, fib);
@@ -763,6 +879,16 @@ int ua_extract(const char *archive, ua_list *l, ua_plan *p, ua_extract_opts *o,
             return -1;
         }
         snprintf(base, sizeof(base), "%s", p->rootname);
+        /* The new folder is a name like any other: it must fit the volume
+         * before it is created, numbered names included. */
+        f.name_max = ffs_name_limit(d);
+        if (f.name_max && strlen(base) > (size_t)f.name_max) {
+            shortened(base, 1, f.name_max, 0, p->rootname, sizeof(p->rootname));
+            p->root_renamed = 1;
+            if (o->message)
+                o->message(o->ui_ctx, "folder name shortened for this volume (%d characters "
+                           "at most): \"%s\" -> \"%s\"", f.name_max, base, p->rootname);
+        }
         old = CurrentDir(d);
         while (!(lk = CreateDir((STRPTR)p->rootname))) {
             if (IoErr() != ERROR_OBJECT_EXISTS || k > 999) {
@@ -773,7 +899,8 @@ int ua_extract(const char *archive, ua_list *l, ua_plan *p, ua_extract_opts *o,
                 snprintf(err, errlen, "cannot create \"%s\": %s", p->rootname, why);
                 return -1;
             }
-            snprintf(p->rootname, sizeof(p->rootname), "%.240s %d", base, k++);
+            shortened(base, k++, f.name_max ? f.name_max : 255, 0, p->rootname,
+                      sizeof(p->rootname));
             p->root_renamed = 1;
         }
         UnLock(lk);
@@ -828,13 +955,19 @@ int ua_extract(const char *archive, ua_list *l, ua_plan *p, ua_extract_opts *o,
                 continue;
             }
             if (split(e->target, dirrel, sizeof(dirrel), leaf, sizeof(leaf)) &&
-                (d = dir_lock(&f, dirrel, 0)))
+                (d = dir_lock(&f, dirrel, 0))) {
+                /* A directory whose name changed on disk has it in the map. */
+                const char *m = dmap_find(&f, e->target);
+                if (m)
+                    snprintf(leaf, sizeof(leaf), "%s", strrchr(m, '/') ? strrchr(m, '/') + 1 : m);
                 apply_meta(&f, d, leaf, shown, e);
+            }
         }
 
     if (f.dir_valid)
         UnLock(f.dir);
     UnLock(f.root);
+    dmap_free(&f);
     if ((r->cancelled || r->failed) && f.root_created && dir_empty(p->root))
         DeleteFile((STRPTR)p->root);
     return rc < 0 ? -1 : 0;

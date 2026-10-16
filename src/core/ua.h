@@ -7,6 +7,11 @@
 #include <exec/types.h>
 #include <dos/dos.h>
 
+/* A file's size from a FileInfoBlock. ABIv11 declares fib_Size as UQUAD;
+ * mainline ABIv1 as LONG, where it must be read unsigned. */
+#define UA_FIB_SIZE(fib) (sizeof((fib)->fib_Size) >= 8 ? (UQUAD)(fib)->fib_Size : \
+                          (UQUAD)(ULONG)(fib)->fib_Size)
+
 /* Longest full path the program builds. Longer ones are reported as errors,
  * never cut short (a cut path is another file). */
 #define UA_PATHMAX 4096
@@ -26,6 +31,7 @@ typedef enum { UA_OP_LIST, UA_OP_EXTRACT } ua_op;
 #define UA_LIST_PARTIAL     1   /* recognised, damaged: what is in the list was read */
 #define UA_LIST_FAILED     -1   /* recognised, nothing usable */
 #define UA_LIST_UNKNOWN     2   /* this engine does not know the format */
+#define UA_LIST_CANCELLED   3   /* stopped by Ctrl-C while reading */
 
 /* Capability bits an engine declares per format. The GUI reads these; it never
  * asks an engine by name. */
@@ -81,6 +87,17 @@ typedef struct ua_list {
     ua_format format;
     const struct ua_engine *engine;
     int disk_image;          /* archive holds a disk image, not files */
+    int partial;             /* read up to damage (recovery): the archive does not
+                                end where the list does */
+    /* Set by the caller before listing; engines call it as entries are read
+     * (about every 64) so that a front end can show the count. May be NULL. */
+    void (*reading)(void *ctx, ULONG entries);
+    void *reading_ctx;
+    /* A multi-volume set: every volume in order, NULL-terminated; NULL for
+     * a single file. Set by the caller before listing; the finished list
+     * keeps its own copy (volumes_owned) for extraction. */
+    char **volumes;
+    int volumes_owned;
 } ua_list;
 
 /* What the file layer tells an engine before each entry's data. */
@@ -123,6 +140,7 @@ const ua_engine *ua_engine_by_name(const char *name);
 #define UA_OPEN_DAMAGED   2   /* damaged; refused, nothing to extract (normal mode) */
 #define UA_OPEN_NOENGINE  3   /* no engine handles this format and operation */
 #define UA_OPEN_ERROR     4   /* every engine failed, or an unknown engine was named */
+#define UA_OPEN_CANCELLED 5   /* stopped while reading (Ctrl-C) */
 typedef void (*ua_note)(void *ctx, const char *fmt, ...);
 /* 0, or -1 with the DOS error when the file cannot be opened. */
 int ua_sniff_file(const char *archive, ua_format *fmt, LONG *ioerr);
@@ -130,6 +148,10 @@ int ua_sniff_file(const char *archive, ua_format *fmt, LONG *ioerr);
  * names a single engine (test aid) or is NULL. Engine messages go to note. */
 int ua_read_list(const char *archive, ua_format fmt, ua_op op, int recover,
                  const char *engine, ua_list *l, ua_note note, void *ctx);
+/* Engines: Ctrl-C received? Also slows reading down when the variable
+ * UnarcTestSlowList (ticks per 100 entries) is set, a test aid for cancelling
+ * a real scan. */
+int ua_list_break(ua_list *l);
 
 /* pack.c: new archives */
 typedef enum { UA_PACK_ZIP, UA_PACK_TGZ, UA_PACK_7Z } ua_packfmt;
@@ -161,8 +183,30 @@ int ua_pack(const char *archive, char **inputs, int ninputs, ua_pack_opts *o,
 /* Every capability of every engine for a format (for help texts). */
 ULONG ua_format_caps(ua_format f);
 
+/* volumes.c: multi-volume sets */
+typedef struct ua_volumes {
+    int multi;                /* the archive is one volume of a set */
+    int count;                /* volumes found; path[] in order, NULL-terminated */
+    char **path;
+    int first_given;          /* the file given is the first volume */
+    char setname[256];
+    char problem[300];        /* "" when the set is complete as far as can be told */
+} ua_volumes;
+/* 1 when path belongs to a multi-volume set (v filled), 0 for an ordinary
+ * archive. */
+int ua_volumes_find(const char *path, ua_volumes *v);
+void ua_volumes_free(ua_volumes *v);
+
 /* list.c */
 ua_entry *ua_list_add(ua_list *l);
+/* Extraction reopens the archive and walks it again. Each header it meets must
+ * be the entry the list (and the plan, and the user's selection) was made
+ * from: same name, type and, when both know it, size. An archive replaced or
+ * rewritten between listing and extraction would otherwise give one entry's
+ * data another entry's name. */
+int ua_entry_matches(const ua_entry *e, const char *name, ua_etype type, int size_valid,
+                     UQUAD size);
+#define UA_CHANGED_MSG "the archive changed after it was read; nothing more was extracted"
 void ua_list_free(ua_list *l);
 char *ua_strdup(const char *s);
 
