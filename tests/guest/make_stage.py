@@ -174,7 +174,9 @@ def core2():
         L.append("Delete RAM:m ALL QUIET")
     avail("after 10 x extract amiga.lzx (xad) + delete")
 
-if "core2" not in opts:
+if "packonly" in opts:
+  pass        # only the packing cases below
+elif "core2" not in opts:
   for n in sorted(os.listdir(corpus)):
       if n.startswith(".") or n == "SHA256SUMS" or n.endswith(".log"):
           continue
@@ -221,7 +223,7 @@ if "core2" not in opts:
   L.append("Delete RAM:e20 ALL QUIET")
   case("E16-missing", "unarc-cli corpus/nothere.zip")
   case("E17-badargs", "unarc-cli")
-else:
+elif "packonly" not in opts:
   core2()
 if "pack" in opts:
     # Packing: one source tree with what Amiga files carry, packed in each
@@ -238,15 +240,16 @@ if "pack" in opts:
           f"Protect {S}/a.txt -w",
           f"Protect {S}/sub/many.bin +p",
           f"FileNote {S}/a.txt \"a comment\"",
-          # SetDate's date is DD-MMM-YY; run3 showed it did not take on
-          # AROS One with a two-digit 99, so use a full date.
-          f"SetDate {S}/a.txt 01-Jan-1999 12:00:00",
-          # RAM: takes no soft links; make the link on SYS: (SFS) and pack
-          # that drawer too.
+          # SetDate's template is FILE/A,WEEKDAY,DATE,TIME: given without
+          # keywords the date lands in WEEKDAY and nothing is set.
+          f"SetDate {S}/a.txt DATE 01-Jan-99 TIME 12:00:00",
+          # RAM: takes no soft links; make the links on SYS: (SFS). AROS
+          # MakeLink makes a soft link unless HARD is given (it has no SOFT).
           "MakeDir SYS:uatest-lk",
           "Echo \"t\" >SYS:uatest-lk/target.txt",
-          "MakeLink SYS:uatest-lk/link SYS:uatest-lk/target.txt SOFT",
-          "MakeLink SYS:uatest-lk/loop SYS:uatest-lk SOFT",
+          f"MakeLink SYS:uatest-lk/link SYS:uatest-lk/target.txt >{O}/K14-makelink.txt",
+          f"MakeLink SYS:uatest-lk/loop SYS:uatest-lk >>{O}/K14-makelink.txt",
+          f"List SYS:uatest-lk >>{O}/K14-makelink.txt",
           f"List {S} ALL >{O}/K0-source.txt"]
     for fmt, ext in (("zip", "zip"), ("tgz", "tar.gz"), ("7z", "7z")):
         case(f"K1-pack-{fmt}", f"unarc-cli RAM:pk/t.{ext} PACK {S}", [f"List RAM:pk/t.{ext}"])
@@ -268,6 +271,10 @@ if "pack" in opts:
     L.append(f"Delete {S}/self.zip QUIET")
     case("K7-cancel", f"unarc-cli RAM:pk/c.zip PACK {S} LEVEL 0 CANCELAFTER 200000",
          ["List RAM:pk ALL", "Echo \"leftover .ua files:\"", "List RAM:pk PAT=.ua#?"])
+    # Replacing an archive with one packed from itself must be refused, the
+    # original kept (review finding: an empty archive replaced it).
+    case("K15-self-replace", "unarc-cli RAM:pk/t.zip PACK RAM:pk/t.zip OVERWRITE",
+         ["List RAM:pk/t.zip", "unarc-cli RAM:pk/t.zip LIST"])
     case("K8-noext", f"unarc-cli RAM:pk/t.arc PACK {S}")
     case("K9-format", f"unarc-cli RAM:pk/t.arc PACK {S}/sub FORMAT 7Z", ["List RAM:pk"])
     case("K10-help", "unarc-cli HELP")
@@ -296,7 +303,8 @@ if "lpprobe" in opts:
     L.append("Delete SYS:uatest-lp ALL QUIET FORCE")
 L.append(f"Avail >{O}/avail-end.txt")
 for d in (("e1", "e2", "e3", "e4", "e5", "e5b", "e6", "e7", "e8", "e9", "e11", "e12", "e18")
-          if "core2" not in opts else ("z1", "z3", "z4", "p3") +
+          if "core2" not in opts and "packonly" not in opts else
+          () if "packonly" in opts else ("z1", "z3", "z4", "p3") +
           (("e1", "e3", "e4", "e5", "e7", "e8", "e9", "e12") if "regress" in opts else ())):
     L.append(f"Copy RAM:{d} {O}/out/{d} ALL QUIET")
 L.append(f"Echo \"DONE\" >{O}/DONE.txt")
