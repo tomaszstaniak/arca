@@ -1,0 +1,51 @@
+Third-party software in unarc
+=============================
+
+The program's own source code is under the MIT licence (LICENSE). The binary is
+statically linked with the components below, which keep their own licences.
+Full licence texts are in the licenses/ directory. Exact source revisions are in
+deps.lock, upstreams.json and the patch series in patches/.
+
+How to rebuild the program with a modified XAD or libiconv, as the GNU LGPL
+allows you to: docs/relinking.md.
+
+
+XAD (xadmaster) 13.x, from AROS contrib workbench/libs/xad
+  Copyright (C) 1998 and later by Dirk Stoecker and the XAD authors (see AUTHORS
+  in the XAD sources); AROS changes by the AROS Development Team.
+  Licence: GNU Lesser General Public License 2.1 or later
+  (licenses/LGPL-2.1.txt; the package-wide statement is licenses/XAD-COPYING.txt).
+  Only files under the LGPL are built; the GPL-only HA and TR-DOS clients are not.
+  Modified: yes, see patches/contrib/.
+  The bzip2 decoder inside XAD's bzip2 client is derived from libbzip2,
+  copyright (C) 1996-2000 Julian R Seward, under the bzip2 licence
+  (licenses/bzip2-LICENSE.txt).
+
+src/engines/xad_static.c and xad_static.h (part of this program)
+  Initialisation of the statically linked XAD.
+  Licence: GNU Lesser General Public License 2.1 or later, like XAD.
+
+libarchive 3.9.0
+  Copyright (c) 2003-2018 Tim Kientzle and the libarchive authors.
+  Licence: BSD 2-Clause (licenses/libarchive-COPYING.txt). Some files carry the
+  3-clause UC Regents licence, public domain, or CC0/Apache-2.0/OpenSSL (BLAKE2);
+  the COPYING file lists them.
+
+liblzma from XZ Utils 5.8.3
+  Licence: BSD Zero Clause (licenses/xz-COPYING.0BSD.txt).
+
+zlib 1.3.1 (from the AROS ABIv11 SDK)
+  Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler.
+  Licence: zlib (licenses/zlib-LICENSE.txt).
+
+bzip2 / libbzip2 1.0.8 (from the AROS ABIv11 SDK)
+  Copyright (C) 1996-2019 Julian R Seward.
+  Licence: bzip2 (licenses/bzip2-LICENSE.txt).
+
+GNU libiconv 1.14 (from the AROS ABIv11 SDK)
+  Copyright (C) Free Software Foundation, Inc.
+  Licence: GNU Lesser General Public License 2.1 or later (licenses/LGPL-2.1.txt).
+
+AROS SDK startup code and link libraries
+  Copyright (C) The AROS Development Team.
+  Licence: AROS Public License 1.1 (licenses/AROS-APL-1.1.txt).
