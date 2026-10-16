@@ -301,6 +301,8 @@ static int add_tree(pk *p, BPTR dir, const char *name, const char *apath, int de
         return 0;
     }
     if (same_as_output(p, l)) {
+        msg(p, "skipped (the archive being made): %s", apath);
+        p->r->skipped++;
         UnLock(l);
         return 0;
     }
@@ -332,10 +334,16 @@ static int add_tree(pk *p, BPTR dir, const char *name, const char *apath, int de
             p->r->dirs++;
             p->anc[p->nanc++] = l;
             if (c && Examine(l, c)) {
+                /* On the heap: one path per level on the stack would overrun the
+                 * worker's stack long before MAXDEPTH (ABIv11 has no check). */
+                char *sub = malloc(UA_PATHMAX);
+                if (!sub) {
+                    p->r->failed = 1;
+                    snprintf(p->r->why, sizeof(p->r->why), "not enough memory");
+                    rc = -1;
+                }
                 while (rc == 0 && ExNext(l, c)) {
-                    char sub[UA_PATHMAX];
-                    if (snprintf(sub, sizeof(sub), "%s/%s", apath, c->fib_FileName) >=
-                        (int)sizeof(sub)) {
+                    if (snprintf(sub, UA_PATHMAX, "%s/%s", apath, c->fib_FileName) >= UA_PATHMAX) {
                         msg(p, "error: path too long under \"%s\"; not packed", apath);
                         p->r->errors++;
                         continue;
@@ -344,6 +352,7 @@ static int add_tree(pk *p, BPTR dir, const char *name, const char *apath, int de
                     if (check_cancel(p))
                         rc = -1;
                 }
+                free(sub);
             }
             p->nanc--;
             FreeDosObject(DOS_FIB, c);
@@ -548,6 +557,20 @@ int ua_pack(const char *archive, char **inputs, int ninputs, ua_pack_opts *o,
         rc = -1;
         goto out;
     }
+    /* Replacing an archive with one made from that same archive would leave
+     * an empty archive and delete the original. Refuse before writing. */
+    for (i = 0; i < ninputs && p.oldlock; i++) {
+        BPTR l = Lock((STRPTR)inputs[i], SHARED_LOCK);
+        int same = l && SameLock(l, p.oldlock) == LOCK_SAME;
+        if (l)
+            UnLock(l);
+        if (same) {
+            snprintf(err, errlen, "\"%s\" is one of the files to pack; choose another name",
+                     archive);
+            rc = -1;
+            goto out;
+        }
+    }
     for (i = 0; i < ninputs && rc == 0; i++) {
         BPTR l = Lock((STRPTR)inputs[i], SHARED_LOCK), parent;
         const char *nm = (const char *)FilePart((STRPTR)inputs[i]);
@@ -593,6 +616,10 @@ int ua_pack(const char *archive, char **inputs, int ninputs, ua_pack_opts *o,
     }
 
 out:
+    /* On failure, do not let free() finish the archive (7z would write all
+     * of it out first). */
+    if (p.a && rc < 0)
+        archive_write_fail(p.a);
     if (p.a)
         archive_write_free(p.a);
     scratch_close(&p);
@@ -617,14 +644,20 @@ out:
             DeleteFile((STRPTR)p.tmp);
             rc = -1;
         } else if (!(ok = Rename((STRPTR)p.tmp, (STRPTR)leaf))) {
-            Fault(IoErr(), NULL, err, errlen);
-            if (exists)
-                Rename((STRPTR)bak, (STRPTR)leaf);
+            char why[100];
+            Fault(IoErr(), NULL, why, sizeof(why));
+            if (exists && !Rename((STRPTR)bak, (STRPTR)leaf))
+                snprintf(err, errlen, "%s; THE OLD ARCHIVE IS NOW NAMED \"%s\"", why, bak);
+            else
+                snprintf(err, errlen, "%s", why);
             DeleteFile((STRPTR)p.tmp);
+            r->failed = 1;
+            snprintf(r->why, sizeof(r->why), "%s", err);
             rc = -1;
         } else if (exists) {
             SetProtection((STRPTR)bak, 0);
-            DeleteFile((STRPTR)bak);
+            if (!DeleteFile((STRPTR)bak))
+                msg(&p, "warning: the old archive stays as \"%s\"", bak);
             r->replaced = 1;
         }
     } else if (p.out) {
