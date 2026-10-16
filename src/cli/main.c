@@ -26,10 +26,10 @@
 
 #define TEMPLATE "ARCHIVE,FILES/M,TO/K,LIST/S,PACK/S,FORMAT/K,LEVEL/K/N,RECOVER/S,ENGINE/K," \
                  "OVERWRITE/S,SKIP/S,RENAME/S,NOWRAP/S,CANCELAFTER/K/N,STATS/S,QUIET/S," \
-                 "DIAGOUT/S,FORMATS/S,HELP/S"
+                 "DIAGOUT/S,FORMATS/S,HELP/S,TESTSWAP/K"
 enum { A_ARCHIVE, A_FILES, A_TO, A_LIST, A_PACK, A_FORMAT, A_LEVEL, A_RECOVER, A_ENGINE,
        A_OVERWRITE, A_SKIP, A_RENAME, A_NOWRAP, A_CANCELAFTER, A_STATS, A_QUIET, A_DIAGOUT,
-       A_FORMATS, A_HELP, A_COUNT };
+       A_FORMATS, A_HELP, A_TESTSWAP, A_COUNT };
 
 static int diag_out;      /* DIAGOUT: diagnostics also to standard output */
 
@@ -180,6 +180,8 @@ static void ui_note(void *ctx, const char *fmt, ...)
     diag("%s\n", buf);
 }
 
+static ua_volumes vs;        /* the volume set of the archive, if it is one */
+
 static int run(IPTR *args)
 {
     const char *archive = (const char *)args[A_ARCHIVE];
@@ -191,9 +193,26 @@ static int run(IPTR *args)
     LONG ioerr;
     ua_op op = args[A_LIST] ? UA_OP_LIST : UA_OP_EXTRACT;
     int recover = args[A_RECOVER] != 0, damaged;
+    char planname[UA_PATHMAX];
 
     DateStamp(&t0);
     stat_point(args[A_STATS], "start");
+    memset(&l, 0, sizeof(l));
+    /* One volume of a set stands for the whole set, given in any part. */
+    memset(&vs, 0, sizeof(vs));
+    if (ua_volumes_find(archive, &vs)) {
+        if (vs.problem[0] || !vs.count) {
+            diag("%s: an incomplete multi-volume set: %s. Nothing was written.\n", archive,
+                 vs.problem[0] ? vs.problem : "the other volumes were not found");
+            ua_volumes_free(&vs);
+            return 20;
+        }
+        archive = vs.path[0];
+        l.volumes = vs.path;
+        snprintf(planname, sizeof(planname), "%s", vs.setname);
+    } else {
+        snprintf(planname, sizeof(planname), "%s", archive);
+    }
     if (ua_sniff_file(archive, &fmt, &ioerr) < 0) {
         char why[100];
         Fault(ioerr, NULL, why, sizeof(why));
@@ -205,6 +224,9 @@ static int run(IPTR *args)
         return 20;
     }
     out("Archive: %s\nFormat:  %s\n", archive, ua_format_name(fmt));
+    if (vs.count)
+        out("Volumes: %d (%s ... %s)\n", vs.count, FilePart((STRPTR)vs.path[0]),
+            FilePart((STRPTR)vs.path[vs.count - 1]));
     if (recover)
         out("Mode:    RECOVERY (reading what can be read from a damaged archive)\n");
     if (!args[A_ENGINE] && !ua_engines_for(fmt, op, recover, eng, 4)) {
@@ -216,6 +238,10 @@ static int run(IPTR *args)
         diag("The archive is damaged. Nothing was written.\n"
             "RECOVER extracts what can still be read, into a new folder.\n");
         return 20;
+    }
+    if (st == UA_OPEN_CANCELLED) {
+        diag("Stopped while reading the archive; nothing was written.\n");
+        return 10;
     }
     if (st != UA_OPEN_OK && st != UA_OPEN_PARTIAL)
         return 20;
@@ -244,7 +270,7 @@ static int run(IPTR *args)
         }
         /* A recovered extraction always gets its own folder, so its uncertain
          * output never mixes with existing files. */
-        if (ua_plan_make(&l, archive, dest, args[A_NOWRAP] != 0 && !recover, &p, perr,
+        if (ua_plan_make(&l, planname, dest, args[A_NOWRAP] != 0 && !recover, &p, perr,
                          sizeof(perr))) {
             diag("Plan failed: %s\n", perr);
             ua_list_free(&l);
@@ -319,6 +345,22 @@ static int run(IPTR *args)
                     diag("name changed (%s): \"%s\" -> \"%s\"\n", fl + 1, nm, e->target);
                 }
                 free(shown);
+            }
+            /* Test aid: replace the archive with another file between the
+             * listing and the extraction, as another program could. */
+            if (args[A_TESTSWAP]) {
+                BPTR in = Open((STRPTR)args[A_TESTSWAP], MODE_OLDFILE);
+                BPTR outf = in ? Open((STRPTR)archive, MODE_NEWFILE) : BNULL;
+                static UBYTE cb[8192];
+                LONG got;
+                while (outf && (got = Read(in, cb, sizeof(cb))) > 0)
+                    Write(outf, cb, got);
+                if (outf)
+                    Close(outf);
+                if (in)
+                    Close(in);
+                diag("test: the archive was replaced by %s before extracting\n",
+                     (char *)args[A_TESTSWAP]);
             }
             if (ua_extract(archive, &l, &p, &o, &r, err, sizeof(err)) < 0) {
                 diag("Failed: %s\n", err);
@@ -429,6 +471,8 @@ static void help(void)
         "  unarc-cli Work:old.zip LIST\n"
         "  unarc-cli RAM:backup.zip PACK Work:Projects S:Startup-Sequence\n"
         "  unarc-cli RAM:src.tar.gz PACK Work:src LEVEL 9\n\n"
+        "A multi-volume archive (name.part1.rar ..., name.rar + name.r00 ..., name.7z.001 ...)\n"
+        "can be given by any of its volumes; all of them must be in the same drawer.\n\n"
         "Existing files are never replaced without OVERWRITE, SKIP, RENAME or an answer on\n"
         "the console; in a script, a conflict without one of them is skipped and reported.\n"
         "Results go to standard output, progress and messages to the console (DIAGOUT\n"
@@ -450,7 +494,8 @@ static void formats(void)
             c & UA_CAP_AMIGA_PROT ? "; Amiga protection bits and comments" : "",
             c & UA_CAP_DISKIMAGE ? "; disk images are not written yet" : "");
     }
-    out("  Encrypted entries are not extracted yet (no passwords).\n"
+    out("  Multi-volume: RAR and RAR 5 sets, 7z split into .001, .002, ...\n"
+        "  Encrypted entries are not extracted yet (no passwords).\n"
         "Packing:\n"
         "  zip      names (UTF-8), dates, owner rwx as Unix permissions; LEVEL 0-9\n"
         "  tar.gz   names (UTF-8), dates, owner/group/other rwx; LEVEL 1-9\n"
@@ -465,7 +510,11 @@ static LONG run_trampoline(void)
 {
     if (run_args[A_PACK])
         return run_pack(run_args);
-    return run(run_args);
+    {
+        int rc = run(run_args);
+        ua_volumes_free(&vs);
+        return rc;
+    }
 }
 
 int main(void)
