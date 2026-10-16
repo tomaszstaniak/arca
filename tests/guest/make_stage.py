@@ -21,6 +21,7 @@ os.makedirs(os.path.join(stage, "corpus"))
 shutil.copy2(cli, os.path.join(stage, "unarc-cli"))
 shutil.copy2(probe, os.path.join(stage, "charset-probe"))
 shutil.copy2(os.path.join(os.path.dirname(cli), "longpath-probe"), os.path.join(stage, "longpath-probe"))
+shutil.copy2(os.path.join(os.path.dirname(cli), "uatool"), os.path.join(stage, "uatool"))
 if "ffsprobe" in opts:
     shutil.copy2(os.path.join(os.path.dirname(cli), "ffs-probe"), os.path.join(stage, "ffs-probe"))
     shutil.copy2(os.path.join(os.path.dirname(cli), "probe.adf"), os.path.join(stage, "probe.adf"))
@@ -46,6 +47,7 @@ if "freeown" in opts:
         L.append(f"Delete RESULTS:{old} ALL QUIET FORCE")
 L += [f"MakeDir {O}", f"MakeDir {O}/out",
      "Protect RAM:u/unarc-cli +e", "Protect RAM:u/charset-probe +e", "Protect RAM:u/longpath-probe +e",
+     "Protect RAM:u/uatool +e",
      f"Version >{O}/env.txt", f"Version exec.library FULL >>{O}/env.txt",
      f"Version dos.library FULL >>{O}/env.txt",
      f"Echo \"xadmaster in LIBS:\" >>{O}/env.txt",
@@ -277,6 +279,12 @@ if "pack" in opts:
          ["List RAM:pk/t.zip", "unarc-cli RAM:pk/t.zip LIST"])
     case("K8-noext", f"unarc-cli RAM:pk/t.arc PACK {S}")
     case("K9-format", f"unarc-cli RAM:pk/t.arc PACK {S}/sub FORMAT 7Z", ["List RAM:pk"])
+    # A drawer that cannot be read, at its start and part way through.
+    L.append("SetEnv UnarcTestFailDir sub")
+    case("K16-dir-unreadable", f"unarc-cli RAM:pk/f1.zip PACK {S}", ["unarc-cli RAM:pk/f1.zip LIST"])
+    L.append("SetEnv UnarcTestFailDir sub/1")
+    case("K17-dir-stops", f"unarc-cli RAM:pk/f2.zip PACK {S}", ["unarc-cli RAM:pk/f2.zip LIST"])
+    L.append("UnSetEnv UnarcTestFailDir")
     case("K10-help", "unarc-cli HELP")
     case("K11-formats", "unarc-cli FORMATS")
     case("K12-missing-input", f"unarc-cli RAM:pk/m.zip PACK {S}/nothere {S}/a.txt",
@@ -285,6 +293,52 @@ if "pack" in opts:
         # Disk full while packing onto the FFS test disk: no archive, no temporary.
         case("K13-diskfull", f"unarc-cli UATest:big.zip PACK corpus/big.zip LEVEL 0",
              ["List UATest: ALL", "Info UATest:"])
+if "core4" in opts:
+    # Stage 4 core fixes (needs the core2 FFS image UATest: mounted, so run
+    # with core2 or after it in the same boot).
+    U = "unarc-cli"
+    root = "longroot-" + "r" * 29
+    case("C1a-longroot-ffs", f"{U} corpus/{root}.zip TO UATest:c1", ["List UATest:c1 ALL"])
+    case("C1b-longroot-ffs-again", f"{U} corpus/{root}.zip TO UATest:c1", ["List UATest:c1 ALL"])
+    case("C2-longtop-ffs", f"{U} corpus/longtop.zip TO UATest:c2", ["List UATest:c2 ALL"])
+    case("C3a-dirmerge-ffs", f"{U} corpus/dirmerge.zip TO UATest:c3", ["List UATest:c3 ALL"])
+    case("C3b-dirmerge-ram", f"{U} corpus/dirmerge.zip TO RAM:c3", ["List RAM:c3 ALL"])
+    L.append(f"Copy UATest:c3 {O}/out/c3-ffs ALL QUIET")
+    L.append(f"Copy RAM:c3 {O}/out/c3-ram ALL QUIET")
+    L.append("Delete UATest:c1 UATest:c2 UATest:c3 ALL QUIET")
+    # The archive replaced between listing and extracting.
+    L.append("MakeDir RAM:sw")
+    for name, other, eng in (("C4a-swap-same", "swap-a", ""), ("C4b-swap-order", "swap-b", ""),
+                             ("C4c-swap-more", "swap-more", ""),
+                             ("C4d-swap-short", "swap-short", ""),
+                             ("C4e-swap-order-xad", "swap-b", "ENGINE xad")):
+        L.append("Copy corpus/swap-a.zip RAM:sw/a.zip")
+        case(name, f"{U} RAM:sw/a.zip TO RAM:sw/{name} {eng} TESTSWAP corpus/{other}.zip".replace("  ", " "),
+             [f"List RAM:sw/{name} ALL"])
+    # More than 2^31 bytes: written and checked, then replaced and checked.
+    case("C6a-big-extract", f"{U} corpus/bigzero.tar.xz TO SYS:uatest-big STATS",
+         ["List SYS:uatest-big ALL", "Info SYS:"])
+    # NOWRAP: straight into the drawer that has bigzero/ already, so the file
+    # is replaced (with the folder rule it went to a new "bigzero 2").
+    case("C6b-big-replace", f"{U} corpus/bigzero.tar.xz TO SYS:uatest-big NOWRAP OVERWRITE STATS",
+         ["List SYS:uatest-big ALL", "Echo \"leftover .ua files:\"",
+          "List SYS:uatest-big ALL FILES PAT=.ua#?", "Echo \"== sums\"",
+          "RAM:u/uatool sum SYS:uatest-big"])
+    L.append("Delete SYS:uatest-big ALL QUIET FORCE")
+if "vol" in opts:
+    # Multi-volume sets, opened from different parts; incomplete sets refused.
+    U = "unarc-cli"
+    for name, part in (("V1-r4-from-part2", "r4.part2.rar"), ("V2-old-names", "old.r01"),
+                       ("V3-alt-names-gap", "alt.rar"), ("V4-mixed-names", "mixed.part1.rar"),
+                       ("V5-rar5-from-part5", "r5.part05.rar"), ("V6-7z-split", "split.7z.002")):
+        # Sums, not copies: one set holds a 241 MB file and RESULTS: is small.
+        case(name, f"{U} corpus/{part} TO RAM:v/{name} QUIET",
+             [f"List RAM:v/{name} ALL", "Echo \"== sums\"", f"RAM:u/uatool sum RAM:v/{name}"])
+        L.append(f"Delete RAM:v/{name} ALL QUIET")
+    for name, part in (("V7-gap", "gap.part1.rar"), ("V8-short", "short.part2.rar"),
+                       ("V9-nofirst", "nofirst.part3.rar"), ("V10-splitgap", "splitgap.7z.001")):
+        case(name, f"{U} corpus/{part} TO RAM:v/{name}", [f"List RAM:v/{name} ALL"])
+    case("V11-list-from-part3", f"{U} corpus/r4.part3.rar LIST")
 if "ffsprobe" in opts:
     # A second, fresh FFS image on unit 1 with its own volume name.
     L.append("Protect RAM:u/ffs-probe +e")
