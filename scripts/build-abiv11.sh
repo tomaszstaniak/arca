@@ -10,10 +10,10 @@ SDK=$UNARC_SDK_ABIV11
 TC=$UNARC_TOOLCHAIN_ABIV11
 X=$B/contrib-src/workbench/libs/xad/portable
 CC="$TC/x86_64-aros-gcc"
-CFLAGS=(--sysroot="$SDK" -O2 -Wall -Wno-pointer-sign -I"$P/include")
+CFLAGS=(--sysroot="$SDK" -O2 -Wall -Wno-pointer-sign -I"$P/include" -I"$R/src/third_party/limpet/include")
 mkdir -p "$B/obj" "$B/bin"
 objs=()
-for f in core/compat core/session core/volumes core/pack core/registry core/names core/plan core/fsl engines/be_libarchive engines/be_xad cli/main; do
+for f in core/compat core/session core/volumes core/pack core/registry core/names core/plan core/fsl engines/be_libarchive engines/be_xad third_party/limpet/limpet_query third_party/limpet/limpet_format cli/main; do
   o=$B/obj/$(basename "$f").o
   "$CC" "${CFLAGS[@]}" -c "$R/src/$f.c" -o "$o"
   objs+=("$o")

@@ -65,10 +65,22 @@ collect-aros itself can exit 0 with symbols left unresolved, which is also why
 - Results go to standard output; progress, messages and questions to the error
   stream, which the AROS Shell cannot redirect; `DIAGOUT` copies them to standard
   output for scripts.
+- Text is ISO-8859-1, the console's character set, in `CON:` and in files. In a
+  Limpet window (asked once through the Limpet SDK's presentation query, which
+  `CON:` and file handlers refuse at once) the same text is written as UTF-8,
+  since Limpet shows UTF-8. Limpet sends typed commands to the Shell as UTF-8
+  (its README), so a non-ASCII name typed there will not match the ISO-8859-1
+  name on disk; not handled here and not tested.
 - Return codes: 0 done, 5 done with notes (skipped, renamed, recovered), 10 partly
   done, cancelled or stopped, 20 nothing done.
-- `ENGINE` (`libarchive`, `xad`, `libarchive-stream`) and `CANCELAFTER` (bytes) are
-  for testing.
+- A multi-volume archive can be named by any of its volumes. The set is found
+  in the same drawer by name (`name.partN.rar`, `name.rar` + `name.rNN`,
+  `name.7z.001`), but the order and completeness of a RAR set come from the
+  volumes' own headers; an incomplete set is refused with the missing volume's
+  name.
+- `ENGINE` (`libarchive`, `xad`, `libarchive-stream`), `CANCELAFTER` (bytes) and
+  `TESTSWAP` (a file copied over the archive between listing and extracting)
+  are for testing.
 
 ## The Zune program
 
@@ -85,9 +97,28 @@ No file type association is installed by the build. To try it, give an archive a
 project icon with `Unarc` as its default tool, or set `Unarc` as the default tool
 of the archive types in Wanderer's preferences.
 
+Several archives given or dropped at once are extracted one after another;
+the progress window lists them with their status and ends with one summary.
+Volumes of one multi-volume set count once. Waiting archives can be removed,
+the running one cancelled, or everything ("Cancel all").
+
+Entries can be dragged out of the browser onto an open Wanderer drawer
+window: select them, then press on one of the selected rows and drag. They
+are extracted into that drawer without the folders above them in the
+archive; a selected folder brings its contents under its own name. Two
+entries that end up with one name (`a/x.txt` and `b/x.txt`) are numbered
+(`x 2.txt`), as within an archive. A name already in the drawer is a conflict
+like any other. Releasing anywhere else extracts nothing and says why.
+Amiga+A selects every entry. The drawer is found from the window under the
+pointer: it must belong to Wanderer and carry a drawer path as its title
+(workbench.library on AROS cannot list open drawers).
+
 Test aids: `TESTQUIT` ends the program when its first job has ended; the variable
 `UnarcDebug` names a file that receives a log of jobs, results and allocated
-signals; `UnarcTestDelay` (ticks) slows the delivery of list entries.
+signals; `UnarcTestDelay` (ticks) slows the delivery of list entries;
+`UnarcTestSlowList` (ticks per 100 entries) slows reading the archive itself;
+`UnarcTestFailDir` (`name` or `name/k`) makes reading that drawer fail while
+packing.
 
 ## Tests
 

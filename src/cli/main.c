@@ -11,6 +11,10 @@
  * redirect the error stream, so DIAGOUT copies it to standard output for
  * scripts and logs. No terminal control sequences are ever written.
  *
+ * Text is made in ISO-8859-1, the AROS console's character set, and written
+ * as such to CON: and to files. A Limpet window shows UTF-8 instead, so
+ * there the same text is converted on its way out.
+ *
  * Return codes: 0 done; 5 done with notes (renamed, skipped, recovered);
  * 10 partly done, cancelled or stopped; 20 nothing done. */
 #include <stdio.h>
@@ -23,6 +27,7 @@
 #include <proto/dos.h>
 #include "../core/ua.h"
 #include "../engines/xad_static.h"
+#include <limpet/limpet.h>
 
 #define TEMPLATE "ARCHIVE,FILES/M,TO/K,LIST/S,PACK/S,FORMAT/K,LEVEL/K/N,RECOVER/S,ENGINE/K," \
                  "OVERWRITE/S,SKIP/S,RENAME/S,NOWRAP/S,CANCELAFTER/K/N,STATS/S,QUIET/S," \
@@ -56,11 +61,70 @@ static void stat_point(IPTR on, const char *what)
 
 const char version[] = "$VER: unarc-cli 0.0.2 (16.10.2026)";
 
+/* Whether each stream goes to a Limpet window. Asked once: the query is a
+ * DOS packet, which CON: and file handlers refuse at once. */
+static int utf8_stdout, utf8_stderr;
+
+static int to_limpet(BPTR h)
+{
+    LimpetPresentation p;
+    return h && IsInteractive(h) && limpet_query_presentation(h, &p, NULL) == LIMPET_OK;
+}
+
+static void detect_consoles(void)
+{
+    BPTR err = ErrorOutput();
+    utf8_stdout = to_limpet(Output());
+    utf8_stderr = err ? to_limpet(err) : utf8_stdout;
+}
+
+/* ISO-8859-1 text to a stream, as UTF-8 when the stream is a Limpet window. */
+static void put_text(FILE *f, const char *s, int utf8)
+{
+    char buf[512];
+    size_t n = 0;
+    if (!utf8) {
+        fputs(s, f);
+        return;
+    }
+    for (; *s; s++) {
+        unsigned char c = (unsigned char)*s;
+        if (n + 2 >= sizeof(buf)) {
+            fwrite(buf, 1, n, f);
+            n = 0;
+        }
+        if (c < 0x80) {
+            buf[n++] = (char)c;
+        } else {
+            buf[n++] = (char)(0xC0 | (c >> 6));
+            buf[n++] = (char)(0x80 | (c & 0x3F));
+        }
+    }
+    fwrite(buf, 1, n, f);
+}
+
+static void vput(FILE *f, int utf8, const char *fmt, va_list ap)
+{
+    char small[UA_PATHMAX + 300], *buf = small;
+    va_list aq;
+    int n;
+    va_copy(aq, ap);
+    n = vsnprintf(small, sizeof(small), fmt, aq);
+    va_end(aq);
+    if (n >= (int)sizeof(small) && (buf = malloc((size_t)n + 1)) != NULL)
+        vsnprintf(buf, (size_t)n + 1, fmt, ap);
+    else if (!buf)
+        buf = small;                         /* cut rather than lose the line */
+    put_text(f, buf, utf8);
+    if (buf != small)
+        free(buf);
+}
+
 static void out(const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
-    vprintf(fmt, ap);
+    vput(stdout, utf8_stdout, fmt, ap);
     va_end(ap);
     /* Unflushed stdout can vanish on handles not yet in write mode (mainline
      * before da9bbd01b5); flush every line. */
@@ -71,15 +135,15 @@ static void out(const char *fmt, ...)
  * output as well. */
 static void diag(const char *fmt, ...)
 {
-    char buf[UA_PATHMAX + 300];
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(buf, sizeof(buf), fmt, ap);
+    vput(stderr, utf8_stderr, fmt, ap);
     va_end(ap);
-    fputs(buf, stderr);
     fflush(stderr);
     if (diag_out) {
-        fputs(buf, stdout);
+        va_start(ap, fmt);
+        vput(stdout, utf8_stdout, fmt, ap);
+        va_end(ap);
         fflush(stdout);
     }
 }
@@ -530,6 +594,7 @@ int main(void)
         return 20;
     }
     diag_out = run_args[A_DIAGOUT] != 0;
+    detect_consoles();
     if (run_args[A_HELP] || run_args[A_FORMATS] || !run_args[A_ARCHIVE]) {
         if (run_args[A_FORMATS])
             formats();

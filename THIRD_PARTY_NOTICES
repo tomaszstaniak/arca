@@ -25,6 +25,11 @@ src/engines/xad_static.c and xad_static.h (part of this program)
   Initialisation of the statically linked XAD.
   Licence: GNU Lesser General Public License 2.1 or later, like XAD.
 
+Limpet SDK 0.3.0 (src/third_party/limpet, unarc-cli only)
+  Copyright (c) 2026 Tomasz Staniak.
+  Licence: MIT (licenses/LimpetSDK-LICENSE.txt). Unmodified.
+  Used to tell whether output goes to a Limpet window.
+
 libarchive 3.9.0
   Copyright (c) 2003-2018 Tim Kientzle and the libarchive authors.
   Licence: BSD 2-Clause (licenses/libarchive-COPYING.txt). Some files carry the
