@@ -159,6 +159,22 @@ static mode_t prot_to_mode(ULONG p, int dir)
 static int add_tree(pk *p, BPTR dir, const char *name, const char *apath, int depth,
                     LONG seen_type);
 
+/* Test aid: the variable UnarcTestFailDir makes reading a drawer fail, so the
+ * error paths can be shown on a working volume: "name" fails at its start,
+ * "name/k" after k entries. -1: no failure for this drawer. */
+static int test_fail_at(const char *name)
+{
+    char v[108], *slash;
+    if (GetVar("UnarcTestFailDir", v, sizeof(v), 0) <= 0)
+        return -1;
+    slash = strchr(v, '/');
+    if (slash)
+        *slash++ = 0;
+    if (strcmp(v, name) != 0)
+        return -1;
+    return slash ? atoi(slash) : 0;
+}
+
 static int add_entry_header(pk *p, const char *apath, const struct FileInfoBlock *fib, int isdir)
 {
     struct archive_entry *e = archive_entry_new();
@@ -174,7 +190,7 @@ static int add_entry_header(pk *p, const char *apath, const struct FileInfoBlock
     archive_entry_set_perm(e, prot_to_mode(fib->fib_Protection, isdir));
     archive_entry_set_mtime(e, to_unix(&fib->fib_Date), 0);
     if (!isdir)
-        archive_entry_set_size(e, (la_int64_t)(ULONG)fib->fib_Size);
+        archive_entry_set_size(e, (la_int64_t)UA_FIB_SIZE(fib));
     rc = archive_write_header(p->a, e);
     archive_entry_free(e);
     if (rc < ARCHIVE_WARN) {
@@ -189,7 +205,7 @@ static int add_file(pk *p, BPTR dir, const char *name, const char *apath,
                     const struct FileInfoBlock *fib)
 {
     BPTR old = CurrentDir(dir), fh = Open((STRPTR)name, MODE_OLDFILE);
-    UQUAD done = 0, want = (ULONG)fib->fib_Size;
+    UQUAD done = 0, want = UA_FIB_SIZE(fib);
     LONG n;
     CurrentDir(old);
     if (!fh) {
@@ -246,7 +262,7 @@ static int add_file(pk *p, BPTR dir, const char *name, const char *apath,
         struct FileInfoBlock *now = AllocDosObject(DOS_FIB, NULL);
         int changed = done != want;
         if (now && ExamineFH(fh, now))
-            changed |= (ULONG)now->fib_Size != (ULONG)fib->fib_Size ||
+            changed |= UA_FIB_SIZE(now) != UA_FIB_SIZE(fib) ||
                        CompareDates(&now->fib_Date, &fib->fib_Date) != 0;
         FreeDosObject(DOS_FIB, now);
         if (changed) {
@@ -308,6 +324,9 @@ static int add_tree(pk *p, BPTR dir, const char *name, const char *apath, int de
     }
     fib = AllocDosObject(DOS_FIB, NULL);
     if (!fib || !Examine(l, fib)) {
+        char why[100];
+        Fault(fib ? IoErr() : ERROR_NO_FREE_STORE, NULL, why, sizeof(why));
+        msg(p, "error: cannot examine \"%s\": %s; not packed", apath, why);
         FreeDosObject(DOS_FIB, fib);
         UnLock(l);
         p->r->errors++;
@@ -333,7 +352,16 @@ static int add_tree(pk *p, BPTR dir, const char *name, const char *apath, int de
             struct FileInfoBlock *c = AllocDosObject(DOS_FIB, NULL);
             p->r->dirs++;
             p->anc[p->nanc++] = l;
-            if (c && Examine(l, c)) {
+            int fail_at = test_fail_at(name);
+            if (fail_at == 0)
+                SetIoErr(ERROR_SEEK_ERROR);
+            if (!c || fail_at == 0 || !Examine(l, c)) {
+                char why[100];
+                Fault(c ? IoErr() : ERROR_NO_FREE_STORE, NULL, why, sizeof(why));
+                msg(p, "error: cannot read the drawer \"%s\": %s; its contents are not packed",
+                    apath, why);
+                p->r->errors++;
+            } else {
                 /* On the heap: one path per level on the stack would overrun the
                  * worker's stack long before MAXDEPTH (ABIv11 has no check). */
                 char *sub = malloc(UA_PATHMAX);
@@ -342,7 +370,10 @@ static int add_tree(pk *p, BPTR dir, const char *name, const char *apath, int de
                     snprintf(p->r->why, sizeof(p->r->why), "not enough memory");
                     rc = -1;
                 }
-                while (rc == 0 && ExNext(l, c)) {
+                int seen = 0;
+                while (rc == 0 && (seen != fail_at || (SetIoErr(ERROR_SEEK_ERROR), 0)) &&
+                       ExNext(l, c)) {
+                    seen++;
                     if (snprintf(sub, UA_PATHMAX, "%s/%s", apath, c->fib_FileName) >= UA_PATHMAX) {
                         msg(p, "error: path too long under \"%s\"; not packed", apath);
                         p->r->errors++;
@@ -351,6 +382,15 @@ static int add_tree(pk *p, BPTR dir, const char *name, const char *apath, int de
                     rc = add_tree(p, l, c->fib_FileName, sub, depth + 1, c->fib_DirEntryType);
                     if (check_cancel(p))
                         rc = -1;
+                }
+                /* ExNext ends with ERROR_NO_MORE_ENTRIES; anything else means
+                 * the rest of the drawer was not read. */
+                if (rc == 0 && sub && IoErr() != ERROR_NO_MORE_ENTRIES) {
+                    char why[100];
+                    Fault(IoErr(), NULL, why, sizeof(why));
+                    msg(p, "error: reading the drawer \"%s\" stopped: %s; the rest of it is "
+                        "not packed", apath, why);
+                    p->r->errors++;
                 }
                 free(sub);
             }
@@ -589,6 +629,9 @@ int ua_pack(const char *archive, char **inputs, int ninputs, ua_pack_opts *o,
                 char top[110];
                 snprintf(top, sizeof(top), "%s", fib->fib_FileName);
                 rc = add_tree(&p, l, "", top, 0, 0);
+            } else {
+                msg(&p, "error: cannot examine \"%s\"; not packed", inputs[i]);
+                r->errors++;
             }
             FreeDosObject(DOS_FIB, fib);
         } else {
