@@ -400,3 +400,107 @@ int ua_plan_make(ua_list *l, const char *archive, const char *dest, int nowrap,
     }
     return 0;
 }
+
+/* After the caller changed targets (a drag strips the folders above each
+ * entry), two entries can share a name again: a/x.txt and b/x.txt both become
+ * x.txt. Resolve that among the entries that will be extracted, as the plan
+ * does, so that the second never meets the first as an existing file.
+ * Afterwards p->collisions counts only the entries that will be extracted. */
+int ua_plan_unique(ua_list *l, ua_plan *p)
+{
+    nameset set;
+    ULONG i;
+
+    if (!set_init(&set, l->n + 16))
+        return -1;
+    p->collisions = 0;
+    for (i = 0; i < l->n; i++) {
+        ua_entry *e = &l->v[i];
+        long slot;
+        char *q;
+        int renamed = 0;
+
+        if (e->excluded || e->skip || !e->target || !e->target[0])
+            continue;
+        slot = set_find(&set, e->target);
+        if (slot >= 0 && !(e->type == UA_ET_DIR && set.isdir[slot])) {
+            char *alt = NULL;
+            int k;
+            for (k = 2; k < 1000; k++) {
+                free(alt);
+                alt = numbered(e->target, k);
+                if (!alt || set_find(&set, alt) < 0)
+                    break;
+            }
+            if (!alt) {
+                set_free(&set);
+                return -1;
+            }
+            free(e->target);
+            e->target = alt;
+            e->map_flags |= UA_MAP_COLLISION;
+            renamed = 1;
+        }
+        if (e->map_flags & UA_MAP_COLLISION)
+            p->collisions++;
+        if (slot < 0 || renamed)
+            set_add(&set, e->target, e->type == UA_ET_DIR);
+        for (q = e->target; (q = strchr(q, '/')); q++) {
+            *q = 0;
+            if (set_find(&set, e->target) < 0)
+                set_add(&set, e->target, 1);
+            *q = '/';
+        }
+    }
+    set_free(&set);
+    return 0;
+}
+
+/* Remove from every target to be extracted the folders that all of them
+ * share (whole components only): a/b/x and a/b/c/y lose "a/b/", a/x and b/y
+ * lose nothing. Used when entries are dragged out, so one file arrives alone
+ * and a selection keeps the folders that tell its entries apart. */
+int ua_plan_strip_common(ua_list *l)
+{
+    ULONG i;
+    const char *pre = NULL;
+    size_t pl = 0;
+    char *keep;
+
+    for (i = 0; i < l->n; i++) {
+        ua_entry *e = &l->v[i];
+        const char *slash;
+        size_t dl, m = 0;
+        if (e->excluded || e->skip || !e->target || !e->target[0])
+            continue;
+        slash = strrchr(e->target, '/');
+        dl = slash ? (size_t)(slash - e->target) : 0;
+        if (!pre) {
+            pre = e->target;
+            pl = dl;
+            continue;
+        }
+        while (m < pl && m < dl && pre[m] == e->target[m])
+            m++;
+        /* Keep m only where both paths end a component there. */
+        if (!((m == pl || pre[m] == '/') && (m == dl || e->target[m] == '/')))
+            while (m > 0 && pre[m] != '/')
+                m--;
+        pl = m;
+    }
+    if (!pl)
+        return 0;
+    if (!(keep = malloc(pl + 1)))
+        return -1;
+    memcpy(keep, pre, pl);
+    keep[pl] = 0;
+    for (i = 0; i < l->n; i++) {
+        ua_entry *e = &l->v[i];
+        if (e->excluded || e->skip || !e->target)
+            continue;
+        if (strncmp(e->target, keep, pl) == 0 && e->target[pl] == '/')
+            memmove(e->target, e->target + pl + 1, strlen(e->target + pl + 1) + 1);
+    }
+    free(keep);
+    return 0;
+}

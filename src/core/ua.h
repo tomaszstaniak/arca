@@ -227,6 +227,8 @@ typedef struct ua_plan {
 } ua_plan;
 int ua_plan_make(ua_list *l, const char *archive, const char *dest, int nowrap,
                  ua_plan *p, char *err, int errlen);
+int ua_plan_unique(ua_list *l, ua_plan *p);
+int ua_plan_strip_common(ua_list *l);
 
 /* fsl.c: the only code that writes to disk */
 typedef enum { UA_CONFLICT_ASK, UA_CONFLICT_OVERWRITE, UA_CONFLICT_SKIP,
