@@ -50,6 +50,8 @@ typedef struct uj_msg {
     ULONG first, count;          /* BATCH: entries [first, first+count) */
     UQUAD bytes;                 /* PROGRESS: written so far */
     ULONG files;                 /* PROGRESS: files finished */
+    ULONG listed;                /* PROGRESS while reading: entries read so far */
+    int reading;                 /* PROGRESS: still reading the archive */
     char name[256];              /* PROGRESS: the file being written (display form) */
     char path[UA_PATHMAX];       /* ASK: the existing file */
     UQUAD esize;                 /* ASK: the entry that would replace it */
@@ -71,6 +73,8 @@ typedef struct uj_job {
     int ninputs;
     ua_pack_opts pack;           /* PACK: format, level, replace */
     ua_pack_report prep;         /* PACK: the result */
+    ua_volumes vols;             /* the archive's volume set, if any (the worker's) */
+    char planname[UA_PATHMAX];   /* names the new folder: the set's name or the archive */
 
     /* Results */
     int open_status;             /* UA_OPEN_* */

@@ -13,6 +13,7 @@
 #include <proto/exec.h>
 #include <proto/dos.h>
 #include <proto/intuition.h>
+#include <proto/graphics.h>
 #include <proto/muimaster.h>
 #include <proto/icon.h>
 #include <proto/workbench.h>
@@ -20,6 +21,9 @@
 #include <libraries/asl.h>
 #include <workbench/startup.h>
 #include <workbench/workbench.h>
+#include <intuition/intuitionbase.h>
+#include <graphics/layers.h>
+#include <proto/layers.h>
 #include <clib/alib_protos.h>
 #include "job.h"
 #include "../engines/xad_static.h"
@@ -33,7 +37,8 @@ enum { ID_OPEN = 0x100, ID_EXTRACT_ASK, ID_ONOPEN, ID_START_CLOSE, ID_DROP,
        ID_B_FIND, ID_B_SEL, ID_B_ACTIVE, ID_B_EXSEL, ID_B_EXALL, ID_B_INFO, ID_B_CLOSE,
        ID_B_RECOVER, ID_P_CANCEL, ID_P_OPENDIR, ID_P_DETAILS, ID_P_CLOSE, ID_P_RECOVER,
        ID_A_REPLACE, ID_A_KEEP, ID_A_SKIP, ID_A_CANCEL, ID_D_CLOSE,
-       ID_PACK_FILES, ID_PACK_DRAWER, ID_K_FMT, ID_K_GO, ID_K_CANCEL, ID_PACKFMT, ID_B_REPLAN };
+       ID_PACK_FILES, ID_PACK_DRAWER, ID_K_FMT, ID_K_GO, ID_K_CANCEL, ID_PACKFMT, ID_B_REPLAN,
+       ID_B_DRAGOUT, ID_Q_REMOVE, ID_Q_CANCELALL, ID_Q_ACTIVE };
 
 static Object *app, *wstart, *wbrowse, *wprog, *wask, *wdetail;
 static Object *t_drop, *t_startnote, *c_onopen, *b_open, *b_extract, *c_packfmt, *b_pack,
@@ -45,6 +50,7 @@ static Object *s_find, *lv, *t_active, *t_bstatus, *s_to, *p_to, *b_exsel, *b_ex
               *b_info, *b_bclose, *b_brecover;
 static Object *t_ptitle, *t_pto, *t_pname, *g_gauge, *t_pcount, *t_presult,
               *b_pcancel, *b_popen, *b_pdetails, *b_pclose, *b_precover;
+static Object *lq, *g_qbtns, *b_qremove, *b_qcancelall;
 static Object *t_askq, *t_askinfo, *cb_all, *b_arep, *b_akeep, *b_askip, *b_acancel;
 static Object *f_detail;
 
@@ -57,23 +63,54 @@ static int prog_closing;          /* the progress window closes when the job end
 /* What the browser shows: the list (owned here once the LIST job is done, or
  * lent to an EXTRACT job), rows on screen and the selection by entry index. */
 static char b_archive[UA_PATHMAX];
+static char b_planname[UA_PATHMAX];      /* names the new folder (a set's name) */
 static ua_list blist;
 static ua_plan bplan;
+static ua_format b_fmt;                 /* the format the listing found */
 static int b_loaded, b_status = -1;      /* UA_OPEN_* of the listing */
 static ULONG b_count;                     /* entries received so far */
 static UBYTE *b_sel;                      /* selected, by entry index */
 static ULONG b_selcap;
 static ULONG *b_rows, b_nrows;            /* entry index of each row on screen */
 static char b_filter[128];
+/* Appending rows below what is on screen: Zune's MUIM_List_Insert always asks
+ * for a full redraw, which first paints the whole list background
+ * (list.c, UPDATEMODE_ALL) and showed as a white flash for every batch of
+ * entries. While rows are only appended and no column gets wider, the rows on
+ * screen are drawn again exactly as they were, so that background pass is
+ * skipped; a batch that widens a column is drawn the normal way. */
+static int append_noclear;
+static WORD colmax[5];
+static struct RastPort colrp;
+static int colrp_ready;
 static uj_job *b_job;                     /* LIST job of the browser */
 
 /* The last extraction, for the result window and its buttons. */
 static char r_root[UA_PATHMAX];
 static char r_archive[UA_PATHMAX];
 static char *r_detail;
+static char r_head[200];                  /* the last result's headline */
+static int r_ok;                          /* the last extraction did all it should */
 static int r_damaged;
 static int r_from_browser;
 static int onopen_browse;                 /* preference: double-click shows contents */
+
+/* The queue of archives to extract, one job at a time. Several archives given
+ * at once, or dropped while one is being extracted, wait here; each gets its
+ * own line with its own outcome, and the progress window becomes one summary
+ * at the end instead of a result to close per archive. */
+#define QMAX 64
+enum { Q_WAIT, Q_RUN, Q_DONE, Q_REMOVED };
+static struct qitem {
+    char path[UA_PATHMAX];
+    char key[UA_PATHMAX];         /* the set's first volume, or the path */
+    int state;
+    int ok;                       /* outcome: 1 done, 0 not done or partly */
+    char status[80];
+    char root[UA_PATHMAX];
+    char *detail;
+} q[QMAX];
+static int nq, qcur = -1, qstop;
 static int packfmt_pref;                  /* preference: 0 ZIP, 1 tar.gz, 2 7z */
 
 /* ------------------------------------------------------------- helpers */
@@ -292,25 +329,26 @@ static void prefs_save(void)
 
 static void b_note_selection(void);
 
-AROS_UFH3S(void, display_func,
-    AROS_UFHA(struct Hook *, hook, A0),
-    AROS_UFHA(char **, col, A2),
-    AROS_UFHA(APTR, ent, A1))
+/* The five column strings of an entry (static buffers, valid until the next
+ * call); NULL entry: the titles. */
+static void make_cols(ua_entry *e, char **col)
 {
-    AROS_USERFUNC_INIT
     static char name[UA_PATHMAX], size[32], date[32], prot[12], note[64];
-    (void)hook;
-    if (!ent) {
+    if (!e) {
         col[0] = "\33bName";
         col[1] = "\33bSize";
         col[2] = "\33bDate";
         col[3] = "\33bProtection";
         col[4] = "\33bNote";
-    } else {
-        ua_entry *e = &blist.v[(IPTR)ent - 1];
+        return;
+    }
+    {
         char *shown = ua_display_name(e->name_src, e->name_kind);
-        snprintf(name, sizeof(name), "%s%s", shown ? shown : e->name_src,
-                 e->type == UA_ET_DIR ? "/" : "");
+        const char *nm = shown ? shown : e->name_src;
+        size_t nl = strlen(nm);
+        /* Most archives store directories with the slash already. */
+        snprintf(name, sizeof(name), "%s%s", nm,
+                 e->type == UA_ET_DIR && (!nl || nm[nl - 1] != '/') ? "/" : "");
         free(shown);
         if (e->type == UA_ET_DIR)
             size[0] = 0;
@@ -357,6 +395,16 @@ AROS_UFH3S(void, display_func,
         col[3] = prot;
         col[4] = note;
     }
+}
+
+AROS_UFH3S(void, display_func,
+    AROS_UFHA(struct Hook *, hook, A0),
+    AROS_UFHA(char **, col, A2),
+    AROS_UFHA(APTR, ent, A1))
+{
+    AROS_USERFUNC_INIT
+    (void)hook;
+    make_cols(ent ? &blist.v[(IPTR)ent - 1] : NULL, col);
     AROS_USERFUNC_EXIT
 }
 static struct Hook display_hook;
@@ -579,7 +627,10 @@ static void b_reset(void)
 }
 
 static void start_list(const char *archive);
+static void queue_next(void);
+static void queue_after(void);
 static void pack_done(uj_job *j);
+static void b_replan(void);
 static void start_extract(const char *archive, const char *dest, int recover, int from_browser);
 
 static void browse(const char *archive)
@@ -591,6 +642,7 @@ static void browse(const char *archive)
     /* Rows first: the display hook reads blist. */
     DoMethod(lv, MUIM_List_Clear);
     b_reset();
+    memset(colmax, 0, sizeof(colmax));
     snprintf(b_archive, sizeof(b_archive), "%s", archive);
     SetAttrs(wbrowse, MUIA_Window_Title, (IPTR)leafname(b_archive), TAG_DONE);
     SetAttrs(s_find, MUIA_NoNotify, TRUE, MUIA_String_Contents, (IPTR)"", TAG_DONE);
@@ -655,8 +707,10 @@ static void start_extract(const char *archive, const char *dest, int recover, in
     }
     snprintf(j->dest, sizeof(j->dest), "%s", dest);
     j->recover = recover;
-    if (from_browser)
+    if (from_browser) {
         uj_lend_list(j, &blist, &bplan);
+        j->fmt = b_fmt;
+    }
     if (uj_start(j) < 0) {
         if (from_browser)
             uj_take_list(j, &blist, &bplan);
@@ -671,10 +725,13 @@ static void start_extract(const char *archive, const char *dest, int recover, in
      * caller's string (a drop's paths are freed right after). */
     if (archive != r_archive)
         snprintf(r_archive, sizeof(r_archive), "%s", archive);
-    prog_closing = 0;
     if (from_browser)
         SetAttrs(wbrowse, MUIA_Window_Sleep, TRUE, TAG_DONE);
     prog_reset(r_archive, dest);
+    if (qcur >= 0 && nq > 1)
+        settext(t_ptitle, "Extracting \33b%s\33n (%d of %d)", leafname(r_archive), qcur + 1, nq);
+    SetAttrs(lq, MUIA_ShowMe, qcur >= 0 && nq > 1, TAG_DONE);
+    SetAttrs(g_qbtns, MUIA_ShowMe, qcur >= 0 && nq > 1, TAG_DONE);
 }
 
 /* Extract an archive the way a double-click does: next to it, after asking
@@ -695,6 +752,142 @@ static void extract_now(const char *archive)
         snprintf(dest, sizeof(dest), "%s", other);
     }
     start_extract(archive, dest, 0, 0);
+}
+
+static int queue_busy(void)
+{
+    int i;
+    for (i = 0; i < nq; i++)
+        if (q[i].state == Q_WAIT || q[i].state == Q_RUN)
+            return 1;
+    return 0;
+}
+
+/* Add an archive; a finished queue is cleared first. 0 when full. */
+static int queue_add(const char *path)
+{
+    if (!queue_busy() && !job) {
+        int i;
+        for (i = 0; i < nq; i++)
+            free(q[i].detail);
+        nq = 0;
+        qcur = -1;
+        qstop = 0;
+        prog_closing = 0;
+        DoMethod(lq, MUIM_List_Clear);
+    }
+    {
+        /* All volumes of one set are one job: the parts given after the
+         * first are not added again. */
+        ua_volumes v;
+        char key[UA_PATHMAX];
+        int i;
+        snprintf(key, sizeof(key), "%s", path);
+        if (ua_volumes_find(path, &v) && v.count && v.path)
+            snprintf(key, sizeof(key), "%s", v.path[0]);
+        ua_volumes_free(&v);
+        for (i = 0; i < nq; i++)
+            if (q[i].state != Q_REMOVED && !strcasecmp(q[i].key, key))
+                return 1;
+        if (nq == QMAX)
+            return 0;
+        memset(&q[nq], 0, sizeof(q[nq]));
+        snprintf(q[nq].key, sizeof(q[nq].key), "%s", key);
+    }
+    snprintf(q[nq].path, sizeof(q[nq].path), "%s", path);
+    q[nq].state = Q_WAIT;
+    nq++;
+    DoMethod(lq, MUIM_List_InsertSingle, (IPTR)nq, MUIV_List_Insert_Bottom);
+    return 1;
+}
+
+static void queue_summary(void)
+{
+    int i, ok = 0, bad = 0, cancelled = 0;
+    for (i = 0; i < nq; i++) {
+        if (q[i].state == Q_REMOVED || (q[i].state == Q_DONE && !strncmp(q[i].status, "Cancelled", 9)))
+            cancelled++;
+        else if (q[i].ok)
+            ok++;
+        else
+            bad++;
+    }
+    settext(t_ptitle, "\33b%d archives", nq);
+    SetAttrs(wprog, MUIA_Window_Title, (IPTR)APPNAME, TAG_DONE);
+    if (bad || cancelled)
+        settext(t_presult, "%d extracted, %d with problems, %d cancelled or removed.\n"
+                "Select an archive for its folder and details.", ok, bad, cancelled);
+    else
+        settext(t_presult, "All %d extracted.\nSelect an archive for its folder and details.", ok);
+    SetAttrs(lq, MUIA_ShowMe, TRUE, TAG_DONE);
+    SetAttrs(g_qbtns, MUIA_ShowMe, FALSE, TAG_DONE);
+    SetAttrs(b_precover, MUIA_ShowMe, FALSE, TAG_DONE);
+    SetAttrs(b_popen, MUIA_Disabled, TRUE, TAG_DONE);
+    SetAttrs(lq, MUIA_List_Active, MUIV_List_Active_Off, TAG_DONE);
+    DoMethod(lq, MUIM_List_Redraw, MUIV_List_Redraw_All);
+    dbg("queue done: %d archives, %d extracted, %d with problems, %d cancelled", nq, ok, bad,
+        cancelled);
+}
+
+/* Start the next waiting archive, if nothing runs. */
+static void queue_next(void)
+{
+    int i;
+    if (job)
+        return;
+    for (i = 0; i < nq; i++) {
+        if (q[i].state != Q_WAIT)
+            continue;
+        if (qstop) {
+            q[i].state = Q_DONE;
+            snprintf(q[i].status, sizeof(q[i].status), "Cancelled (not started)");
+            continue;
+        }
+        q[i].state = Q_RUN;
+        qcur = i;
+        DoMethod(lq, MUIM_List_Redraw, MUIV_List_Redraw_All);
+        extract_now(q[i].path);
+        if (job)
+            return;
+        /* Not started: no destination chosen, or no memory. */
+        q[i].state = Q_DONE;
+        snprintf(q[i].status, sizeof(q[i].status), "Not extracted");
+        qcur = -1;
+    }
+    qcur = -1;
+    if (nq > 1)
+        queue_summary();
+}
+
+/* The current archive has its result (extract_done): note it, go on. */
+static void queue_after(void)
+{
+    struct qitem *it = &q[qcur];
+    it->state = Q_DONE;
+    it->ok = r_ok;
+    snprintf(it->status, sizeof(it->status), "%s", r_head);
+    snprintf(it->root, sizeof(it->root), "%s", r_root);
+    free(it->detail);
+    it->detail = r_detail ? strdup(r_detail) : NULL;
+    qcur = -1;
+    if (prog_closing)
+        qstop = 1;
+    if (queue_busy())
+        queue_next();
+    else if (nq > 1)
+        queue_summary();
+    DoMethod(lq, MUIM_List_Redraw, MUIV_List_Redraw_All);
+}
+
+/* The archive a queue row stands for, or the last one when the queue has
+ * one entry: for "Open folder" and "Details...". */
+static struct qitem *queue_selected(void)
+{
+    IPTR ent = 0;
+    if (nq <= 1)
+        return NULL;
+    DoMethod(lq, MUIM_List_GetEntry, MUIV_List_GetEntry_Active, (IPTR)&ent);
+    return ent ? &q[ent - 1] : NULL;
 }
 
 /* Recovery is only ever asked for: into a new folder next to the archive, or
@@ -763,7 +956,7 @@ static void show_ask(uj_msg *m)
             dt.dat_StrDate = d;
             dt.dat_StrTime = t;
             DateToStr(&dt);
-            sizestr((ULONG)fib->fib_Size, sz, sizeof(sz));
+            sizestr(UA_FIB_SIZE(fib), sz, sizeof(sz));
             snprintf(info, sizeof(info), "Existing file: %s, %s %.5s", sz, d, t);
         }
         FreeDosObject(DOS_FIB, fib);
@@ -803,6 +996,13 @@ static ULONG n_progress, n_batches;
 static void on_progress(uj_msg *m)
 {
     uj_job *j = m->job;
+    if (m->reading) {
+        if (j->kind == UJ_LIST)
+            settext(t_bstatus, "Reading the archive... %lu entries", (unsigned long)m->listed);
+        else
+            settext(t_pname, "Reading the archive... %lu entries", (unsigned long)m->listed);
+        return;
+    }
     if (n_progress++ < 3 || !(n_progress % 20))
         dbg("progress #%lu at %ld ticks: %llu bytes, %lu files", (unsigned long)n_progress,
             (long)uj_ticks_since(&j->started), (unsigned long long)m->bytes, (unsigned long)m->files);
@@ -835,9 +1035,35 @@ static void on_batch(uj_msg *m)
     blist = j->list;
     if (!b_grow(m->first + m->count))
         return;
-    SetAttrs(lv, MUIA_List_Quiet, TRUE, TAG_DONE);
-    b_add(m->first, m->count);
-    SetAttrs(lv, MUIA_List_Quiet, FALSE, TAG_DONE);
+    {
+        /* Does this batch widen a column? Measured with the list's font. */
+        ULONG k;
+        int widened = 0, c;
+        Object *inner = NULL;
+        GetAttr(MUIA_Listview_List, lv, (IPTR *)&inner);
+        if (!colrp_ready && inner && _font(inner)) {
+            InitRastPort(&colrp);
+            SetFont(&colrp, _font(inner));
+            colrp_ready = 1;
+        }
+        for (k = m->first; colrp_ready && k < m->first + m->count; k++) {
+            char *col[5];
+            make_cols(&blist.v[k], col);
+            for (c = 0; c < 5; c++) {
+                WORD w = TextLength(&colrp, col[c], strlen(col[c]));
+                if (w > colmax[c]) {
+                    colmax[c] = w;
+                    widened = 1;
+                }
+            }
+        }
+        /* The first batch is drawn normally; later ones only append. */
+        append_noclear = colrp_ready && !widened && m->first > 0 && !b_filter[0];
+        SetAttrs(lv, MUIA_List_Quiet, TRUE, TAG_DONE);
+        b_add(m->first, m->count);
+        SetAttrs(lv, MUIA_List_Quiet, FALSE, TAG_DONE);
+        append_noclear = 0;
+    }
     b_count = m->first + m->count;
     settext(t_bstatus, "Reading the archive... %lu entries", (unsigned long)b_count);
 }
@@ -877,6 +1103,8 @@ static void list_done(uj_job *j)
     b_status = j->open_status;
     if (j->open_status == UA_OPEN_OK || j->open_status == UA_OPEN_PARTIAL) {
         uj_take_list(j, &blist, &bplan);
+        snprintf(b_planname, sizeof(b_planname), "%s", j->planname);
+        b_fmt = j->fmt;
         b_loaded = 1;
         b_count = blist.n;
         b_grow(blist.n);
@@ -927,9 +1155,15 @@ static void extract_done(uj_job *j)
         snprintf(head, sizeof(head), "The archive is damaged");
         snprintf(body, sizeof(body), "Nothing was written.\n\"Recover...\" extracts what can still "
                  "be read, into a new folder.");
+    } else if (j->open_status == UA_OPEN_CANCELLED) {
+        snprintf(head, sizeof(head), "Cancelled");
+        snprintf(body, sizeof(body), "Stopped while reading the archive. Nothing was written.");
     } else if (j->open_status == UA_OPEN_NOENGINE) {
         snprintf(head, sizeof(head), "Not an archive Unarc can read");
         snprintf(body, sizeof(body), "Format: %s. Nothing was written.", ua_format_name(j->fmt));
+    } else if (j->open_status == UA_OPEN_ERROR && !strncmp(j->err, "Incomplete multi-volume", 23)) {
+        snprintf(head, sizeof(head), "Incomplete set");
+        snprintf(body, sizeof(body), "%s\nNothing was written.", j->err);
     } else if (j->open_status == UA_OPEN_ERROR || (j->extract_rc < 0 && !extracted_any &&
                                                    !r->cancelled && !r->failed)) {
         snprintf(head, sizeof(head), "Failed");
@@ -964,6 +1198,8 @@ static void extract_done(uj_job *j)
         snprintf(body + strlen(body), sizeof(body) - strlen(body), "\n%lu files were replaced.",
                  (unsigned long)r->overwritten);
     detail_text(j, head);
+    snprintf(r_head, sizeof(r_head), "%s", head);
+    r_ok = !strcmp(head, "Done") || !strcmp(head, "Done, with notes");
     dbg("job extract done: %s | files=%lu dirs=%lu skipped=%lu renamed=%lu replaced=%lu "
         "errors=%lu bytes=%llu cancelled=%d failed=%d open=%d root=%s", head,
         (unsigned long)r->files, (unsigned long)r->dirs, (unsigned long)r->skipped,
@@ -985,6 +1221,8 @@ static void extract_done(uj_job *j)
     if (r_from_browser) {
         uj_take_list(j, &blist, &bplan);
         SetAttrs(wbrowse, MUIA_Window_Sleep, FALSE, TAG_DONE);
+        /* A drag-out changed the targets; show the browser's own place again. */
+        b_replan();
     }
 }
 
@@ -1014,7 +1252,9 @@ static void on_done(uj_job *j)
     } else {
         SetAttrs(t_pcount, MUIA_ShowMe, TRUE, TAG_DONE);
         extract_done(j);
-        if (prog_closing) {
+        if (qcur >= 0)
+            queue_after();
+        if (prog_closing && !job) {
             open_win(wprog, 0);
             prog_closing = 0;
         }
@@ -1321,12 +1561,18 @@ static void handle_drop(void)
             archives++;
     if (!ndropped)
         return;
-    if (archives == ndropped && archives == 1) {
+    if (archives == ndropped) {
+        /* Archives only: one after another, each its own job. */
+        int added = 0;
         settext(t_startnote, "");
-        extract_now(dropped[0]);
-    } else if (archives == ndropped) {
-        settext(t_startnote, "%d archives dropped. This version extracts one archive at a time: "
-                "drop them one by one.", archives);
+        for (i = 0; i < ndropped; i++)
+            added += queue_add(dropped[i]);
+        if (added < ndropped)
+            settext(t_startnote, "Only %d archives can wait at a time; %d were not added.", QMAX,
+                    ndropped - added);
+        queue_next();
+    } else if (job) {
+        settext(t_startnote, "Busy; files to pack can be dropped when the current job is done.");
     } else {
         /* Files and drawers, or archives mixed with them: that is packing;
          * the pack window shows what and where before anything starts. */
@@ -1361,9 +1607,238 @@ static const char *packfmt_labels[] = { "ZIP", "tar.gz", "7z", NULL };
 static const char *level_labels[] = { "Normal", "Fast", "Best", "None (store only)", NULL };
 static const char *level3_labels[] = { "Normal", "Fast", "Best", NULL };
 
+/* ------------------------------------------------------------- queue */
+
+AROS_UFH3S(void, qdisplay_func,
+    AROS_UFHA(struct Hook *, hook, A0),
+    AROS_UFHA(char **, col, A2),
+    AROS_UFHA(APTR, ent, A1))
+{
+    AROS_USERFUNC_INIT
+    static char st[96];
+    (void)hook;
+    if (!ent) {
+        col[0] = "\33bArchive";
+        col[1] = "\33bStatus";
+    } else {
+        struct qitem *it = &q[(IPTR)ent - 1];
+        col[0] = (char *)leafname(it->path);
+        snprintf(st, sizeof(st), "%s", it->state == Q_WAIT ? "Waiting" :
+                 it->state == Q_RUN ? "Extracting..." :
+                 it->state == Q_REMOVED ? "Removed" : it->status);
+        col[1] = st;
+    }
+    AROS_USERFUNC_EXIT
+}
+static struct Hook qdisplay_hook;
+
+/* ------------------------------------------------------------- drag out */
+
+/* Rows dragged out of the browser and dropped on a Wanderer drawer window are
+ * extracted into that drawer. Zune drags only between windows of one
+ * application, and when a drop lands elsewhere it tells the dragged object
+ * with MUIM_UnknownDropDestination (window.c, HandleDragging), passing the
+ * IntuiMessage of the button release. The window under the pointer is then
+ * found here: it must belong to the Wanderer task, and Wanderer titles a
+ * drawer window with the drawer's path (iconwindow.c), which must name an
+ * existing drawer. workbench.library has no call that says which drawer is
+ * open where (WBCTRLA_GetOpenDrawerList is not implemented on AROS). Any other
+ * target, the desktop included, extracts nothing. */
+static struct MUI_CustomClass *dragcls;
+static char drag_target[UA_PATHMAX];
+static char drag_why[160];
+
+static int wanderer_drawer_at(struct Window *from, WORD mx, WORD my, char *out, size_t n)
+{
+    struct Screen *scr = from->WScreen;
+    struct Layer *layer;
+    struct Window *w;
+    struct Task *owner;
+    BPTR l;
+    int ok = 0;
+
+    LockLayerInfo(&scr->LayerInfo);
+    layer = WhichLayer(&scr->LayerInfo, from->LeftEdge + mx, from->TopEdge + my);
+    UnlockLayerInfo(&scr->LayerInfo);
+    w = layer ? layer->Window : NULL;
+    if (!w || !w->UserPort || !(owner = w->UserPort->mp_SigTask) || !owner->tc_Node.ln_Name) {
+        snprintf(drag_why, sizeof(drag_why), "not dropped on a window");
+        return 0;
+    }
+    if (!strstr(owner->tc_Node.ln_Name, "Wanderer")) {
+        snprintf(drag_why, sizeof(drag_why), "dropped on a window of \"%s\"",
+                 owner->tc_Node.ln_Name);
+        return 0;
+    }
+    if (!w->Title || !strchr((char *)w->Title, ':')) {
+        snprintf(drag_why, sizeof(drag_why), "dropped on Wanderer, but not on a drawer");
+        return 0;
+    }
+    snprintf(out, n, "%s", (char *)w->Title);
+    l = Lock((STRPTR)out, SHARED_LOCK);
+    if (l) {
+        struct FileInfoBlock *fib = AllocDosObject(DOS_FIB, NULL);
+        ok = fib && Examine(l, fib) && fib->fib_DirEntryType > 0;
+        FreeDosObject(DOS_FIB, fib);
+        UnLock(l);
+    }
+    if (!ok)
+        snprintf(drag_why, sizeof(drag_why), "\"%s\" is not a drawer", out);
+    return ok;
+}
+
+/* Zune does not start a drag from list entries: the list eats the mouse
+ * events and treats a move with the button down as range selection (list.c,
+ * List__MUIM_HandleEvent). So the browser list has an event handler of its
+ * own, ahead of the list's: a press on an entry that is already selected
+ * arms it; moving 6 pixels starts a drag-out (the list keeps its selection);
+ * releasing outside the window looks for the drawer there. A press without
+ * a move acts as a plain click on that entry. Everything else goes to the
+ * list as before. */
+#define RAWKEY_A 0x20
+
+static Object *active_object(Object *win)
+{
+    IPTR o = 0;
+    GetAttr(MUIA_Window_ActiveObject, win, &o);
+    return (Object *)o;
+}
+
+struct dragdata {
+    struct MUI_EventHandlerNode ehn;
+    int armed, dragging, added;
+    WORD x, y;
+    LONG entry;
+};
+
+static void drag_events(Object *obj, struct dragdata *d, ULONG events)
+{
+    if (d->added)
+        DoMethod(_win(obj), MUIM_Window_RemEventHandler, (IPTR)&d->ehn);
+    d->ehn.ehn_Events = events;
+    DoMethod(_win(obj), MUIM_Window_AddEventHandler, (IPTR)&d->ehn);
+    d->added = 1;
+}
+
+static IPTR drag_handle(struct IClass *cl, Object *obj, struct MUIP_HandleEvent *msg)
+{
+    struct dragdata *d = INST_DATA(cl, obj);
+    struct IntuiMessage *im = msg->imsg;
+    if (!im)
+        return 0;
+    if (im->Class == IDCMP_MOUSEBUTTONS && im->Code == SELECTDOWN) {
+        struct MUI_List_TestPos_Result pos;
+        LONG state = 0;
+        if (im->MouseX < _mleft(obj) || im->MouseX > _mright(obj) || im->MouseY < _mtop(obj) ||
+            im->MouseY > _mbottom(obj) || !b_loaded)
+            return 0;
+        DoMethod(obj, MUIM_List_TestPos, im->MouseX, im->MouseY, (IPTR)&pos);
+        if (pos.entry < 0)
+            return 0;
+        DoMethod(obj, MUIM_List_Select, pos.entry, MUIV_List_Select_Ask, (IPTR)&state);
+        if (!state || (im->Qualifier & (IEQUALIFIER_LSHIFT | IEQUALIFIER_RSHIFT)))
+            return 0;                       /* the list's own click */
+        d->armed = 1;
+        d->dragging = 0;
+        d->x = im->MouseX;
+        d->y = im->MouseY;
+        d->entry = pos.entry;
+        drag_events(obj, d, IDCMP_MOUSEBUTTONS | IDCMP_MOUSEMOVE | IDCMP_RAWKEY);
+        return MUI_EventHandlerRC_Eat;
+    }
+    /* Amiga+A selects every entry: the list has no key for it, and dragging
+     * many entries out needs it. */
+    if (im->Class == IDCMP_RAWKEY && im->Code == RAWKEY_A &&
+        (im->Qualifier & (IEQUALIFIER_LCOMMAND | IEQUALIFIER_RCOMMAND)) && b_loaded &&
+        active_object(_win(obj)) != s_find) {
+        DoMethod(obj, MUIM_List_Select, MUIV_List_Select_All, MUIV_List_Select_On, NULL);
+        DoMethod(app, MUIM_Application_ReturnID, ID_B_SEL);
+        return MUI_EventHandlerRC_Eat;
+    }
+    if (!d->armed)
+        return 0;
+    if (im->Class == IDCMP_MOUSEMOVE) {
+        if (!d->dragging && (abs(im->MouseX - d->x) >= 6 || abs(im->MouseY - d->y) >= 6)) {
+            d->dragging = 1;
+            settext(t_active, "Release over a drawer window to extract the selected entries "
+                    "there.");
+        }
+        return MUI_EventHandlerRC_Eat;
+    }
+    if (im->Class == IDCMP_MOUSEBUTTONS && (im->Code == SELECTUP || im->Code == MENUDOWN)) {
+        struct Window *w = im->IDCMPWindow;
+        int outside = im->MouseX < 0 || im->MouseY < 0 || im->MouseX >= w->Width ||
+                      im->MouseY >= w->Height;
+        d->armed = 0;
+        drag_events(obj, d, IDCMP_MOUSEBUTTONS | IDCMP_RAWKEY);
+        if (!d->dragging) {
+            /* A plain click on a selected entry: that entry alone. */
+            DoMethod(obj, MUIM_List_Select, MUIV_List_Select_All, MUIV_List_Select_Off, NULL);
+            DoMethod(obj, MUIM_List_Select, d->entry, MUIV_List_Select_On, NULL);
+            SetAttrs(obj, MUIA_List_Active, d->entry, TAG_DONE);
+            return MUI_EventHandlerRC_Eat;
+        }
+        d->dragging = 0;
+        drag_target[0] = 0;
+        snprintf(drag_why, sizeof(drag_why), "released inside the browser");
+        if (im->Code == SELECTUP && outside &&
+            !wanderer_drawer_at(w, im->MouseX, im->MouseY, drag_target, sizeof(drag_target)))
+            drag_target[0] = 0;
+        if (im->Code == MENUDOWN)
+            snprintf(drag_why, sizeof(drag_why), "the drag was cancelled");
+        DoMethod(app, MUIM_Application_ReturnID, ID_B_DRAGOUT);
+        return MUI_EventHandlerRC_Eat;
+    }
+    return 0;
+}
+
+BOOPSI_DISPATCHER(IPTR, drag_dispatcher, cl, obj, msg)
+{
+    struct dragdata *d;
+    switch (msg->MethodID) {
+    case MUIM_DrawBackground:
+        if (append_noclear) {
+            struct MUIP_DrawBackground *db = (struct MUIP_DrawBackground *)msg;
+            if (db->width >= _mwidth(obj) && db->height >= _mheight(obj) - 2)
+                return 0;
+        }
+        break;
+    case MUIM_Setup: {
+        IPTR r = DoSuperMethodA(cl, obj, msg);
+        if (!r)
+            return 0;
+        d = INST_DATA(cl, obj);
+        memset(d, 0, sizeof(*d));
+        d->ehn.ehn_Priority = 1;          /* ahead of the list's own handler */
+        d->ehn.ehn_Object = obj;
+        d->ehn.ehn_Class = cl;
+        drag_events(obj, d, IDCMP_MOUSEBUTTONS | IDCMP_RAWKEY);
+        return r;
+    }
+    case MUIM_Cleanup:
+        d = INST_DATA(cl, obj);
+        if (d->added)
+            DoMethod(_win(obj), MUIM_Window_RemEventHandler, (IPTR)&d->ehn);
+        d->added = 0;
+        break;
+    case MUIM_HandleEvent: {
+        IPTR r = drag_handle(cl, obj, (struct MUIP_HandleEvent *)msg);
+        if (r)
+            return r;
+        break;
+    }
+    }
+    return DoSuperMethodA(cl, obj, msg);
+}
+BOOPSI_DISPATCHER_END
+
 static int build(void)
 {
+    dragcls = MUI_CreateCustomClass(NULL, MUIC_List, NULL, sizeof(struct dragdata), drag_dispatcher);
+    if (!dragcls)
+        return 0;
     display_hook.h_Entry = (HOOKFUNC)AROS_ASMSYMNAME(display_func);
+    qdisplay_hook.h_Entry = (HOOKFUNC)AROS_ASMSYMNAME(qdisplay_func);
     drop_hook.h_Entry = (HOOKFUNC)AROS_ASMSYMNAME(drop_func);
 
     app = ApplicationObject,
@@ -1426,17 +1901,23 @@ static int build(void)
                 Child, (IPTR)(lv = ListviewObject,
                     MUIA_CycleChain, 1,
                     MUIA_Listview_MultiSelect, MUIV_Listview_MultiSelect_Default,
-                    MUIA_Listview_List, (IPTR)(ListObject,
+                    MUIA_Listview_List, (IPTR)(NewObject(dragcls->mcc_Class, NULL,
                         InputListFrame,
-                        MUIA_List_Format, (IPTR)"BAR,P=\33r BAR,BAR,BAR,",
+                        /* Zune sizes columns by their widest text and ignores MINWIDTH and
+                         * WEIGHT (list.c, CalcDimsOfEntry); DELTA is the gap it does use. */
+                        MUIA_List_Format, (IPTR)"D=8 BAR,D=12 P=\33r BAR,D=12 BAR,D=12 BAR,D=8",
                         MUIA_List_Title, TRUE,
                         MUIA_List_DisplayHook, (IPTR)&display_hook,
-                    End),
+                    TAG_DONE)),
                 End),
                 Child, (IPTR)(t_active = TextObject,
                     MUIA_Text_Contents, (IPTR)"\n",
                     MUIA_Text_SetMin, FALSE,
-                    MUIA_FixHeightTxt, (IPTR)"\n",
+                    /* Two lines. Zune clamps FixHeightTxt to the text's own
+                     * maximum, which SetVMax (default TRUE) makes the height of
+                     * the first contents (area.c, __area_finish_minmax). */
+                    MUIA_Text_SetVMax, FALSE,
+                    MUIA_FixHeightTxt, (IPTR)"X\nX",
                 End),
                 Child, (IPTR)(t_bstatus = TextObject,
                     TextFrame,
@@ -1475,7 +1956,10 @@ static int build(void)
         End),
         SubWindow, (IPTR)(wprog = WindowObject,
             MUIA_Window_Title, (IPTR)APPNAME,
-            MUIA_Window_ID, MAKE_ID('U','A','P','R'),
+            /* No MUIA_Window_ID: Zune reopens a window with an ID at the size
+             * it had when closed, even below the new minimum (window.c,
+             * MUIA_Application_GetWinPos before WindowLimits). Closed after a
+             * result, this window then hid Cancel on the next extraction. */
             MUIA_Window_Width, MUIV_Window_Width_Screen(40),
             WindowContents, (IPTR)(VGroup,
                 Child, (IPTR)(t_ptitle = TextObject, MUIA_Text_SetMin, FALSE, End),
@@ -1490,6 +1974,22 @@ static int build(void)
                 End),
                 Child, (IPTR)(t_pcount = TextObject, MUIA_Text_SetMin, FALSE, End),
                 Child, (IPTR)(t_presult = TextObject, MUIA_Text_SetMin, FALSE, End),
+                Child, (IPTR)(lq = ListviewObject,
+                    MUIA_ShowMe, FALSE,
+                    MUIA_CycleChain, 1,
+                    MUIA_Listview_List, (IPTR)(ListObject,
+                        InputListFrame,
+                        MUIA_List_Format, (IPTR)"D=8 BAR,D=8",
+                        MUIA_List_DisplayHook, (IPTR)&qdisplay_hook,
+                        MUIA_List_MinLineHeight, 0,
+                    End),
+                End),
+                Child, (IPTR)(g_qbtns = HGroup,
+                    Child, (IPTR)(b_qremove = button("Re_move")),
+                    Child, (IPTR)HSpace(0),
+                    Child, (IPTR)(b_qcancelall = button("Cancel _all")),
+                    MUIA_ShowMe, FALSE,
+                End),
                 Child, (IPTR)(HGroup,
                     Child, (IPTR)(b_popen = button("_Open folder")),
                     Child, (IPTR)(b_precover = button("_Recover...")),
@@ -1614,6 +2114,12 @@ static void notify(void)
              MUIM_Application_ReturnID, ID_A_CANCEL);
     DoMethod(wdetail, MUIM_Notify, MUIA_Window_CloseRequest, TRUE, (IPTR)app, 2,
              MUIM_Application_ReturnID, ID_D_CLOSE);
+    DoMethod(b_qremove, MUIM_Notify, MUIA_Pressed, FALSE, (IPTR)app, 2,
+             MUIM_Application_ReturnID, ID_Q_REMOVE);
+    DoMethod(b_qcancelall, MUIM_Notify, MUIA_Pressed, FALSE, (IPTR)app, 2,
+             MUIM_Application_ReturnID, ID_Q_CANCELALL);
+    DoMethod(lq, MUIM_Notify, MUIA_List_Active, MUIV_EveryTime, (IPTR)app, 2,
+             MUIM_Application_ReturnID, ID_Q_ACTIVE);
     DoMethod(c_onopen, MUIM_Notify, MUIA_Cycle_Active, MUIV_EveryTime, (IPTR)app, 2,
              MUIM_Application_ReturnID, ID_ONOPEN);
     DoMethod(cb_newfolder, MUIM_Notify, MUIA_Selected, MUIV_EveryTime, (IPTR)app, 2,
@@ -1671,7 +2177,7 @@ static void b_replan(void)
         return;
     GetAttr(MUIA_String_Contents, s_to, (IPTR *)&to);
     snprintf(dest, sizeof(dest), "%s", to && *to ? (char *)to : bplan.dest);
-    if (ua_plan_make(&blist, b_archive, dest, !b_newfolder(), &bplan, err, sizeof(err)))
+    if (ua_plan_make(&blist, b_planname, dest, !b_newfolder(), &bplan, err, sizeof(err)))
         settext(t_active, "Cannot extract there: %s", err);
     else
         settext(t_active, "Will extract to %s%s", bplan.root,
@@ -1700,7 +2206,7 @@ static void b_start_extract(int all)
     }
     /* Plan again: the destination may have changed, and a folder name that
      * was free when the list was read may not be now. */
-    if (ua_plan_make(&blist, b_archive, dest, !b_newfolder(), &bplan, err, sizeof(err))) {
+    if (ua_plan_make(&blist, b_planname, dest, !b_newfolder(), &bplan, err, sizeof(err))) {
         say("Cannot extract there:\n%s", err);
         return;
     }
@@ -1714,8 +2220,62 @@ static void b_start_extract(int all)
             say("Nothing selected can be extracted.");
             return;
         }
+        ua_plan_unique(&blist, &bplan);   /* counts the collisions of what is extracted */
     }
     start_extract(b_archive, dest, 0, 1);
+}
+
+/* Rows dropped on a Wanderer drawer: the selected entries go into that
+ * drawer without the folders that all of them share. One file comes out
+ * alone; a selected folder keeps its name and brings its contents; files from
+ * different folders keep the folders that tell them apart, and everything
+ * selected keeps its tree. Stripping each entry's own folders instead would
+ * flatten a tree and turn a/x.txt and b/x.txt into x.txt and "x 2.txt".
+ * Same rules as any extraction: conflicts are asked, nothing is overwritten
+ * unasked. */
+static void b_drag_extract(void)
+{
+    char err[256];
+    ULONG n;
+
+    if (!drag_target[0]) {
+        settext(t_active, "Nothing extracted: %s.\nDrop on an open drawer window to extract "
+                "the selected entries there.", drag_why[0] ? drag_why : "no drawer there");
+        dbg("drag out: no target (%s)", drag_why);
+        return;
+    }
+    if (!b_loaded || job || b_status != UA_OPEN_OK) {
+        settext(t_active, "Nothing extracted: the archive is not ready.");
+        return;
+    }
+    if (!writable(drag_target)) {
+        settext(t_active, "Nothing extracted: \"%s\" cannot be written.", drag_target);
+        return;
+    }
+    if (ua_plan_make(&blist, b_planname, drag_target, 1, &bplan, err, sizeof(err))) {
+        say("Cannot extract there:\n%s", err);
+        return;
+    }
+    b_sync_selection();
+    n = b_mark_selection();
+    if (!n) {
+        settext(t_active, "Nothing extracted: no entry selected that can be extracted.");
+        b_replan();
+        return;
+    }
+    if (ua_plan_strip_common(&blist) < 0) {
+        say("Not enough memory.");
+        b_replan();
+        return;
+    }
+    if (ua_plan_unique(&blist, &bplan)) {
+        say("Not enough memory.");
+        b_replan();
+        return;
+    }
+    settext(t_active, "");
+    dbg("drag out: %lu entries to %s", (unsigned long)n, drag_target);
+    start_extract(b_archive, drag_target, 0, 1);
 }
 
 static void quit_check(int *quit)
@@ -1831,19 +2391,24 @@ static int gui_main(int argc, char **argv)
         open_win(wstart, 1);
     } else {
         int browse_it = mode == 1 || (mode == 0 && onopen_browse);
-        if (nargs > 1 && !browse_it)
-            say("%d archives were given. This version extracts one archive at a time;\n"
-                "only \"%s\" is extracted now.", nargs, leafname(args[0]));
-        else if (nargs > 1)
-            say("%d archives were given. This version shows one archive at a time;\n"
+        if (nargs > 1 && browse_it)
+            say("%d archives were given. The browser shows one archive at a time;\n"
                 "only \"%s\" is shown.", nargs, leafname(args[0]));
         if (browse_it)
             browse(args[0]);
-        else if (!is_archive(args[0])) {
-            say("\"%s\" is not an archive Unarc can read.", args[0]);
-            open_win(wstart, 1);
-        } else
-            extract_now(args[0]);
+        else {
+            int k, added = 0;
+            for (k = 0; k < nargs; k++) {
+                if (!is_archive(args[k]))
+                    say("\"%s\" is not an archive Unarc can read.", args[k]);
+                else
+                    added += queue_add(args[k]);
+            }
+            if (added)
+                queue_next();
+            else
+                open_win(wstart, 1);
+        }
         quit_check(&quit);
     }
 
@@ -1855,10 +2420,17 @@ static int gui_main(int argc, char **argv)
             break;
         case ID_DROP:
             dbg("drop %d items, first %s", ndropped, ndropped ? dropped[0] : "-");
-            if (job)
+            if (job && qcur < 0)
                 settext(t_startnote, "Busy with another archive; drop again when it is done.");
             else
                 handle_drop();
+            DoMethod(lq, MUIM_List_Redraw, MUIV_List_Redraw_All);
+            if (qcur >= 0 && nq > 1) {
+                SetAttrs(lq, MUIA_ShowMe, TRUE, TAG_DONE);
+                SetAttrs(g_qbtns, MUIA_ShowMe, TRUE, TAG_DONE);
+                settext(t_ptitle, "Extracting \33b%s\33n (%d of %d)", leafname(r_archive),
+                        qcur + 1, nq);
+            }
             drops_clear();
             break;
         case ID_OPEN: {
@@ -1890,6 +2462,9 @@ static int gui_main(int argc, char **argv)
         case ID_B_REPLAN:
             b_replan();
             break;
+        case ID_B_DRAGOUT:
+            b_drag_extract();
+            break;
         case ID_B_SEL:
             b_note_selection();
             break;
@@ -1918,19 +2493,45 @@ static int gui_main(int argc, char **argv)
             break;
         case ID_P_CLOSE:
             if (job && job->kind != UJ_LIST) {
-                /* Closing while it runs: cancel, clean up, then close. */
+                /* Closing while it runs: cancel, clean up, then close; the
+                 * archives still waiting are not started. */
                 prog_closing = 1;
+                qstop = 1;
                 cancel_job();
             } else {
                 open_win(wprog, 0);
             }
             break;
-        case ID_P_OPENDIR:
-            if (r_root[0])
-                open_folder(r_root);
-            break;
-        case ID_P_DETAILS:
-            show_details();
+        case ID_P_OPENDIR: {
+            struct qitem *it = queue_selected();
+            const char *root = it ? it->root : r_root;
+            if (root[0])
+                open_folder(root);
+        } break;
+        case ID_P_DETAILS: {
+            struct qitem *it = queue_selected();
+            if (it && !job) {
+                SetAttrs(f_detail, MUIA_Floattext_Text,
+                         (IPTR)(it->detail ? it->detail : "No details."), TAG_DONE);
+                open_win(wdetail, 1);
+            } else
+                show_details();
+        } break;
+        case ID_Q_ACTIVE: {
+            struct qitem *it = queue_selected();
+            if (!job)
+                SetAttrs(b_popen, MUIA_Disabled, !it || !it->root[0] || !it->ok, TAG_DONE);
+        } break;
+        case ID_Q_REMOVE: {
+            struct qitem *it = queue_selected();
+            if (it && it->state == Q_WAIT) {
+                it->state = Q_REMOVED;
+                DoMethod(lq, MUIM_List_Redraw, MUIV_List_Redraw_All);
+            }
+        } break;
+        case ID_Q_CANCELALL:
+            qstop = 1;
+            cancel_job();
             break;
         case ID_P_RECOVER:
             recover(r_archive);
@@ -1995,9 +2596,13 @@ static int gui_main(int argc, char **argv)
         poll_jobs();
     }
     MUI_DisposeObject(app);
+    if (dragcls)
+        MUI_DeleteCustomClass(dragcls);
     DeleteMsgPort(jport);
     b_reset();
     free(r_detail);
+    for (i = 0; i < nq; i++)
+        free(q[i].detail);
     drops_clear();
     k_clear();
     for (i = 0; i < nargs; i++)

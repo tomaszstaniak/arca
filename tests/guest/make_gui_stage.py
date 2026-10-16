@@ -18,6 +18,8 @@ cli_stage = sys.argv[5] if len(sys.argv) > 5 and not sys.argv[5].startswith("--"
 # --huge: a 200 MB stored ZIP (one file) for cancelling and closing during a
 # long write; made here, not in the corpus, so other runs stay small.
 huge = "--huge" in sys.argv
+# --limpet <zip>: the Limpet terminal archive, for running the CLI in it.
+limpet = sys.argv[sys.argv.index("--limpet") + 1] if "--limpet" in sys.argv else None
 if os.path.exists(stage):
     sys.exit(f"{stage} exists; use a new directory")
 os.makedirs(os.path.join(stage, "corpus"))
@@ -25,7 +27,9 @@ for b in ("Unarc", "unarc-cli", "uatool", "zune-control"):
     shutil.copy2(os.path.join(bindir, b), os.path.join(stage, b))
 ARCHIVES = ("single.zip", "onetop.zip", "names.zip", "unicode.zip", "damaged.zip", "big.zip",
             "big2.zip", "many.zip", "many.tar.gz", "many.lha", "amiga.lha", "amiga.lzx",
-            "tree.tar.gz", "tree.7z", "longnames.zip", "encrypted.zip", "cp437.zip")
+            "tree.tar.gz", "tree.7z", "longnames.zip", "encrypted.zip", "cp437.zip",
+            "many50k.zip", "r4.part1.rar", "r4.part2.rar", "r4.part3.rar", "r4.part4.rar",
+            "gap.part1.rar", "gap.part2.rar", "gap.part4.rar")
 for n in ARCHIVES:
     shutil.copy2(os.path.join(corpus, n), os.path.join(stage, "corpus", n))
 if cli_stage:
@@ -39,6 +43,8 @@ if cli_stage:
         if os.path.exists(src):
             shutil.copy2(src, os.path.join(stage, "cli.script" if n == "run.script" else n))
 open(os.path.join(stage, "Unarc Browse"), "w").write("Opens archives in the browser.\n")
+if limpet:
+    shutil.copy2(limpet, os.path.join(stage, "Limpet.zip"))
 if huge:
     import random, zipfile
     rnd = random.Random(7)
@@ -48,6 +54,22 @@ if huge:
             for _ in range(200):
                 f.write(blk)
         z.writestr(zipfile.ZipInfo("huge/after.txt", (2020, 1, 1, 0, 0, 0)), "after\n")
+# Dragging rows out to a Wanderer drawer: two files of one name in different
+# folders (they meet once the folders are stripped), a folder with a subfolder,
+# and top.txt, which the drawer RAM:dd already holds (setup makes it) so that
+# a drop is a conflict.
+import zipfile
+with zipfile.ZipFile(os.path.join(stage, "corpus", "dragtest.zip"), "w") as z:
+    for name, data in (("top.txt", "new top\n"), ("a/", None), ("a/x.txt", "from a\n"),
+                       ("b/", None), ("b/x.txt", "from b\n"), ("docs/", None),
+                       ("docs/one.txt", "one\n"), ("docs/sub/", None),
+                       ("docs/sub/two.txt", "two\n")):
+        zi = zipfile.ZipInfo(name, (2021, 6, 1, 12, 0, 0))
+        if data is None:
+            zi.external_attr = 0o40755 << 16 | 0x10
+            z.writestr(zi, "")
+        else:
+            z.writestr(zi, data)
 
 O = f"RESULTS:{run}"
 L = ["FailAt 30",
@@ -66,8 +88,16 @@ L = ["FailAt 30",
      "RAM:u/uatool icon RAM:t/amiga.lha RAM:u/Unarc",
      "If EXISTS RAM:t/huge.zip", "RAM:u/uatool icon RAM:t/huge.zip RAM:u/Unarc", "EndIf",
      "RAM:u/uatool icon RAM:t/names.zip RAM:u/Unarc MODE=BROWSE",
+     "RAM:u/uatool icon RAM:t/dragtest.zip RAM:u/Unarc MODE=BROWSE",
+     "MakeDir RAM:dd",
+     "Echo \"old top\" >RAM:dd/top.txt",
      "Copy \"RAM:u/Unarc Browse\" RAM:t/",
      "RAM:u/uatool icon \"RAM:t/Unarc Browse\" RAM:u/Unarc MODE=BROWSE",
+     "If EXISTS RAM:u/Limpet.zip",
+     "C:UnZip >NIL: RAM:u/Limpet.zip -d RAM:L",
+     "MakeDir \"RAM:sp ace\"",
+     "Copy RAM:t/single.zip \"RAM:sp ace/My Docs.zip\"",
+     "EndIf",
      f"List RAM:t >{O}/setup-list.txt",
      f"Version RAM:u/Unarc >{O}/env.txt",
      f"Avail >>{O}/env.txt",

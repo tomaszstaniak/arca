@@ -59,6 +59,7 @@ void uj_free(uj_job *j)
     free(j->inputs);
     if (!j->lent)
         ua_list_free(&j->list);
+    ua_volumes_free(&j->vols);
     free(j->log);
     free(j);
 }
@@ -173,6 +174,7 @@ static void progress(uj_job *j, const ua_entry *e, UQUAD done, ULONG files, int 
     if (j->progress_out || (!force && uj_ticks_since(&j->last_tick) < UJ_TICKS))
         return;
     DateStamp(&j->last_tick);
+    j->progress.reading = 0;
     j->progress.bytes = done;
     j->progress.files = files;
     if (e) {
@@ -180,6 +182,23 @@ static void progress(uj_job *j, const ua_entry *e, UQUAD done, ULONG files, int 
         snprintf(j->progress.name, sizeof(j->progress.name), "%s", shown ? shown : e->name_src);
         free(shown);
     }
+    j->progress_out = 1;
+    send(j, &j->progress, UJM_PROGRESS);
+}
+
+/* While the engine reads the archive: how many entries so far. */
+static void on_reading(void *ctx, ULONG n)
+{
+    uj_job *j = ctx;
+    collect(j, 0);
+    if (j->progress_out || uj_ticks_since(&j->last_tick) < UJ_TICKS)
+        return;
+    DateStamp(&j->last_tick);
+    j->progress.reading = 1;
+    j->progress.listed = n;
+    j->progress.bytes = 0;
+    j->progress.files = 0;
+    j->progress.name[0] = 0;
     j->progress_out = 1;
     send(j, &j->progress, UJM_PROGRESS);
 }
@@ -245,13 +264,31 @@ static int do_list(uj_job *j, int batches)
     LONG ioerr = 0;
     ULONG k;
     char dest[UA_PATHMAX];
+    const char *first = j->archive;
 
-    if (ua_sniff_file(j->archive, &j->fmt, &ioerr) < 0) {
+    /* One volume of a set stands for the set; an incomplete set is refused
+     * before anything is read, naming the volume that is missing. */
+    snprintf(j->planname, sizeof(j->planname), "%s", j->archive);
+    if (ua_volumes_find(j->archive, &j->vols)) {
+        if (j->vols.problem[0] || !j->vols.count) {
+            snprintf(j->err, sizeof(j->err), "Incomplete multi-volume set: %s.",
+                     j->vols.problem[0] ? j->vols.problem : "the other volumes were not found");
+            j->open_status = UA_OPEN_ERROR;
+            return -1;
+        }
+        first = j->vols.path[0];
+        j->list.volumes = j->vols.path;
+        snprintf(j->planname, sizeof(j->planname), "%s", j->vols.setname);
+        note(j, "Volumes: %d, from %s", j->vols.count, j->vols.path[0]);
+    }
+    if (ua_sniff_file(first, &j->fmt, &ioerr) < 0) {
         Fault(ioerr, NULL, j->err, sizeof(j->err));
         j->open_status = UA_OPEN_ERROR;
         return -1;
     }
-    j->open_status = ua_read_list(j->archive, j->fmt, batches ? UA_OP_LIST : UA_OP_EXTRACT,
+    j->list.reading = on_reading;
+    j->list.reading_ctx = j;
+    j->open_status = ua_read_list(first, j->fmt, batches ? UA_OP_LIST : UA_OP_EXTRACT,
                                   j->recover, NULL, &j->list, note, j);
     j->t_listed = uj_ticks_since(&j->started);
     if (j->open_status != UA_OPEN_OK && j->open_status != UA_OPEN_PARTIAL)
@@ -267,7 +304,7 @@ static int do_list(uj_job *j, int batches)
         if (l)
             UnLock(l);
     }
-    if (dest[0] && ua_plan_make(&j->list, j->archive, dest, j->nowrap && !j->recover, &j->plan, j->err,
+    if (dest[0] && ua_plan_make(&j->list, j->planname, dest, j->nowrap && !j->recover, &j->plan, j->err,
                                 sizeof(j->err)) == 0)
         j->have_plan = 1;
     j->total_known = 1;
@@ -317,7 +354,8 @@ static void do_extract(uj_job *j)
             j->total += e->size;
         }
     }
-    j->extract_rc = ua_extract(j->archive, &j->list, &j->plan, &o, &j->rep, j->err,
+    j->extract_rc = ua_extract(j->list.volumes ? j->list.volumes[0] : j->archive, &j->list,
+                               &j->plan, &o, &j->rep, j->err,
                                sizeof(j->err));
     progress(j, NULL, j->rep.bytes, j->rep.files, 1);
 }
@@ -347,7 +385,7 @@ static void do_pack(uj_job *j)
     for (i = 0; i < j->ninputs && fib; i++) {
         BPTR l = Lock((STRPTR)j->inputs[i], SHARED_LOCK);
         if (l && Examine(l, fib) && fib->fib_DirEntryType < 0)
-            j->total += (ULONG)fib->fib_Size;
+            j->total += UA_FIB_SIZE(fib);
         else
             j->total_known = 0;
         if (l)
