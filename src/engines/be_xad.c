@@ -66,17 +66,30 @@ static void xd_close(struct xadArchiveInfo *ai)
 static int xd_list(const char *path, ua_list *out, char *err, int errlen)
 {
     int unknown = 0;
-    struct xadArchiveInfo *ai = xd_open(path, &unknown, err, errlen);
+    struct xadArchiveInfo *ai;
     struct xadFileInfo *fi;
+
+    /* Volume sets go through libarchive; XAD is given single files only. */
+    if (out->volumes) {
+        snprintf(err, errlen, "multi-volume sets are not read with XAD");
+        return UA_LIST_UNKNOWN;
+    }
+    ai = xd_open(path, &unknown, err, errlen);
 
     if (!ai)
         return unknown ? UA_LIST_UNKNOWN : UA_LIST_FAILED;
     if (!ai->xai_FileInfo && ai->xai_DiskInfo)
         out->disk_image = 1;
+    /* XAD reads the whole archive in xadGetInfo above; only the copy into
+     * our list can be interrupted here. */
     for (fi = ai->xai_FileInfo; fi; fi = fi->xfi_Next) {
         ua_entry *e = ua_list_add(out);
         if (!e)
             break;
+        if (ua_list_break(out)) {
+            xd_close(ai);
+            return UA_LIST_CANCELLED;
+        }
         e->name_src = ua_strdup(fi->xfi_FileName ? (char *)fi->xfi_FileName : "");
         e->name_kind = UA_NAME_HOST;      /* XAD hands out ISO-8859-1 */
         if (fi->xfi_Flags & XADFIF_DIRECTORY)
@@ -165,8 +178,18 @@ static int xd_extract(const char *path, ua_list *l, ua_sink *s, char *err, int e
     hook.h_Data = &c;
     for (fi = ai->xai_FileInfo; fi && i < l->n; fi = fi->xfi_Next) {
         ua_entry *e = &l->v[i++];
-        ua_wdecision d = s->begin(s, e);
+        ua_wdecision d;
         LONG xe;
+        ua_etype t = (fi->xfi_Flags & XADFIF_DIRECTORY) ? UA_ET_DIR :
+                     (fi->xfi_Flags & XADFIF_LINK) ? UA_ET_LINK : UA_ET_FILE;
+        if (!ua_entry_matches(e, fi->xfi_FileName ? (char *)fi->xfi_FileName : "", t, 1,
+                              (UQUAD)fi->xfi_Size)) {
+            snprintf(err, errlen, "%s (entry %lu is not \"%s\")", UA_CHANGED_MSG,
+                     (unsigned long)i, e->name_src ? e->name_src : "");
+            result = -1;
+            break;
+        }
+        d = s->begin(s, e);
         if (d == UA_W_CANCEL) {
             result = 1;
             break;
@@ -181,6 +204,11 @@ static int xd_extract(const char *path, ua_list *l, ua_sink *s, char *err, int e
             break;
         }
         s->end(s, e, xe == 0, xe ? (const char *)xadGetErrorText(xe) : NULL);
+    }
+    if (result == 0 && (i < l->n || (fi && !l->partial))) {
+        snprintf(err, errlen, "%s (%s entries than were listed)", UA_CHANGED_MSG,
+                 i < l->n ? "fewer" : "more");
+        result = -1;
     }
     xd_close(ai);
     return result;

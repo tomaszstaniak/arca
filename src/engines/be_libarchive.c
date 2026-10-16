@@ -38,7 +38,8 @@ static ULONG la_caps(ua_format f)
 /* stream: the zip reader that walks local headers (archive_read_support_
  * format_zip_streamable) instead of the central directory. Used only for
  * recovery: it cannot see entries that the central directory alone describes. */
-static struct archive *la_open(const char *path, int stream, int *unknown, char *err, int errlen)
+static struct archive *la_open(const char *path, char **vols, int stream, int *unknown,
+                               char *err, int errlen)
 {
     struct archive *a = archive_read_new();
     if (!a) {
@@ -65,7 +66,10 @@ static struct archive *la_open(const char *path, int stream, int *unknown, char 
     archive_read_support_format_cab(a);
     archive_read_support_format_cpio(a);
     archive_read_support_format_ar(a);
-    if (archive_read_open_filename(a, path, 65536) != ARCHIVE_OK) {
+    /* A multi-volume set is read as one stream across its files, in the
+     * order volumes.c established. */
+    if ((vols ? archive_read_open_filenames(a, (const char **)vols, 65536)
+              : archive_read_open_filename(a, path, 65536)) != ARCHIVE_OK) {
         if (unknown)
             *unknown = archive_errno(a) == LA_ERRNO_FILE_FORMAT;
         snprintf(err, errlen, "%s", archive_error_string(a) ? archive_error_string(a)
@@ -116,10 +120,29 @@ static ULONG mode_to_prot(mode_t m)
     return p;
 }
 
+/* The name of a header as the listing takes it; extraction compares with it. */
+static const char *la_name(struct archive_entry *ae)
+{
+    const char *u = archive_entry_pathname_utf8(ae);
+    if (!u)
+        u = archive_entry_pathname(ae);
+    return u ? u : "";
+}
+
+static ua_etype la_type(struct archive_entry *ae)
+{
+    switch (archive_entry_filetype(ae)) {
+    case AE_IFREG: return UA_ET_FILE;
+    case AE_IFDIR: return UA_ET_DIR;
+    case AE_IFLNK: return UA_ET_LINK;
+    default: return UA_ET_OTHER;
+    }
+}
+
 static int la_list_mode(const char *path, int stream, ua_list *out, char *err, int errlen)
 {
     int unknown = 0;
-    struct archive *a = la_open(path, stream, &unknown, err, errlen);
+    struct archive *a = la_open(path, out->volumes, stream, &unknown, err, errlen);
     struct archive_entry *ae;
     int r;
 
@@ -127,30 +150,25 @@ static int la_list_mode(const char *path, int stream, ua_list *out, char *err, i
         return unknown ? UA_LIST_UNKNOWN : UA_LIST_FAILED;
     while ((r = archive_read_next_header(a, &ae)) == ARCHIVE_OK || r == ARCHIVE_WARN) {
         ua_entry *e = ua_list_add(out);
-        const char *u = archive_entry_pathname_utf8(ae);
+        const char *u = la_name(ae);
         if (!e)
             break;
         /* The program sets libarchive's "current charset" to UTF-8 (compat.c),
          * so names arrive unconverted. Bytes that are not valid UTF-8 come from
          * an archive without charset information: for ZIP that is CP437 by
          * convention, for anything else we only know it is 8-bit. */
-        if (!u)
-            u = archive_entry_pathname(ae);
-        if (!u)
-            u = "";
         e->name_src = ua_strdup(u);
+        if (ua_list_break(out)) {
+            archive_read_free(a);
+            return UA_LIST_CANCELLED;
+        }
         if (ua_utf8_valid(u))
             e->name_kind = UA_NAME_UTF8;
         else if (archive_format(a) == ARCHIVE_FORMAT_ZIP)
             e->name_kind = UA_NAME_CP437;
         else
             e->name_kind = UA_NAME_GUESSED;
-        switch (archive_entry_filetype(ae)) {
-        case AE_IFREG: e->type = UA_ET_FILE; break;
-        case AE_IFDIR: e->type = UA_ET_DIR; break;
-        case AE_IFLNK: e->type = UA_ET_LINK; break;
-        default: e->type = UA_ET_OTHER; break;
-        }
+        e->type = la_type(ae);
         e->size_valid = archive_entry_size_is_set(ae) != 0;
         e->size = e->size_valid ? (UQUAD)archive_entry_size(ae) : 0;
         e->encrypted = archive_entry_is_encrypted(ae);
@@ -178,16 +196,24 @@ static int la_list_mode(const char *path, int stream, ua_list *out, char *err, i
 static int la_extract_mode(const char *path, int stream, ua_list *l, ua_sink *s,
                            char *err, int errlen)
 {
-    struct archive *a = la_open(path, stream, NULL, err, errlen);
+    struct archive *a = la_open(path, l->volumes, stream, NULL, err, errlen);
     struct archive_entry *ae;
     ULONG i = 0;
-    int r, result = 0;
+    int r = ARCHIVE_EOF, result = 0;
 
     if (!a)
         return -1;
     while (i < l->n && ((r = archive_read_next_header(a, &ae)) == ARCHIVE_OK || r == ARCHIVE_WARN)) {
         ua_entry *e = &l->v[i++];
-        ua_wdecision d = s->begin(s, e);
+        ua_wdecision d;
+        if (!ua_entry_matches(e, la_name(ae), la_type(ae), archive_entry_size_is_set(ae) != 0,
+                              (UQUAD)archive_entry_size(ae))) {
+            snprintf(err, errlen, "%s (entry %lu is not \"%s\")", UA_CHANGED_MSG,
+                     (unsigned long)i, e->name_src ? e->name_src : "");
+            result = -1;
+            break;
+        }
+        d = s->begin(s, e);
         const void *buf;
         size_t size;
         la_int64_t off;
@@ -234,6 +260,25 @@ static int la_extract_mode(const char *path, int stream, ua_list *l, ua_sink *s,
             break;
         }
         s->end(s, e, 1, NULL);
+    }
+    /* The walk must have met every listed entry, and the archive must end
+     * where the listing said it did. */
+    if (result == 0 && i < l->n) {
+        if (r == ARCHIVE_EOF)
+            snprintf(err, errlen, "%s (it ends after %lu of %lu entries)", UA_CHANGED_MSG,
+                     (unsigned long)i, (unsigned long)l->n);
+        else
+            snprintf(err, errlen, "%s", archive_error_string(a) ? archive_error_string(a)
+                                                                 : "damaged archive");
+        result = -1;
+    } else if (result == 0 && l->n && !l->partial &&
+               (r = archive_read_next_header(a, &ae)) != ARCHIVE_EOF) {
+        if (r == ARCHIVE_OK || r == ARCHIVE_WARN)
+            snprintf(err, errlen, "%s (it has more entries than were listed)", UA_CHANGED_MSG);
+        else
+            snprintf(err, errlen, "%s", archive_error_string(a) ? archive_error_string(a)
+                                                                 : "damaged archive");
+        result = -1;
     }
     archive_read_free(a);
     return result;

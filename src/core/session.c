@@ -4,6 +4,7 @@
  * here, so they choose engines and treat damage the same way. */
 #include <stdlib.h>
 #include <string.h>
+#include <proto/exec.h>
 #include <proto/dos.h>
 #include "ua.h"
 
@@ -32,13 +33,32 @@ int ua_sniff_file(const char *archive, ua_format *fmt, LONG *ioerr)
  * retried with another one. In normal mode the next engine is tried only when
  * this one does not know the format: an archive it knows but finds damaged is
  * reported, and reading around the damage is recovery's job. */
+static LONG slow_ticks = -1;
+
+int ua_list_break(ua_list *l)
+{
+    if (slow_ticks < 0) {
+        char v[16];
+        slow_ticks = GetVar("UnarcTestSlowList", v, sizeof(v), 0) > 0 ? atoi(v) : 0;
+    }
+    if (slow_ticks && l->n % 100 == 0)
+        Delay(slow_ticks);
+    if (l->reading && l->n % 64 == 0)
+        l->reading(l->reading_ctx, l->n);
+    return (SetSignal(0, 0) & SIGBREAKF_CTRL_C) != 0;
+}
+
 int ua_read_list(const char *archive, ua_format fmt, ua_op op, int recover,
                  const char *engine, ua_list *l, ua_note note, void *ctx)
 {
     const ua_engine *eng[4];
     int neng, i, got = -1, damaged = 0;
     char err[256];
+    void (*reading)(void *, ULONG) = l->reading;
+    void *reading_ctx = l->reading_ctx;
+    char **vols = l->volumes;
 
+    slow_ticks = -1;
     memset(l, 0, sizeof(*l));
     if (engine) {
         eng[0] = ua_engine_by_name(engine);
@@ -57,7 +77,16 @@ int ua_read_list(const char *archive, ua_format fmt, ua_op op, int recover,
         ua_list t;
         int r;
         memset(&t, 0, sizeof(t));
+        t.reading = reading;
+        t.reading_ctx = reading_ctx;
+        t.volumes = vols;              /* borrowed while listing */
         r = eng[i]->list(archive, &t, err, sizeof(err));
+        if (r == UA_LIST_CANCELLED) {
+            ua_list_free(&t);
+            ua_list_free(l);
+            note(ctx, "Reading stopped by the user");
+            return UA_OPEN_CANCELLED;
+        }
         if (r == UA_LIST_OK && recover && got >= 0 && l->n >= t.n) {
             note(ctx, "Engine %s: %lu entries; keeping %s with %lu", eng[i]->name,
                  (unsigned long)t.n, l->engine->name, (unsigned long)l->n);
@@ -99,8 +128,21 @@ int ua_read_list(const char *archive, ua_format fmt, ua_op op, int recover,
             ua_list_free(&t);
         }
     }
-    if (got >= 0)
+    if (got >= 0) {
         l->format = fmt;
+        l->partial = got == 1;
+        l->volumes = NULL;
+        l->volumes_owned = 0;
+        if (vols) {
+            int n = 0, k;
+            while (vols[n])
+                n++;
+            l->volumes = calloc(n + 1, sizeof(char *));
+            for (k = 0; l->volumes && k < n; k++)
+                l->volumes[k] = ua_strdup(vols[k]);
+            l->volumes_owned = l->volumes != NULL;
+        }
+    }
     if (damaged && got < 0)
         return UA_OPEN_DAMAGED;
     if (got < 0)
