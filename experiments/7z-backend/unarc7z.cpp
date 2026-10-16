@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: MIT
-// unarc-7z: probe front end for the 7-Zip archive handlers (7z, RAR, RAR5)
-// linked statically. Prints the machine protocol of PROTOCOL.md on stdout.
+// unarc-7z: front end for the 7-Zip archive handlers (7z, RAR, RAR5) linked
+// statically. Prints the machine protocol of PROTOCOL.md on stdout.
 //
-//   unarc-7z list <archive>
-//   unarc-7z extract <archive> <index>
+//   unarc-7z [-p <file>] list <archive>
+//   unarc-7z [-p <file>] extract <archive> <index>[,<index>...] | all
+//   listx / extractx: the same with the archive path in hex
 //
-// A password, when the archive asks for one, is read as one line from stdin.
+// A password, when the archive asks for one, is read as one line from the
+// -p file, or from stdin without -p.
 
 #include "Common/Common.h"
 
@@ -52,8 +54,15 @@ enum
   kCodeDataError = 3,
   kCodeMissingVolume = 4,
   kCodeUnsupported = 5,
+  kCodeCancelled = 8,
   kCodeOther = 9
 };
+
+#ifdef __AROS__
+extern "C" int unarc_break_requested(void);   // aros_system.cpp: Ctrl-C
+#else
+static int unarc_break_requested(void) { return 0; }
+#endif
 
 // ---------------------------------------------------------------- output
 
@@ -107,6 +116,53 @@ static UString FromUtf8(const char *s)
   return u;
 }
 
+// File names on AROS are ISO-8859-1 bytes; on a POSIX host they are UTF-8.
+// The handlers work in UString, so convert both ways without losing a byte.
+static UString PathToU(const AString &p)
+{
+#ifdef __AROS__
+  UString u;
+  for (unsigned i = 0; i < p.Len(); i++)
+    u += (wchar_t)(unsigned char)p[i];
+  return u;
+#else
+  return FromUtf8(p);
+#endif
+}
+
+static AString UToPath(const UString &u)
+{
+#ifdef __AROS__
+  AString a;
+  for (unsigned i = 0; i < u.Len(); i++)
+    a += (char)(u[i] < 0x100 ? u[i] : '?');
+  return a;
+#else
+  return ToUtf8(u);
+#endif
+}
+
+// "6162" -> "ab"; false if not an even run of hex digits.
+static bool FromHex(const char *h, AString &out)
+{
+  out.Empty();
+  for (; h[0] && h[1]; h += 2)
+  {
+    int v = 0;
+    for (int k = 0; k < 2; k++)
+    {
+      const char c = h[k];
+      v <<= 4;
+      if (c >= '0' && c <= '9') v |= c - '0';
+      else if (c >= 'a' && c <= 'f') v |= c - 'a' + 10;
+      else if (c >= 'A' && c <= 'F') v |= c - 'A' + 10;
+      else return false;
+    }
+    out += (char)v;
+  }
+  return *h == 0;
+}
+
 // Directory part including the separator; works for "dir/x", "Vol:x", "Vol:dir/x".
 static AString DirPrefix(const AString &path)
 {
@@ -129,8 +185,11 @@ static AString BaseName(const AString &path)
 
 // ---------------------------------------------------------------- password
 
-// Shared by the open and the extract callbacks: the line is read from stdin
-// at most once, only when a handler asks, and is never echoed or logged.
+// Shared by the open and the extract callbacks: the line is read at most
+// once, only when a handler asks, from the -p file (a pipe the caller writes)
+// or else from stdin, and is never echoed or logged.
+static const char *g_PasswordFile = NULL;
+
 struct CPasswordState
 {
   bool Asked;
@@ -142,11 +201,20 @@ struct CPasswordState
   HRESULT Get(BSTR *password)
   {
     Asked = true;
+    Load();
+    if (!Defined)
+      return E_ABORT;
+    return StringToBstr(Password, password);
+  }
+
+  void Load()
+  {
     if (!Read)
     {
       Read = true;
       char buf[1024];
-      if (fgets(buf, sizeof(buf), stdin))
+      FILE *f = g_PasswordFile ? fopen(g_PasswordFile, "r") : stdin;
+      if (f && fgets(buf, sizeof(buf), f))
       {
         size_t n = strlen(buf);
         while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == '\r'))
@@ -157,11 +225,10 @@ struct CPasswordState
           Defined = true;
         }
       }
+      if (f && f != stdin)
+        fclose(f);
       memset(buf, 0, sizeof(buf));
     }
-    if (!Defined)
-      return E_ABORT;
-    return StringToBstr(Password, password);
   }
 };
 
@@ -234,7 +301,10 @@ public:
 };
 
 Z7_COM7F_IMF(COpenCallback::SetTotal(const UInt64 *, const UInt64 *)) { return S_OK; }
-Z7_COM7F_IMF(COpenCallback::SetCompleted(const UInt64 *, const UInt64 *)) { return S_OK; }
+Z7_COM7F_IMF(COpenCallback::SetCompleted(const UInt64 *, const UInt64 *))
+{
+  return unarc_break_requested() ? E_ABORT : S_OK;
+}
 
 Z7_COM7F_IMF(COpenCallback::GetProperty(PROPID propID, PROPVARIANT *value))
 {
@@ -251,7 +321,7 @@ Z7_COM7F_IMF(COpenCallback::GetStream(const wchar_t *name, IInStream **inStream)
 {
   *inStream = NULL;
   AString path = Dir;
-  path += ToUtf8(UString(name));
+  path += UToPath(UString(name));
   CStdioInStream *spec = new CStdioInStream;
   CMyComPtr<IInStream> s = spec;
   if (!spec->Open(path))
@@ -302,8 +372,8 @@ public:
   {
     if (!SizeKnown)
     {
-      if (Written == 0)
-        return false;
+      // An empty file of unknown size is still a file: D with 0 bytes. The
+      // F record says whether it is right.
       Header(BufLen);
       fwrite(Buf, 1, BufLen, stdout);
       return true;
@@ -332,10 +402,17 @@ public:
   }
 };
 
+static bool g_Cancelled = false;
+
 Z7_COM7F_IMF(CStdoutSink::Write(const void *data, UInt32 size, UInt32 *processedSize))
 {
   if (processedSize)
     *processedSize = size;
+  if (unarc_break_requested())
+  {
+    g_Cancelled = true;
+    return E_ABORT;
+  }
   if (size == 0)
     return S_OK;
   if (!SizeKnown)
@@ -373,6 +450,8 @@ Z7_COM7F_IMF(CStdoutSink::Write(const void *data, UInt32 size, UInt32 *processed
 
 // ---------------------------------------------------------------- extract callback
 
+// Several entries in one pass, so that a solid block is decoded once. Each
+// wanted entry gets its D record (data) and then an F record (its result).
 class CExtractCallback Z7_final:
   public IArchiveExtractCallback,
   public ICryptoGetTextPassword,
@@ -381,26 +460,85 @@ class CExtractCallback Z7_final:
   Z7_IFACES_IMP_UNK_2(IArchiveExtractCallback, ICryptoGetTextPassword)
   Z7_IFACE_COM7_IMP(IProgress)
 public:
-  UInt32 Wanted;
-  CStdoutSink *SinkSpec;
+  IInArchive *Arc;
+  UInt32 NumItems;
+  bool *Wanted;
+  bool *Done;
+  Int32 Cur;                // wanted entry being processed, or -1
+  CStdoutSink *SinkSpec;    // NULL when the handler asked in test mode
   CMyComPtr<ISequentialOutStream> Sink;
-  bool Seen;
-  Int32 OpRes;
-  CExtractCallback(): Wanted(0), SinkSpec(NULL), Seen(false), OpRes(-1) {}
+  int FirstCode;
+  AString FirstMsg;
+  CExtractCallback(): Arc(NULL), NumItems(0), Wanted(NULL), Done(NULL), Cur(-1),
+      SinkSpec(NULL), FirstCode(kCodeOk) {}
+  ~CExtractCallback() { delete[] Wanted; delete[] Done; }
+  void EntryDone(UInt32 index, Int32 opRes);
 };
 
+static void OutRecordMsg(const char *msg)
+{
+  for (const char *p = msg; *p; p++)
+    fputc((*p == '\t' || *p == '\n' || *p == '\r') ? ' ' : *p, stdout);
+  fputc('\n', stdout);
+}
+
+static bool GetBool(IInArchive *arc, UInt32 index, PROPID id, bool &v);
+static bool GetU64(IInArchive *arc, UInt32 index, PROPID id, UInt64 &v);
+static int ArchiveState(IInArchive *arc, AString &msg);
+
+// H: which entry the D and F records that follow belong to, so that the
+// caller can check it is the one it listed.
+static void OutHeader(IInArchive *arc, UInt32 index)
+{
+  bool isDir = false;
+  GetBool(arc, index, kpidIsDir, isDir);
+  UInt64 size;
+  const bool hasSize = GetU64(arc, index, kpidSize, size);
+  NCOM::CPropVariant nprop;
+  UString name;
+  if (arc->GetProperty(index, kpidPath, &nprop) == S_OK && nprop.vt == VT_BSTR)
+    name = nprop.bstrVal;
+  printf("H\t%u\t%d\t", (unsigned)index, isDir ? 1 : 0);
+  if (hasSize) OutU64(size); else Out("-");
+  Out("\t");
+  OutHexUtf8(name);
+  Out("\n");
+}
+
 Z7_COM7F_IMF(CExtractCallback::SetTotal(UInt64)) { return S_OK; }
-Z7_COM7F_IMF(CExtractCallback::SetCompleted(const UInt64 *)) { return S_OK; }
+
+Z7_COM7F_IMF(CExtractCallback::SetCompleted(const UInt64 *))
+{
+  if (unarc_break_requested())
+  {
+    g_Cancelled = true;
+    return E_ABORT;
+  }
+  return S_OK;
+}
 
 Z7_COM7F_IMF(CExtractCallback::GetStream(UInt32 index, ISequentialOutStream **outStream, Int32 askExtractMode))
 {
   *outStream = NULL;
+  if (unarc_break_requested())
+  {
+    g_Cancelled = true;
+    return E_ABORT;
+  }
   // The result that follows belongs to this index, whatever the mode: a
   // handler that already knows the data is corrupt (a solid 7z block after a
-  // wrong password) asks for the wanted entry in test mode, not extract mode.
-  Seen = (index == Wanted);
-  if (!Seen || askExtractMode != NArchive::NExtract::NAskMode::kExtract)
+  // wrong password) asks for a wanted entry in test mode, not extract mode.
+  Cur = (index < NumItems && Wanted[index] && !Done[index]) ? (Int32)index : -1;
+  SinkSpec = NULL;
+  Sink.Release();
+  if (Cur >= 0)
+    OutHeader(Arc, index);
+  if (Cur < 0 || askExtractMode != NArchive::NExtract::NAskMode::kExtract)
     return S_OK;
+  SinkSpec = new CStdoutSink;
+  Sink = SinkSpec;
+  SinkSpec->Index = index;
+  SinkSpec->SizeKnown = GetU64(Arc, index, kpidSize, SinkSpec->Size);
   CMyComPtr<ISequentialOutStream> s = Sink;
   *outStream = s.Detach();
   return S_OK;
@@ -410,15 +548,95 @@ Z7_COM7F_IMF(CExtractCallback::PrepareOperation(Int32)) { return S_OK; }
 
 Z7_COM7F_IMF(CExtractCallback::SetOperationResult(Int32 opRes))
 {
-  if (Seen && OpRes < 0)
-    OpRes = opRes;
-  Seen = false;
+  if (Cur >= 0)
+    EntryDone((UInt32)Cur, opRes);
+  Cur = -1;
+  SinkSpec = NULL;
+  Sink.Release();
   return S_OK;
 }
 
 Z7_COM7F_IMF(CExtractCallback::CryptoGetTextPassword(BSTR *password))
 {
   return g_Password.Get(password);
+}
+
+void CExtractCallback::EntryDone(UInt32 index, Int32 opRes)
+{
+  bool enc = false, isDir = false;
+  GetBool(Arc, index, kpidEncrypted, enc);
+  GetBool(Arc, index, kpidIsDir, isDir);
+  const bool framed = SinkSpec ? SinkSpec->Close() : false;
+  int code;
+  AString msg;
+  switch (opRes)
+  {
+    case NArchive::NExtract::NOperationResult::kOK:
+      if (!SinkSpec && isDir)
+      {
+        printf("D\t%u\t0\n", (unsigned)index);
+        code = kCodeOk; msg = "ok";
+      }
+      else
+      {
+        code = framed ? kCodeOk : kCodeDataError;
+        msg = framed ? "ok" : "size mismatch";
+      }
+      break;
+    case NArchive::NExtract::NOperationResult::kUnsupportedMethod:
+      code = kCodeUnsupported; msg = "unsupported method"; break;
+    case NArchive::NExtract::NOperationResult::kWrongPassword:
+      code = kCodeWrongPassword; msg = "wrong password"; break;
+    case NArchive::NExtract::NOperationResult::kDataError:
+    case NArchive::NExtract::NOperationResult::kCRCError:
+      if (enc && g_Password.Asked && !g_Password.Defined)
+      {
+        code = kCodeNeedPassword; msg = "password required";
+      }
+      else if (enc)
+      {
+        // What 7-Zip reports for this case: "... in encrypted file. Wrong password?"
+        code = kCodeWrongPassword;
+        msg = "data error in encrypted entry (wrong password?)";
+      }
+      else
+      {
+        code = kCodeDataError;
+        msg = opRes == NArchive::NExtract::NOperationResult::kCRCError ? "CRC error" : "data error";
+      }
+      break;
+    case NArchive::NExtract::NOperationResult::kUnavailable:
+    case NArchive::NExtract::NOperationResult::kUnexpectedEnd:
+    {
+      // An archive-wide missing volume explains a cut entry better.
+      AString arcMsg;
+      if (ArchiveState(Arc, arcMsg) == kCodeMissingVolume)
+      {
+        code = kCodeMissingVolume; msg = arcMsg;
+      }
+      else
+      {
+        code = kCodeDataError;
+        msg = opRes == NArchive::NExtract::NOperationResult::kUnavailable ? "data unavailable" : "unexpected end";
+      }
+      break;
+    }
+    case NArchive::NExtract::NOperationResult::kDataAfterEnd:
+      code = kCodeDataError; msg = "data after end"; break;
+    case NArchive::NExtract::NOperationResult::kIsNotArc:
+    case NArchive::NExtract::NOperationResult::kHeadersError:
+      code = kCodeDataError; msg = "headers error"; break;
+    default:
+      code = kCodeOther; msg = "unknown operation result"; break;
+  }
+  printf("F\t%u\t%d\t", (unsigned)index, code);
+  OutRecordMsg(msg);
+  Done[index] = true;
+  if (code != kCodeOk && FirstCode == kCodeOk)
+  {
+    FirstCode = code;
+    FirstMsg = msg;
+  }
 }
 
 // ---------------------------------------------------------------- helpers
@@ -580,7 +798,7 @@ static int OpenArchive(const char *path, COpened &o, AString &msg)
   o.Cb = o.CbSpec;
   const AString p(path);
   o.CbSpec->Dir = DirPrefix(p);
-  o.CbSpec->FirstName = FromUtf8(BaseName(p));
+  o.CbSpec->FirstName = PathToU(BaseName(p));
 
   UInt64 pos;
   in->Seek(0, STREAM_SEEK_SET, &pos);
@@ -693,6 +911,11 @@ static int CmdList(const char *path)
 
   for (UInt32 i = 0; i < n; i++)
   {
+    if ((i & 63) == 0 && unarc_break_requested())
+    {
+      Finish(kCodeCancelled, "cancelled");
+      return kCodeCancelled;
+    }
     bool isDir = false, enc = false;
     GetBool(arc, i, kpidIsDir, isDir);
     GetBool(arc, i, kpidEncrypted, enc);
@@ -744,15 +967,15 @@ static int CmdList(const char *path)
   return code;
 }
 
-static int CmdExtract(const char *path, const char *indexStr)
+static int CmpU32(const void *a, const void *b)
 {
-  char *end = NULL;
-  const unsigned long idx = strtoul(indexStr, &end, 10);
-  if (!*indexStr || *end)
-  {
-    Finish(kCodeOther, "bad index");
-    return kCodeOther;
-  }
+  const UInt32 x = *(const UInt32 *)a, y = *(const UInt32 *)b;
+  return x < y ? -1 : x > y;
+}
+
+// which: "all" or comma-separated indices.
+static int CmdExtract(const char *path, const char *which)
+{
   COpened o;
   AString msg;
   int code = OpenArchive(path, o, msg);
@@ -764,122 +987,172 @@ static int CmdExtract(const char *path, const char *indexStr)
   IInArchive *arc = o.Arc;
   UInt32 n = 0;
   arc->GetNumberOfItems(&n);
-  if (idx >= n)
-  {
-    Finish(kCodeOther, "index out of range");
-    return kCodeOther;
-  }
-  const UInt32 index = (UInt32)idx;
 
-  bool enc = false, isDir = false;
-  GetBool(arc, index, kpidEncrypted, enc);
-  GetBool(arc, index, kpidIsDir, isDir);
+  UInt32 *idx = new UInt32[n ? n : 1];
+  UInt32 count = 0;
+  if (strcmp(which, "all") == 0)
+  {
+    for (UInt32 i = 0; i < n; i++)
+      idx[count++] = i;
+  }
+  else
+  {
+    // "@file": the list is in a file (a long selection does not fit a
+    // command line). Commas or line ends separate the indices.
+    AString fromFile;
+    if (which[0] == '@')
+    {
+      FILE *f = fopen(which + 1, "r");
+      if (!f)
+      {
+        delete[] idx;
+        Finish(kCodeOther, "cannot read the index file");
+        return kCodeOther;
+      }
+      int ch;
+      while ((ch = fgetc(f)) != EOF)
+        if (ch != '\r' && ch != ' ')
+          fromFile += (char)(ch == '\n' ? ',' : ch);
+      fclose(f);
+      while (!fromFile.IsEmpty() && fromFile.Back() == ',')
+        fromFile.DeleteBack();
+      which = fromFile.Ptr();
+    }
+    const char *p = which;
+    while (*p)
+    {
+      char *end = NULL;
+      const unsigned long v = strtoul(p, &end, 10);
+      if (end == p || (*end && *end != ',') || v >= n || count >= n)
+      {
+        delete[] idx;
+        Finish(kCodeOther, v >= n && end != p ? "index out of range" : "bad index");
+        return kCodeOther;
+      }
+      idx[count++] = (UInt32)v;
+      p = *end ? end + 1 : end;
+    }
+  }
+  // The handlers want ascending, distinct indices.
+  qsort(idx, count, sizeof(UInt32), CmpU32);
+  UInt32 m = 0;
+  for (UInt32 i = 0; i < count; i++)
+    if (m == 0 || idx[m - 1] != idx[i])
+      idx[m++] = idx[i];
+  count = m;
 
   CExtractCallback *cbSpec = new CExtractCallback;
   CMyComPtr<IArchiveExtractCallback> cb = cbSpec;
-  cbSpec->Wanted = index;
-  cbSpec->SinkSpec = new CStdoutSink;
-  cbSpec->Sink = cbSpec->SinkSpec;
-  cbSpec->SinkSpec->Index = index;
-  cbSpec->SinkSpec->SizeKnown = GetU64(arc, index, kpidSize, cbSpec->SinkSpec->Size);
+  cbSpec->Arc = arc;
+  cbSpec->NumItems = n;
+  cbSpec->Wanted = new bool[n ? n : 1];
+  cbSpec->Done = new bool[n ? n : 1];
+  for (UInt32 i = 0; i < n; i++)
+    cbSpec->Wanted[i] = cbSpec->Done[i] = false;
+  for (UInt32 i = 0; i < count; i++)
+    cbSpec->Wanted[idx[i]] = true;
 
-  const HRESULT res = arc->Extract(&index, 1, 0, cb);
-  const bool framed = cbSpec->SinkSpec->Close();
+  const HRESULT res = count ? arc->Extract(idx, count, 0, cb) : S_OK;
+  if (cbSpec->Cur >= 0 && !g_Cancelled)
+    cbSpec->EntryDone((UInt32)cbSpec->Cur, -1);
 
-  if (g_Password.Asked && !g_Password.Defined && (res == E_ABORT || cbSpec->OpRes < 0))
+  if (g_Cancelled || (res == E_ABORT && unarc_break_requested()))
+  {
+    delete[] idx;
+    Finish(kCodeCancelled, "cancelled");
+    return kCodeCancelled;
+  }
+  // Entries the handler never offered: directories are fine, files are not.
+  for (UInt32 i = 0; i < count; i++)
+  {
+    const UInt32 k = idx[i];
+    if (cbSpec->Done[k])
+      continue;
+    bool isDir = false;
+    GetBool(arc, k, kpidIsDir, isDir);
+    int c = kCodeOk;
+    const char *m2 = "ok";
+    OutHeader(arc, k);
+    if (isDir)
+      printf("D\t%u\t0\n", (unsigned)k);
+    else if (g_Password.Asked && !g_Password.Defined)
+    {
+      c = kCodeNeedPassword; m2 = "password required";
+    }
+    else
+    {
+      c = kCodeOther; m2 = "entry was not processed";
+    }
+    printf("F\t%u\t%d\t", (unsigned)k, c);
+    OutRecordMsg(m2);
+    cbSpec->Done[k] = true;
+    if (c != kCodeOk && cbSpec->FirstCode == kCodeOk)
+    {
+      cbSpec->FirstCode = c;
+      cbSpec->FirstMsg = m2;
+    }
+  }
+  delete[] idx;
+
+  if (g_Password.Asked && !g_Password.Defined && (res != S_OK || cbSpec->FirstCode != kCodeOk))
   {
     Finish(kCodeNeedPassword, "password required");
     return kCodeNeedPassword;
   }
-  if (res != S_OK)
+  if (res != S_OK && cbSpec->FirstCode == kCodeOk)
   {
     code = (res == E_OUTOFMEMORY) ? kCodeOther : kCodeDataError;
     Finish(code, res == E_OUTOFMEMORY ? "out of memory" : "extract failed");
     return code;
   }
-
-  // An archive-wide missing volume explains a cut entry better than the entry result.
-  AString arcMsg;
-  const int arcState = ArchiveState(arc, arcMsg);
-
-  switch (cbSpec->OpRes)
-  {
-    case NArchive::NExtract::NOperationResult::kOK:
-      code = framed ? kCodeOk : kCodeDataError;
-      msg = framed ? "ok" : "size mismatch";
-      break;
-    case NArchive::NExtract::NOperationResult::kUnsupportedMethod:
-      code = kCodeUnsupported; msg = "unsupported method"; break;
-    case NArchive::NExtract::NOperationResult::kWrongPassword:
-      code = kCodeWrongPassword; msg = "wrong password"; break;
-    case NArchive::NExtract::NOperationResult::kDataError:
-    case NArchive::NExtract::NOperationResult::kCRCError:
-      if (enc)
-      {
-        // What 7-Zip reports for this case: "... in encrypted file. Wrong password?"
-        code = kCodeWrongPassword;
-        msg = "data error in encrypted entry (wrong password?)";
-      }
-      else
-      {
-        code = kCodeDataError;
-        msg = cbSpec->OpRes == NArchive::NExtract::NOperationResult::kCRCError ? "CRC error" : "data error";
-      }
-      break;
-    case NArchive::NExtract::NOperationResult::kUnavailable:
-    case NArchive::NExtract::NOperationResult::kUnexpectedEnd:
-      if (arcState == kCodeMissingVolume)
-      {
-        code = kCodeMissingVolume; msg = arcMsg;
-      }
-      else
-      {
-        code = kCodeDataError;
-        msg = cbSpec->OpRes == NArchive::NExtract::NOperationResult::kUnavailable ? "data unavailable" : "unexpected end";
-      }
-      break;
-    case NArchive::NExtract::NOperationResult::kDataAfterEnd:
-      code = kCodeDataError; msg = "data after end"; break;
-    case NArchive::NExtract::NOperationResult::kIsNotArc:
-    case NArchive::NExtract::NOperationResult::kHeadersError:
-      code = kCodeDataError; msg = "headers error"; break;
-    case -1:
-      if (isDir)
-      {
-        // Handlers do not always ask for a stream for a directory.
-        if (!cbSpec->SinkSpec->HeaderOut)
-          printf("D\t%u\t0\n", (unsigned)index);
-        code = kCodeOk; msg = "ok";
-      }
-      else
-      {
-        code = kCodeOther; msg = "entry was not processed";
-      }
-      break;
-    default:
-      code = kCodeOther; msg = "unknown operation result"; break;
-  }
-  Finish(code, msg);
+  code = cbSpec->FirstCode;
+  Finish(code, code == kCodeOk ? "ok" : cbSpec->FirstMsg.Ptr());
   arc->Close();
   return code;
 }
 
 static void Usage()
 {
-  fputs("usage: unarc-7z list <archive>\n"
-        "       unarc-7z extract <archive> <index>\n"
-        "A password, if needed, is read as one line from stdin.\n", stderr);
+  fputs("usage: unarc-7z [-p <file>] list <archive>\n"
+        "       unarc-7z [-p <file>] extract <archive> <index>[,<index>...] | all\n"
+        "       listx / extractx: the archive path as hex of its bytes\n"
+        "A password, if needed, is read as one line from <file>, else from stdin.\n", stderr);
 }
 
 int main(int argc, char **argv)
 {
   int code;
+  int a = 1;
+  if (argc > 2 && strcmp(argv[1], "-p") == 0)
+  {
+    g_PasswordFile = argv[2];
+    a = 3;
+    // Read it now, asked for or not: the caller writes it into a pipe, and a
+    // pipe that is never read would hold the writer (and the secret) back.
+    g_Password.Load();
+  }
+  const int rest = argc - a;
   try
   {
-    if (argc == 3 && strcmp(argv[1], "list") == 0)
-      code = CmdList(argv[2]);
-    else if (argc == 4 && strcmp(argv[1], "extract") == 0)
-      code = CmdExtract(argv[2], argv[3]);
+    AString path;
+    const bool hex = rest >= 2 && (strcmp(argv[a], "listx") == 0 || strcmp(argv[a], "extractx") == 0);
+    if (rest >= 2)
+    {
+      if (hex)
+      {
+        if (!FromHex(argv[a + 1], path))
+        {
+          Finish(kCodeOther, "bad hex path");
+          return 20;
+        }
+      }
+      else
+        path = argv[a + 1];
+    }
+    if (rest == 2 && (strcmp(argv[a], "list") == 0 || strcmp(argv[a], "listx") == 0))
+      code = CmdList(path);
+    else if (rest == 3 && (strcmp(argv[a], "extract") == 0 || strcmp(argv[a], "extractx") == 0))
+      code = CmdExtract(path, argv[a + 2]);
     else
     {
       Usage();

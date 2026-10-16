@@ -52,17 +52,38 @@ def parse_list(out):
             res = (int(f[1]), f[2])
     return arc, entries, res
 
-def parse_extract(out):
-    """Returns (data or None, code, message); checks the framing."""
-    data = None
-    if out.startswith(b'D\t'):
+def parse_multi(out):
+    """D/F records then R; returns ({index: (data or None, F code, F message)}, R code, R message)
+    and checks the framing: every D is followed by its F, R is the last line."""
+    ents = {}
+    pending = {}
+    while True:
         nl = out.index(b'\n')
-        n = int(out[:nl].split(b'\t')[2])
-        data = out[nl + 1:nl + 1 + n]
-        out = out[nl + 1 + n:]
-    f = out.decode('utf-8').rstrip('\n').split('\t')
-    assert f[0] == 'R' and out.count(b'\n') == 1, 'bad framing'
-    return data, int(f[1]), f[2]
+        f = out[:nl].split(b'\t')
+        if f[0] == b'H':
+            assert int(f[1]) not in ents and int(f[1]) not in pending, 'H after its D'
+            out = out[nl + 1:]
+            continue
+        if f[0] == b'D':
+            n = int(f[2])
+            pending[int(f[1])] = out[nl + 1:nl + 1 + n]
+            out = out[nl + 1 + n:]
+            continue
+        if f[0] == b'F':
+            k = int(f[1])
+            ents[k] = (pending.pop(k, None), int(f[2]), f[3].decode('utf-8'))
+            out = out[nl + 1:]
+            continue
+        assert f[0] == b'R' and nl == len(out) - 1, 'bad framing'
+        assert not pending, 'D without F'
+        return ents, int(f[1]), f[2].decode('utf-8')
+
+def parse_extract(out):
+    """One entry: (data or None, code, message) from its F record and R."""
+    ents, code, msg = parse_multi(out)
+    assert len(ents) <= 1, 'more than one entry'
+    data = next(iter(ents.values()))[0] if ents else None
+    return data, code, msg
 
 def sha(b):
     return hashlib.sha256(b).hexdigest()
@@ -208,6 +229,47 @@ def main():
         save_listing(os.path.join(CORPUS, f))
     save_listing(enc)
     save_listing(hdr, 'secret')
+
+    # One run for many entries ("all", or a list), as aros-unarc extracts: the
+    # data must equal one run per entry, solid archives included.
+    def one_by_one(path, password=None):
+        _, ents, _ = parse_list(run(['list', path], password))
+        r = {}
+        for e in ents:
+            data, code, _ = parse_extract(run(['extract', path, str(e['index'])], password))
+            r[e['index']] = (data, code)
+        return ents, r
+    for path, pw in ((os.path.join(CORPUS, 'tree.7z'), None), (enc, 'secret'), (hdr, 'secret'),
+                     (os.path.join(CORPUS, 'r5.part01.rar'), None),
+                     (os.path.join(CORPUS, 'r4.part1.rar'), None),
+                     (os.path.join(rdir, 'rar5_solid_encrypted.rar'), 'password'),
+                     (os.path.join(rdir, 'rar4_solid_encrypted.rar'), 'password')):
+        ents, single = one_by_one(path, pw)
+        multi, code, msg = parse_multi(run(['extract', path, 'all'], pw))
+        same = set(multi) == set(single) and all(multi[k][0] == single[k][0] and multi[k][1] == single[k][1]
+                                                 for k in multi)
+        check(same, f'{os.path.basename(path)}: extract all = {len(ents)} single runs (R {code} {msg})')
+        if len(ents) >= 2:
+            pick = ','.join(str(e['index']) for e in reversed(ents[:2]))
+            sub, code, _ = parse_multi(run(['extract', path, pick], pw))
+            check(sorted(sub) == sorted(e['index'] for e in ents[:2]) and
+                  all(sub[k][0] == single[k][0] for k in sub), f'{os.path.basename(path)}: extract {pick} (unsorted list)')
+
+    # Hex path and the password from a file instead of stdin.
+    hx = hdr.encode().hex()
+    a = run(['list', hdr], 'secret')
+    pwf = os.path.join(TEST, 'pw.txt')
+    open(pwf, 'w').write('secret\n')
+    check(run(['listx', hx], 'secret') == a, 'hdr.7z listx (hex path) = list')
+    check(run(['-p', pwf, 'listx', hx]) == a, 'hdr.7z -p file: same listing, stdin unused')
+    check(run(['-p', pwf, 'extractx', hx, 'all']) == run(['extract', hdr, 'all'], 'secret'),
+          'hdr.7z -p file extractx all = extract all')
+    idxf = os.path.join(TEST, 'idx.txt')
+    open(idxf, 'w').write('2\n0\n')
+    check(run(['extract', hdr, '@' + idxf], 'secret') == run(['extract', hdr, '0,2'], 'secret'),
+          'hdr.7z extract @file = extract 0,2')
+    expect(['listx', 'zz'], None, 9, 'listx with bad hex')
+    expect(['extract', os.path.join(CORPUS, 'tree.7z'), '9999'], None, 9, 'extract index out of range')
 
     # Missing middle volume: gap.part1, part2, part4 (no part3).
     expect(['list', os.path.join(CORPUS, 'gap.part1.rar')], None, 4, 'gap.part1.rar list (part3 missing)')
