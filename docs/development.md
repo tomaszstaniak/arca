@@ -1,6 +1,6 @@
 ---
 type: guide
-updated: 2026-10-16
+updated: 2026-10-17
 ---
 
 # Development
@@ -41,14 +41,30 @@ collect-aros itself can exit 0 with symbols left unresolved, which is also why
 
 - `src/core/`: the model, format recognition and engine choice (`registry.c`,
   `session.c`), name conversion (`names.c`), the extraction plan (`plan.c`), the
-  only code that writes extracted files (`fsl.c`) and packing (`pack.c`).
+  only code that writes extracted files (`fsl.c`) and packing (`pack.c`);
+  `methods.c` reads what a 7z or ZIP archive needs from its own index
+  (encryption, methods); `bigfile.c` reads at 64-bit positions (ABIv11's
+  `Seek` is 32-bit) and stamps archive files; `times.c` turns archive times
+  into AROS dates with the locale's offset for every engine.
 - `src/engines/`: libarchive, a statically linked XAD (`xad_static.c`, LGPL), and
-  `be_7z.c`, which runs the separate program `unarc-7z` (7-Zip's 7z and RAR
-  handlers, `experiments/7z-backend/`) for 7z and RAR when it is installed next
-  to Unarc and unarc-cli. It reads the program's line protocol (PROTOCOL.md
-  there) from a `PIPE:` handle; the archive path goes as hex, the selection
-  through a file in `T:`, the password through a second pipe. Without the
-  program, libarchive reads 7z and RAR as before (no passwords).
+  `be_7z.c`, which runs the separate program `unarc-7z` (7-Zip's 7z, RAR and
+  ZIP handlers, `experiments/7z-backend/`) when it is installed next to Unarc
+  and unarc-cli. It reads the program's line protocol (PROTOCOL.md there)
+  from a `PIPE:` handle; the archive path goes as hex, the selection through a
+  file in `T:`, the password through a second pipe. The program's protocol
+  number is asked once per run; one of another release is not used.
+
+Engine choice (`registry.c`): RAR goes to 7-Zip first. Plain 7z and ZIP go to
+libarchive first, as it is 2-3 times faster with many small entries; before
+it lists them, `methods.c` reads their index, and the engine answers
+`UA_LIST_UNSUPPORTED` for an encrypted entry list, encrypted entries or a
+method it lacks (Deflate64, Zstandard, ...). The session then tries the next
+engine (7-Zip, then XAD for ZIP); if none reads the archive, the first list
+is used as far as it goes (encrypted entries left out), or the archive is
+refused as unsupported, not as damaged. A later engine that calls such an
+archive damaged is not believed. 7z sets (`.7z.001`) go to 7-Zip first.
+Damage is reported, and recovery stays a separate, explicit mode.
+
 - `src/cli/`: `unarc-cli`, the Shell program.
 - `src/gui/`: `Unarc`, the Zune program; `job.c` runs each job in a worker process.
 
@@ -77,7 +93,7 @@ collect-aros itself can exit 0 with symbols left unresolved, which is also why
   since Limpet shows UTF-8. Limpet sends typed commands to the Shell as UTF-8
   (its README), so a non-ASCII name typed there will not match the ISO-8859-1
   name on disk; not handled here and not tested.
-- Passwords (7z, RAR, through unarc-7z): an encrypted entry list is asked for
+- Passwords (7z, RAR and ZIP with ZipCrypto or AES, through unarc-7z): an encrypted entry list is asked for
   at once; encrypted entries before anything is written. On an interactive
   console the password is read without echo (Limpet's UTF-8 as it is,
   ISO-8859-1 converted to UTF-8); in scripts `PASSWORD` gives it. Without one,
@@ -90,11 +106,19 @@ collect-aros itself can exit 0 with symbols left unresolved, which is also why
 - A multi-volume archive can be named by any of its volumes. The set is found
   in the same drawer by name (`name.partN.rar`, `name.rar` + `name.rNN`,
   `name.7z.001`), but the order and completeness of a RAR set come from the
-  volumes' own headers; an incomplete set is refused with the missing volume's
-  name.
-- `ENGINE` (`libarchive`, `xad`, `libarchive-stream`), `CANCELAFTER` (bytes) and
-  `TESTSWAP` (a file copied over the archive between listing and extracting)
-  are for testing.
+  volumes' own headers (read at 64-bit positions and checked against their
+  CRC, so volumes over 2 GB work); an incomplete set is refused with the
+  missing volume's name.
+- The archive's files are stamped when listed (size, date, CRC of the first
+  and last 64 KB) and checked again before extracting; a file that changed is
+  refused before anything is written. Each engine also compares every header
+  with the listed entry while extracting, which catches a change the stamp
+  cannot see (the middle of a file rewritten in place, same size and date),
+  but only when that entry is reached.
+- `ENGINE` (`libarchive`, `xad`, `7-zip`, `libarchive-stream`), `CANCELAFTER`
+  (bytes) and `TESTSWAP` (a file copied over the archive between listing and
+  extracting) are for testing; so is the variable `UnarcTestNoStamp`, which
+  skips the stamp check so that the header comparison can be tested alone.
 
 ## The Zune program
 
@@ -140,11 +164,35 @@ packing.
   by Aminet's LhA and LZX under amitools' vamos).
 - `tests/guest/make_stage.py` packs the command-line program, the corpus and an
   AROS Shell script for a test machine (options select the suites: `core2`,
-  `regress`, `pack`, `ffsprobe`, ...); results go to `RESULTS:<run-id>/`.
+  `regress`, `pack`, `vol`, `ffsprobe`, ...); results go to `RESULTS:<run-id>/`.
 - `tests/guest/make_gui_stage.py` adds the Zune program, test project icons and
-  the memory/lock loop for the GUI.
-- `tests/host/verify_core2.py` and `tests/host/verify_pack.py` check collected
-  results on the host; the packing check uses 7-Zip and Python, not libarchive.
+  the memory/lock loop for the GUI; `make_7zi_cases.py` the engine-choice matrix
+  (7z, RAR, ZIP, passwords, sets, Ctrl-C, no helper, a helper of another
+  release); `make_review_cases.py` the time zone check, the package as a user
+  installs it and an archive for cancelling in the GUI.
+- `tests/host/verify_core2.py`, `verify_pack.py`, `verify_volumes.py` and
+  `verify_7zi.py` check collected results on the host; references come from
+  7-Zip, unar and Python, not from our own code.
+- Host unit tests, built with AddressSanitizer and UBSan over a DOS shim with
+  AROS's 32-bit `LONG` (`tests/host/shim`): `test_volumes.py` (the volume
+  finder, including volumes over 2 GB and failing allocations),
+  `test_methods.py` (what 7z and ZIP archives need; `--big` adds a 7z over
+  2 GB), `be7z_host.c` (the 7-Zip engine's handling of the protocol, with the
+  program replaced by a given output), `plan_host.c`. `experiments/7z-backend/
+  host_test.py` checks the helper itself.
+- `tests/host/screen/`: screen recording over QMP and a blank-frame count, for
+  flicker measurements.
 - `tests/probes/`: small programs that isolate platform behaviour (iconv, long
-  paths, FFS file creation) and `uatool`, which makes project icons, opens objects
-  as Workbench does and sends AppWindow drops.
+  paths, FFS file creation), `fake7z` (a helper of another release) and
+  `uatool`, which makes project icons, opens objects as Workbench does, sends
+  AppWindow drops, sends Ctrl-C to a running command, prints file dates and the
+  locale's offset (and sets it), and opens, closes or moves windows for the
+  drag tests.
+
+## Package
+
+`packaging/make-package.sh <version>` writes `dist/Unarc-<version>-x86_64-abiv11.zip`
+(one drawer: the three programs, ReadMe, icons from `packaging/make-icons.py`,
+and a Licences drawer with every licence text, THIRD_PARTY_NOTICES and the
+source revision) and adds it to `dist/SHA256SUMS`. It refuses to replace a
+file in `dist/` and to package uncommitted sources.

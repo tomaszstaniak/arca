@@ -306,15 +306,24 @@ if "core4" in opts:
     L.append(f"Copy UATest:c3 {O}/out/c3-ffs ALL QUIET")
     L.append(f"Copy RAM:c3 {O}/out/c3-ram ALL QUIET")
     L.append("Delete UATest:c1 UATest:c2 UATest:c3 ALL QUIET")
-    # The archive replaced between listing and extracting.
+    # The archive replaced between listing and extracting: first as it is (the
+    # stamp taken at listing refuses every replacement before anything is
+    # written; C4a copies the same bytes again, which changes only the date),
+    # then with UnarcTestNoStamp, so that the engines' header comparison is
+    # tested on its own as before (C4*-nostamp).
     L.append("MakeDir RAM:sw")
-    for name, other, eng in (("C4a-swap-same", "swap-a", ""), ("C4b-swap-order", "swap-b", ""),
-                             ("C4c-swap-more", "swap-more", ""),
-                             ("C4d-swap-short", "swap-short", ""),
-                             ("C4e-swap-order-xad", "swap-b", "ENGINE xad")):
-        L.append("Copy corpus/swap-a.zip RAM:sw/a.zip")
-        case(name, f"{U} RAM:sw/a.zip TO RAM:sw/{name} {eng} TESTSWAP corpus/{other}.zip".replace("  ", " "),
-             [f"List RAM:sw/{name} ALL"])
+    for suffix, env in (("", None), ("-nostamp", "SetEnv UnarcTestNoStamp 1")):
+        if env:
+            L.append(env)
+        for name, other, eng in (("C4a-swap-same", "swap-a", ""), ("C4b-swap-order", "swap-b", ""),
+                                 ("C4c-swap-more", "swap-more", ""),
+                                 ("C4d-swap-short", "swap-short", ""),
+                                 ("C4e-swap-order-xad", "swap-b", "ENGINE xad")):
+            n = name + suffix
+            L.append("Copy corpus/swap-a.zip RAM:sw/a.zip")
+            case(n, f"{U} RAM:sw/a.zip TO RAM:sw/{n} {eng} TESTSWAP corpus/{other}.zip".replace("  ", " "),
+                 [f"List RAM:sw/{n} ALL"])
+    L.append("UnSetEnv UnarcTestNoStamp")
     # More than 2^31 bytes: written and checked, then replaced and checked.
     case("C6a-big-extract", f"{U} corpus/bigzero.tar.xz TO SYS:uatest-big STATS",
          ["List SYS:uatest-big ALL", "Info SYS:"])
