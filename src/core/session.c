@@ -194,6 +194,10 @@ int ua_read_list(const char *archive, ua_format fmt, ua_op op, int recover,
             if (!ua_stamp_file(vols ? vols[k] : archive, &l->stamps[k]))
                 break;
         l->nstamps = l->stamps && k == nv ? nv : 0;
+        if (!l->nstamps) {              /* not stamped: not checked later */
+            free(l->stamps);
+            l->stamps = NULL;
+        }
         l->format = fmt;
         l->partial = got == 1;
         l->volumes = NULL;

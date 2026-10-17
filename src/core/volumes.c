@@ -27,6 +27,7 @@ typedef struct cand {
     int first, cont;          /* content says: first volume / continues */
     int rar;                  /* 4 or 5 for RAR, 0 otherwise */
     int oom;                  /* reading its headers ran out of memory */
+    int hdrenc;               /* its headers are encrypted: only the name tells */
 } cand;
 
 /* ---- reading RAR headers ---- */
@@ -119,6 +120,9 @@ static void rar5_scan(ua_rdr *r, cand *c)
                 c->volnum = 0;
                 c->first = (aflags & 1) != 0;
             }
+        } else if (type == 4) {             /* archive encryption: the rest is encrypted */
+            c->hdrenc = 1;
+            break;
         } else if (type == 5) {             /* end of archive */
             UQUAD eflags = 0;
             vint(hb, hsize, &at, &eflags);
@@ -151,13 +155,20 @@ static void rar4_scan(ua_rdr *r, cand *c)
         size = pre[5] | (pre[6] << 8);
         if (size < 7 || !r_take(r, &h, &cap, size - 7, &c->oom))
             break;
-        if ((crc32(crc32(0L, pre + 2, 5), h, size - 7) & 0xFFFF) != (ULONG)(pre[0] | (pre[1] << 8)))
+        /* unrar does not check AV (0x75) and SIGN (0x79) headers either: old
+         * versions wrote them with a wrong CRC. */
+        if (type != 0x75 && type != 0x79 &&
+            (crc32(crc32(0L, pre + 2, 5), h, size - 7) & 0xFFFF) != (ULONG)(pre[0] | (pre[1] << 8)))
             break;
         total = size;
         /* h holds the header from offset 7 on. */
         if (type == 0x73) {                     /* main header */
             if (flags & 0x0100)
                 c->first = 1;
+            if (flags & 0x0080) {               /* MHD_PASSWORD: the rest is encrypted */
+                c->hdrenc = 1;
+                break;
+            }
         } else if (type == 0x74 || type == 0x7A) {   /* file or service header */
             UQUAD pack;
             if (size < 11)
@@ -383,6 +394,17 @@ int ua_volumes_find(const char *path, ua_volumes *v)
             goto out;
         }
     }
+    /* A set with encrypted headers says nothing more than its names do: check
+     * it by name only (the engine checks the content when it reads it). */
+    for (i = 0; i < n; i++)
+        if (c[i].hdrenc)
+            break;
+    if (i < n)
+        for (i = 0; i < n; i++) {
+            c[i].rar = 0;
+            c[i].volnum = -1;
+            c[i].first = c[i].cont = 0;
+        }
     qsort(c, n, sizeof(*c), cmp_cand);
 #ifdef VOL_DEBUG
     for (i = 0; i < n; i++)

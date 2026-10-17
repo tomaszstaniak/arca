@@ -295,6 +295,15 @@ static int ask_password(const char *archive)
         }
         if (Read(in, &c, 1) != 1)
             break;
+        if (c == 3) {                    /* Ctrl-C, even inside a sequence */
+            n = 0;
+            esc = -1;
+            break;
+        }
+        if (esc && (c == '\r' || c == '\n')) {
+            esc = 0;                     /* Esc then Return: the line ends */
+            break;
+        }
         if (esc) {                       /* a control sequence: up to its final byte */
             if (c >= 0x40 && c <= 0x7e && !(esc == 1 && c == '['))
                 esc = 0;

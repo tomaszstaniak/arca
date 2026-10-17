@@ -1196,9 +1196,10 @@ static void presize_columns(void)
             size_v[k] = e->size;
             size_c[k] = i;
         }
-        kind = (e->map_flags & UA_MAP_UNSAFE ? 1 : e->encrypted ? 2 : e->skip ? 4 :
-                e->map_flags ? 8 : 0) | (e->comment && *e->comment ? 16 : 0) |
-               (!e->size_valid && e->type != UA_ET_DIR ? 32 : 0);
+        /* 0..19: which note, and whether a comment and an unknown size join it */
+        kind = (e->map_flags & UA_MAP_UNSAFE ? 1 : e->encrypted ? 2 : e->skip ? 3 :
+                e->map_flags ? 4 : 0) + (e->comment && *e->comment ? 5 : 0) +
+               (!e->size_valid && e->type != UA_ET_DIR ? 10 : 0);
         if (((e->date_valid && !have_date) || (e->prot_valid && !have_prot) ||
              (kind && !(notes & (1UL << kind)))) && no < 16) {
             have_date |= e->date_valid;

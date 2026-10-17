@@ -844,6 +844,8 @@ int ua_extract(const char *archive, ua_list *l, ua_plan *p, ua_extract_opts *o,
          i++) {
         ua_stamp now;
         const char *path = l->volumes ? l->volumes[i] : archive;
+        if (!path)
+            break;              /* the volume list was cut short (out of memory) */
         if (!ua_stamp_file(path, &now) || memcmp(&now, &l->stamps[i], sizeof(now))) {
             snprintf(err, errlen, "%s (%s)", UA_REPLACED_MSG, (const char *)FilePart((STRPTR)path));
             return -1;

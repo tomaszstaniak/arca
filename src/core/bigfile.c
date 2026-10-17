@@ -22,6 +22,8 @@ static int skip_forward(ua_rdr *r, UQUAD to)
     static UBYTE junk[65536];
     while (r->pos < to) {
         UQUAD gap = to - r->pos;
+        if (SetSignal(0, 0) & SIGBREAKF_CTRL_C)
+            return 0;                   /* left set for the caller to see */
         LONG got = Read(r->fh, junk, gap > sizeof(junk) ? (LONG)sizeof(junk) : (LONG)gap);
         if (got <= 0)
             return 0;
@@ -98,9 +100,16 @@ int ua_stamp_file(const char *path, ua_stamp *st)
         n = st->size < sizeof(buf) ? (LONG)st->size : (LONG)sizeof(buf);
         if (ua_rdr_at(&r, 0, buf, n)) {
             st->crc_head = crc32(0L, buf, (uInt)n);
-            if (ua_rdr_at(&r, st->size - n, buf, n)) {
-                st->crc_tail = crc32(0L, buf, (uInt)n);
-                ok = 1;
+            /* The end only where the file can seek: on SFS a file over 2 GB
+             * would be read whole, twice per job (bigfile.c). */
+            if (st->size <= 0x7fffffffUL || (Seek(r.fh, 0, OFFSET_CURRENT) != -1 && !r.noseek &&
+                ua_rdr_goto(&r, st->size - n) && !r.noseek)) {
+                if (ua_rdr_at(&r, st->size - n, buf, n)) {
+                    st->crc_tail = crc32(0L, buf, (uInt)n);
+                    ok = 1;
+                }
+            } else {
+                ok = 1;                 /* size, date and the head only */
             }
         }
     }

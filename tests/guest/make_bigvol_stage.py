@@ -7,7 +7,7 @@ in the guest each set is unpacked to SYS:uatest-bigvol, checked with
 uatool vols (Unarc's own volume finder) and deleted before the next.
 
 Usage: make_bigvol_stage.py <bin-dir> <stage-dir> <run-id>
-In the guest:  C:UnZip >RAM:unzip-log POOLINPUT:payload.zip -d RAM:u
+In the guest:  C:UnZip >RAM:unzip-log POOLINPUT:payload.zip -d RAM:u  (the stage itself is small)
                Execute RAM:u/bigvol.script
 Results: RESULTS:<run>/bigvol.txt. Needs about 4.6 GB free on SYS:.
 """
@@ -18,6 +18,7 @@ if os.path.exists(stage):
     sys.exit(f"{stage} exists; use a new directory")
 os.makedirs(stage)
 shutil.copy2(os.path.join(bindir, "uatool"), os.path.join(stage, "uatool"))
+shutil.copy2(os.path.join(bindir, "unarc-cli"), os.path.join(stage, "unarc-cli"))
 G = 1 << 30
 
 
@@ -92,11 +93,13 @@ with zipfile.ZipFile(os.path.join(stage, "bigv4.zip"), "w", allowZip64=True) as 
 
 O = f"RESULTS:{run}"
 D = "SYS:uatest-bigvol"
-L = ["FailAt 30", f"MakeDir {O}", f"Info SYS: >{O}/bigvol.txt"]
+L = ["FailAt 30", "Stack 40960", "Protect RAM:u/unarc-cli +e", "Protect RAM:u/uatool +e",
+     f"MakeDir {O}", f"Info SYS: >{O}/bigvol.txt"]
 for zipname, ask, want in (("bigv5.zip", "big5.part2.rar", "set of 3, problem \"\": big5.part1, part2, part3"),
                            ("bigv4.zip", "big4.r00", "set of 3, problem \"\": big4.rar, big4.r01, big4.r00")):
     L += [f"MakeDir {D}",
-          f"C:UnZip >>{O}/bigvol-unzip.txt RAM:u/{zipname} -d {D}",
+          # AROS's UnZip 2.1 has no Zip64; Unarc's own CLI unpacks these.
+          f"RAM:u/unarc-cli >>{O}/bigvol-unzip.txt RAM:u/{zipname} TO {D} NOWRAP QUIET",
           f"List {D} >>{O}/bigvol.txt",
           f'Echo "== {ask}: want {want}" >>{O}/bigvol.txt',
           f"RAM:u/uatool vols {D}/{ask} >>{O}/bigvol.txt",

@@ -161,6 +161,27 @@ rc, out, err = run("-sfs", "big4.r00", cwd=d)
 check("RAR 4 set over 2 GB where no seek works (SFS): read forward", rc == 0 and
       all(w in out for w in want), out + err[-300:])
 
+# ---- encrypted headers (rar -hp): after RAR 5's encryption header, or a RAR 4
+# main header with MHD_PASSWORD, nothing more can be read; the set is checked
+# by name, not refused.
+d = os.path.join(tmp, "hp")
+os.makedirs(d)
+for i in range(1, 4):
+    with open(os.path.join(d, f"hp5.part{i}.rar"), "wb") as f:
+        enc = vint(4) + vint(0) + vint(0) + vint(0) + vint(0) + b"\0" * 16 + vint(0)
+        f.write(b"Rar!\x1a\x07\x01\x00" + r5_block(enc) + os.urandom(200))
+    with open(os.path.join(d, f"hp4.part{i}.rar"), "wb") as f:
+        f.write(b"Rar!\x1a\x07\x00" + r4_block(0x73, 0x0001 | 0x0080 | 0x0010 | (0x0100 if i == 1 else 0),
+                                                 b"\0" * 6) + os.urandom(200))
+for name in ("hp5.part2.rar", "hp4.part3.rar"):
+    rc, out, err = run(name, cwd=d)
+    check(f"{name[:3]} set with encrypted headers: complete by name", rc == 0 and
+          'set of 3, first given 0, problem ""' in out, out + err[-300:])
+os.remove(os.path.join(d, "hp5.part2.rar"))
+rc, out, err = run("hp5.part1.rar", cwd=d)
+check("hp5 set with encrypted headers, part 2 missing: named", "part 2 (hp5.part2.rar) is missing" in out
+      or "volume 2" in out, out + err[-300:])
+
 # ---- 4. the corpus, as recorded before the change to 64-bit positions
 EXPECT = """\
 r4.part2.rar: set of 4, first given 0, problem ""|r4.part1.rar r4.part2.rar r4.part3.rar r4.part4.rar

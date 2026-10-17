@@ -220,8 +220,8 @@ static int digests(cur *c, UQUAD count)
 {
     UBYTE all;
     UQUAD i, defined = count;
-    if (!u8(c, &all))
-        return 0;
+    if (count > (UQUAD)(c->end - c->p) * 8 + 8 || !u8(c, &all))
+        return 0;                       /* more digests than bytes left */
     if (!all) {
         defined = 0;
         for (i = 0; i < count; i += 8) {
@@ -475,7 +475,9 @@ static int has_utc_time(const UBYTE *x, UWORD xlen)
         UWORD id = le16(x), sz = le16(x + 2);
         if (sz > xe - x - 4)
             break;
-        if (id == 0x5455 || id == 0x5855 || id == 0x000a)
+        if (id == 0x5855 || id == 0x000a)
+            return 1;
+        if (id == 0x5455 && sz >= 1 && (x[4] & 1))   /* UT with a modification time */
             return 1;
         x += 4 + sz;
     }
@@ -515,9 +517,18 @@ static int needs_zip(ua_rdr *r, UQUAD fsize, ua_needs *n)
     cdend = eocd;
     if (entries == 0xFFFF || cdsize == 0xFFFFFFFF || cdoff == 0xFFFFFFFF) {
         UBYTE loc[20], e64[56];
-        if (eocd < 20 || !ua_rdr_at(r, eocd - 20, loc, 20) || memcmp(loc, "PK\6\7", 4) ||
-            !ua_rdr_at(r, le64(loc + 8), e64, 56) || memcmp(e64, "PK\6\6", 4))
+        UQUAD at64;
+        /* The Zip64 end record is right before its locator, unless it carries
+         * extensible data; only then is its stored offset used (which a
+         * self-extracting prefix moves). */
+        if (eocd < 20 + 56 || !ua_rdr_at(r, eocd - 20, loc, 20) || memcmp(loc, "PK\6\7", 4))
             goto out;
+        at64 = eocd - 20 - 56;
+        if (!ua_rdr_at(r, at64, e64, 56) || memcmp(e64, "PK\6\6", 4)) {
+            at64 = le64(loc + 8);
+            if (!ua_rdr_at(r, at64, e64, 56) || memcmp(e64, "PK\6\6", 4))
+                goto out;
+        }
         if (le32(e64 + 16) != 0 || le32(e64 + 20) != 0) {
             n->multi_disk = 1;
             snprintf(n->unsupported, sizeof(n->unsupported), "a ZIP split over several files");
@@ -527,7 +538,7 @@ static int needs_zip(ua_rdr *r, UQUAD fsize, ua_needs *n)
         entries = le64(e64 + 32);
         cdsize = le64(e64 + 40);
         cdoff = le64(e64 + 48);
-        cdend = le64(loc + 8);              /* the directory ends at the Zip64 record */
+        cdend = at64;                       /* the directory ends at the Zip64 record */
     }
     /* A self-extracting prefix moves everything, so the stored offset is not
      * used: the directory ends where the end record (or the Zip64 one) begins. */
