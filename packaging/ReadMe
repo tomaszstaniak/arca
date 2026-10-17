@@ -102,7 +102,8 @@ Plain 7z and ZIP archives are read by the built-in reader, which is faster.
 Without unarc-7z, Unarc still reads 7z, RAR and ZIP as far as the built-in
 reader can, without passwords, and says so when an archive needs unarc-7z.
 An unarc-7z from another Unarc release is not used; install both from one
-package.
+package. Without it, some file times from RAR 4 archives can be off by your
+time zone.
 
 
 Known limitations

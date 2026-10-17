@@ -65,6 +65,14 @@ refused as unsupported, not as damaged. A later engine that calls such an
 archive damaged is not believed. 7z sets (`.7z.001`) go to 7-Zip first.
 Damage is reported, and recovery stays a separate, explicit mode.
 
+Times: AROS keeps local time; `times.c` shifts UTC times by the locale's
+offset. 7-Zip marks each entry's time as stored local time or UTC
+(protocol 3); for libarchive, RAR 4 and CAB are local, and a ZIP entry is
+local when the central directory gives it no UTC extra field (`methods.c`).
+ABIv11's `mktime()` ignores the time zone while `localtime()` applies it, so
+libarchive's RAR 4 extended times come out shifted by the zone; RAR goes to
+7-Zip first, which is right.
+
 - `src/cli/`: `unarc-cli`, the Shell program.
 - `src/gui/`: `Unarc`, the Zune program; `job.c` runs each job in a worker process.
 
