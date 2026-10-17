@@ -45,7 +45,7 @@ with vmctl.VM() as vm:
                 elif k == "key":
                     vm.key(a[1])
                 elif k == "type":
-                    vm.type(a[1]); vm.key("ret")
+                    vm.type(":".join(a[1:])); vm.key("ret")
             print(f"{time.time()-t0:6.2f} {':'.join(a)}", flush=True)
 
     th = threading.Thread(target=actions)
