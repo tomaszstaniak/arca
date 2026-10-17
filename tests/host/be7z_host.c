@@ -116,9 +116,9 @@ static void set_out(const char *s, size_t n) { fake_out = s; fake_len = n; }
 /* a three-entry list: x.txt (5 bytes), d/ (dir), y.txt (3 bytes) */
 static const char LIST[] =
     "A\t7z\t1\t-\n"
-    "E\t0\t0\t5\t-\t1000000000\t20\t0\t782e747874\n"
-    "E\t1\t1\t0\t-\t1000000000\t10\t0\t64\n"
-    "E\t2\t0\t3\t-\t1000000000\t20\t0\t792e747874\n"
+    "E\t0\t0\t5\t-\t1000000000\t20\t0\t782e747874\tu\n"
+    "E\t1\t1\t0\t-\t1000000000\t10\t0\t64\tu\n"
+    "E\t2\t0\t3\t-\t1000000000\t20\t0\t792e747874\tu\n"
     "R\t0\tok\n";
 
 static void listed(ua_list *l)
@@ -163,7 +163,7 @@ int main(void)
     snprintf(d, sizeof(d), "minute %ld", (long)l.v[0].date.ds_Minute);
     check("list: 7z time (UTC) shifted to local time", l.v[0].date.ds_Minute == 3 * 60 + 46, d);
     {
-        static const char rar4[] = "A\tRar\t1\t-\nE\t0\t0\t1\t-\t1000000000\t20\t0\t61\nR\t0\tok\n";
+        static const char rar4[] = "A\tRar\t1\t-\nE\t0\t0\t1\t-\t1000000000\t20\t0\t61\tl\nR\t0\tok\n";
         ua_list l4;
         memset(&l4, 0, sizeof(l4));
         set_out(S(rar4));
@@ -173,14 +173,17 @@ int main(void)
               l4.n == 1 && l4.v[0].date.ds_Minute == 1 * 60 + 46, d);
     }
     {
-        static const char zipn[] = "A\tzip\t1\t-\nE\t0\t0\t1\t-\t-\t-\t0\t4772816e2e747874\n"
-                                   "E\t1\t0\t1\t-\t-\t-\t0\t47726e2e747874\nR\t0\tok\n";
+        static const char zipn[] = "A\tzip\t1\t-\nE\t0\t0\t1\t-\t1000000000\t-\t0\t4772816e2e747874\tl\n"
+                                   "E\t1\t0\t1\t-\t1000000000\t-\t0\t47726e2e747874\tu\nR\t0\tok\n";
         ua_list lz;
         memset(&lz, 0, sizeof(lz));
         set_out(S(zipn));
         z_list("a.zip", &lz, err, sizeof(err));
         check("list: a ZIP name that is not UTF-8 is CP437, a UTF-8 one UTF-8",
               lz.n == 2 && lz.v[0].name_kind == UA_NAME_CP437 && lz.v[1].name_kind == UA_NAME_UTF8, "");
+        snprintf(d, sizeof(d), "minutes %ld %ld", (long)lz.v[0].date.ds_Minute, (long)lz.v[1].date.ds_Minute);
+        check("list: a ZIP DOS time (l) as stored, a UTC one (u) shifted",
+              lz.v[0].date.ds_Minute == 1 * 60 + 46 && lz.v[1].date.ds_Minute == 3 * 60 + 46, d);
     }
     {
         static const char brk0[] = "A\t7z\t1\t-\n~BREAK\n";

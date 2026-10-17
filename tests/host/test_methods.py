@@ -89,6 +89,15 @@ for name, opts, want in (
          dict(ok=1, data_enc=1, unsupported="'the Deflate64 method'"))):
     check(f"zip {name}", run("zip", mkzip(name, *opts)), **want)
 
+# Times: 7-Zip writes NTFS (UTC) times, so no entry has only a DOS time;
+# Python writes DOS times only.
+check("zip by 7-Zip: no entry with only a DOS time", run("zip", os.path.join(tmp, "deflate.zip")), dos=0)
+pz = os.path.join(tmp, "py.zip")
+with zipfile.ZipFile(pz, "w") as z:
+    z.writestr("x.txt", b"x")
+    z.writestr("y.txt", b"y")
+check("zip by Python: every entry has only a DOS time, x.txt found", run("zip", pz), dos=2, dos_x=1)
+
 # Zip64: more entries than the 16-bit count holds.
 z64 = os.path.join(tmp, "many.zip")
 with zipfile.ZipFile(z64, "w") as z:

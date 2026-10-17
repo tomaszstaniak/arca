@@ -46,6 +46,7 @@ CPP/7zip/Archive/Common/CoderMixer2.cpp
 CPP/7zip/Archive/Common/FindSignature.cpp
 CPP/7zip/Archive/Common/HandlerOut.cpp
 CPP/7zip/Archive/Common/ItemNameUtils.cpp
+CPP/7zip/Archive/Common/MultiStream.cpp
 CPP/7zip/Archive/Common/OutStreamWithCRC.cpp
 CPP/7zip/Archive/Common/ParseProperties.cpp
 

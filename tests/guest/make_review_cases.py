@@ -31,6 +31,22 @@ with tempfile.TemporaryDirectory() as t:
     subprocess.run([SZ, "a", "-mx5", "-ms=on", "-psecret", os.path.join(d, "encsolid.7z"), "solid"],
                    cwd=t, check=True, stdout=subprocess.DEVNULL)
 
+# A slow solid block: 60 MB of text in one block, encrypted (so the GUI uses
+# 7-Zip), and a small file at its end. Selecting only that file and
+# cancelling at once stops 7-Zip before it sends the first header.
+import random
+with tempfile.TemporaryDirectory() as t:
+    rnd = random.Random(11)
+    words = [("".join(rnd.choice("abcdefghijklmnopqrstuvwxyz") for _ in range(rnd.randint(2, 9))))
+             for _ in range(4000)]
+    os.makedirs(os.path.join(t, "slow"))
+    for i in range(30):
+        with open(os.path.join(t, "slow", f"part{i:02d}.dat"), "w") as f:
+            f.write(" ".join(rnd.choice(words) for _ in range(340000)))
+    open(os.path.join(t, "slow", "zz-last.dat"), "w").write("the last file\n")
+    subprocess.run([SZ, "a", "-mx5", "-ms=on", "-psecret", os.path.join(d, "slowenc.7z"), "slow"],
+                   cwd=t, check=True, stdout=subprocess.DEVNULL)
+
 # ---- time zone
 ARCH = (("tree.7z", "7z, UTC"), ("r5.part01.rar", "RAR 5, UTC"), ("old.rar", "RAR 4, local"),
         ("zp.zip", "ZIP by 7-Zip, UTC extra field"), ("cp437n.zip", "ZIP by Python, DOS time only"))

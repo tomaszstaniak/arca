@@ -31,6 +31,7 @@
 #include "7zip/ICoder.h"
 #include "7zip/PropID.h"
 #include "7zip/Archive/IArchive.h"
+#include "7zip/Archive/Common/MultiStream.h"
 
 // ArchiveExports.cpp refers to this class id; upstream defines it in
 // DllExports2.cpp, which is not part of this build.
@@ -48,7 +49,7 @@ STDAPI GetNumberOfFormats(UINT32 *numFormats);
 using namespace NWindows;
 
 // Raised whenever a record changes meaning; the caller refuses another one.
-#define UNARC7Z_PROTOCOL 2
+#define UNARC7Z_PROTOCOL 3
 #define UNARC7Z_7ZIP "7-Zip 26.04"
 
 enum
@@ -322,13 +323,51 @@ Z7_COM7F_IMF(COpenCallback::GetProperty(PROPID propID, PROPVARIANT *value))
   return S_OK;
 }
 
+// -v: the volumes of a set in their order, as the caller found it from the
+// volumes' own headers. The handlers would otherwise derive each next name
+// from the first (name.r00 after name.rar), which fails for a set whose names
+// have gaps or are shuffled against the volume numbers inside.
+static CObjectVector<AString> g_Volumes;
+static unsigned g_NextVolume = 1;
+
+static bool LoadVolumes(const char *file)
+{
+  FILE *f = fopen(file, "r");
+  char line[4096];
+  if (!f)
+    return false;
+  while (fgets(line, sizeof(line), f))
+  {
+    size_t n = strlen(line);
+    while (n && (line[n - 1] == '\n' || line[n - 1] == '\r'))
+      line[--n] = 0;
+    AString path;
+    if (!n || !FromHex(line, path))
+    {
+      fclose(f);
+      return false;
+    }
+    g_Volumes.Add(path);
+  }
+  fclose(f);
+  return g_Volumes.Size() > 0;
+}
+
 // The RAR handlers compute the next volume name (name.part2.rar, name.r00, ...)
-// from kpidName and ask for it here; S_FALSE means "not there".
+// from kpidName and ask for it here; S_FALSE means "not there". With -v the
+// next volume of the list is given instead, whatever name was asked for.
 Z7_COM7F_IMF(COpenCallback::GetStream(const wchar_t *name, IInStream **inStream))
 {
   *inStream = NULL;
   AString path = Dir;
-  path += UToPath(UString(name));
+  if (g_Volumes.Size() > 0)
+  {
+    if (g_NextVolume >= g_Volumes.Size())
+      return S_FALSE;
+    path = g_Volumes[g_NextVolume++];
+  }
+  else
+    path += UToPath(UString(name));
   CStdioInStream *spec = new CStdioInStream;
   CMyComPtr<IInStream> s = spec;
   if (!spec->Open(path))
@@ -801,8 +840,36 @@ static int OpenArchive(const char *path, COpened &o, AString &msg)
     return kCodeOther;
   }
 
+  // A 7z split into files (name.7z.001, ...) is one stream cut in pieces; the
+  // 7z handler reads it as one when given the pieces joined (7-Zip's own
+  // Split handler does the same), in the order of -v.
+  if (g_Volumes.Size() > 1 && o.Format.Name == "7z")
+  {
+    CMultiStream *ms = new CMultiStream;
+    CMyComPtr<IInStream> msp = ms;
+    FOR_VECTOR (i, g_Volumes)
+    {
+      CStdioInStream *vs = new CStdioInStream;
+      CMyComPtr<IInStream> vsp = vs;
+      UInt64 size = 0, pos0;
+      if (!vs->Open(g_Volumes[i]) || vsp->Seek(0, STREAM_SEEK_END, &size) != S_OK ||
+          vsp->Seek(0, STREAM_SEEK_SET, &pos0) != S_OK)
+      {
+        msg = "cannot open a volume";
+        return kCodeMissingVolume;
+      }
+      CMultiStream::CSubStreamInfo &sub = ms->Streams.AddNew();
+      sub.Stream = vsp;
+      sub.Size = size;
+    }
+    ms->Init();
+    in = msp;
+  }
+
   o.CbSpec = new COpenCallback;
   o.Cb = o.CbSpec;
+  if (g_Volumes.Size() > 1 && o.Format.Name == "7z")
+    o.CbSpec->NumVolumes = g_Volumes.Size();
   const AString p(path);
   o.CbSpec->Dir = DirPrefix(p);
   o.CbSpec->FirstName = PathToU(BaseName(p));
@@ -932,15 +999,17 @@ static int CmdList(const char *path)
     const bool hasPacked = GetU64(arc, i, kpidPackSize, packed);
 
     NCOM::CPropVariant tprop;
-    bool hasTime = false;
+    bool hasTime = false, localTime = false;
     Int64 unixTime = 0;
     if (arc->GetProperty(i, kpidMTime, &tprop) == S_OK && tprop.vt == VT_FILETIME)
     {
       FILETIME f = tprop.filetime;
-      // RAR 1.5-4 stores local time, which the handler turned into UTC with
-      // this process's time zone; turn it back with the same zone, so the
-      // caller gets the stored time whatever the C library thinks the zone is.
-      if (rarLocal)
+      // RAR 1.5-4, and every DOS time (ZIP without a UTC extra field), is
+      // stored local time, which the handler turned into UTC with this
+      // process's time zone; turn it back with the same zone, so the caller
+      // gets the stored time whatever the C library thinks the zone is.
+      localTime = rarLocal || tprop.wReserved1 == k_PropVar_TimePrec_DOS;
+      if (localTime)
       {
         FILETIME loc;
         if (FileTimeToLocalFileTime(&f, &loc))
@@ -974,7 +1043,7 @@ static int CmdList(const char *path)
     if (hasAttr) printf("%x", (unsigned)attr); else Out("-");
     printf("\t%d\t", enc ? 1 : 0);
     OutHexUtf8(name);
-    Out("\n");
+    Out(localTime ? "\tl\n" : "\tu\n");
   }
 
   code = ArchiveState(arc, msg);
@@ -1139,6 +1208,7 @@ static int CmdVersion()
 static void Usage()
 {
   fputs("usage: unarc-7z version\n"
+        "       options before the command: -p <password file>, -v <volume list file>\n"
         "       unarc-7z [-p <file>] list <archive>\n"
         "       unarc-7z [-p <file>] extract <archive> <index>[,<index>...] | all\n"
         "       listx / extractx: the archive path as hex of its bytes\n"
@@ -1155,13 +1225,21 @@ int main(int argc, char **argv)
     fflush(stdout);
     return 0;
   }
-  if (argc > 2 && strcmp(argv[1], "-p") == 0)
+  while (a + 1 < argc && (strcmp(argv[a], "-p") == 0 || strcmp(argv[a], "-v") == 0))
   {
-    g_PasswordFile = argv[2];
-    a = 3;
-    // Read it now, asked for or not: the caller writes it into a pipe, and a
-    // pipe that is never read would hold the writer (and the secret) back.
-    g_Password.Load();
+    if (argv[a][1] == 'p')
+    {
+      g_PasswordFile = argv[a + 1];
+      // Read it now, asked for or not: the caller writes it into a pipe, and a
+      // pipe that is never read would hold the writer (and the secret) back.
+      g_Password.Load();
+    }
+    else if (!LoadVolumes(argv[a + 1]))
+    {
+      Finish(kCodeOther, "cannot read the volume list");
+      return 20;
+    }
+    a += 2;
   }
   const int rest = argc - a;
   try

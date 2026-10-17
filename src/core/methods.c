@@ -461,6 +461,27 @@ static void judge_zip_method(UWORD m, ua_needs *n)
     }
 }
 
+static int cmp_str(const void *a, const void *b)
+{
+    return strcmp(*(char *const *)a, *(char *const *)b);
+}
+
+/* An extra field with a UTC time: Info-ZIP's UT (0x5455) and Unix (0x5855),
+ * NTFS (0x000a). Without one, the entry's time is the DOS field: local time. */
+static int has_utc_time(const UBYTE *x, UWORD xlen)
+{
+    const UBYTE *xe = x + xlen;
+    while (xe - x >= 4) {
+        UWORD id = le16(x), sz = le16(x + 2);
+        if (sz > xe - x - 4)
+            break;
+        if (id == 0x5455 || id == 0x5855 || id == 0x000a)
+            return 1;
+        x += 4 + sz;
+    }
+    return 0;
+}
+
 static int needs_zip(ua_rdr *r, UQUAD fsize, ua_needs *n)
 {
     UBYTE *tail, *cd = NULL;
@@ -530,6 +551,21 @@ static int needs_zip(ua_rdr *r, UQUAD fsize, ua_needs *n)
                 goto out;
             if (flags & 0x41)                       /* encrypted, or strong encryption */
                 n->data_encrypted = 1;
+            if (!has_utc_time(p + 46 + nlen, xlen)) {
+                char **nd = n->ndos % 256 ? n->dos_names :
+                            realloc(n->dos_names, (n->ndos + 256) * sizeof(char *));
+                char *nm = malloc(nlen + 1);
+                if (!nd || !nm) {
+                    free(nm);
+                    if (nd)
+                        n->dos_names = nd;
+                    goto out;
+                }
+                n->dos_names = nd;
+                memcpy(nm, p + 46, nlen);
+                nm[nlen] = 0;
+                n->dos_names[n->ndos++] = nm;
+            }
             if (method == 99) {                     /* WinZip AES: method in extra 0x9901 */
                 const UBYTE *x = p + 46 + nlen, *xe = x + xlen;
                 n->data_encrypted = 1;
@@ -549,6 +585,8 @@ static int needs_zip(ua_rdr *r, UQUAD fsize, ua_needs *n)
             p += 46 + nlen + xlen + clen;
         }
     }
+    if (n->ndos)
+        qsort(n->dos_names, n->ndos, sizeof(char *), cmp_str);
     ok = 1;
 out:
     free(tail);
@@ -582,6 +620,20 @@ int ua_needs_read(const char *path, ua_format fmt, ua_needs *n)
         ok = needs_zip(&r, size, n);
     Close(r.fh);
     if (!ok)
-        memset(n, 0, sizeof(*n));
+        ua_needs_free(n);
     return ok;
+}
+
+void ua_needs_free(ua_needs *n)
+{
+    ULONG i;
+    for (i = 0; i < n->ndos; i++)
+        free(n->dos_names[i]);
+    free(n->dos_names);
+    memset(n, 0, sizeof(*n));
+}
+
+int ua_needs_dos_time(const ua_needs *n, const char *name)
+{
+    return n->ndos && bsearch(&name, n->dos_names, n->ndos, sizeof(char *), cmp_str) != NULL;
 }

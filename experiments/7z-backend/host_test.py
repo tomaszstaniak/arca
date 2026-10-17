@@ -277,7 +277,7 @@ def main():
 
     # Version and protocol number, which the AROS engine checks.
     out = subprocess.run([U, 'version'], stdout=subprocess.PIPE, check=False).stdout.decode()
-    check(out == 'V\t2\t7-Zip 26.04\nR\t0\tok\n', f'version: {out!r}')
+    check(out == 'V\t3\t7-Zip 26.04\nR\t0\tok\n', f'version: {out!r}')
 
     # Times. 7z and RAR 5 store UTC; RAR 1.5-4 stores local time, which must
     # come out as stored (seconds as if UTC), whatever zone the process has.
@@ -298,6 +298,7 @@ def main():
         o = subprocess.run([U, 'list', os.path.join(CORPUS, 'old.rar')], stdout=subprocess.PIPE,
                            check=False, env=dict(os.environ, TZ=tz)).stdout.decode()
         first = [l.split('\t') for l in o.splitlines() if l.startswith('E\t0\t')][0]
+        check(first[9] == 'l', f'old.rar (RAR 4) in {tz}: time kind {first[9]} is local')
         # The DOS field has 2-second steps; RAR's extended time adds the rest.
         check(0 <= int(first[5]) - stored < 2,
               f'old.rar (RAR 4) in {tz}: first entry time {first[5]} is the stored local time {stored} (+ext)')
@@ -332,12 +333,59 @@ def main():
     open(zn, 'wb').write(raw.replace(b'GrXn.txt', b'Gr\x81n.txt'))   # both headers; no CRC covers names
     out = run(['list', zn])
     names = [bytes.fromhex(l.split('\t')[8]) for l in out.decode().splitlines() if l.startswith('E\t')]
+    kinds = [l.split('\t')[9] for l in out.decode().splitlines() if l.startswith('E\t')]
+    check(kinds == ['l', 'l'], f'names.zip (DOS times only): time kinds {kinds} are local')
+    zk = [l.split('\t')[9] for l in run(['list', zips['zp.zip']]).decode().splitlines() if l.startswith('E\t')]
+    check(zk and all(k == 'u' for k in zk), f'zp.zip (7-Zip, NTFS times): time kinds {zk} are UTC')
+    tk = [l.split('\t')[9] for l in run(['list', os.path.join(CORPUS, 'tree.7z')]).decode().splitlines() if l.startswith('E\t')]
+    check(tk and all(k == 'u' for k in tk), f'tree.7z: time kinds are UTC')
     # 7-Zip on AROS (and here) decodes a name without the flag as UTF-8 and
     # keeps bytes that are not UTF-8 as they were; aros-unarc then reads such
     # bytes as CP437, as it does for libarchive.
     check(names == [b'Gr\x81n.txt', '\u20acuro.txt'.encode()], f'names.zip: raw CP437 and UTF-8 names {names}')
     arc = [l for l in out.decode().splitlines() if l.startswith('A\t')]
     check(arc and arc[0].split('\t')[1] == 'zip', f'names.zip: A record {arc}')
+
+    # -v: the set's volumes in the caller's order. mixed.* has its names
+    # shuffled against the volume numbers inside (the right order is part3,
+    # part1, part4, part2); alt.* has a gap in its names (no alt.r00).
+    ref = run(['list', os.path.join(CORPUS, 'r4.part1.rar')])
+    for name, order in (('mixed', ['mixed.part3.rar', 'mixed.part1.rar', 'mixed.part4.rar', 'mixed.part2.rar']),
+                        ('alt', ['alt.rar', 'alt.r01', 'alt.r02', 'alt.r03'])):
+        vf = os.path.join(TEST, name + '.vols')
+        open(vf, 'w').write(''.join(os.path.join(CORPUS, v).encode().hex() + '\n' for v in order))
+        out = run(['-v', vf, 'list', os.path.join(CORPUS, order[0])])
+        _, ents, res = parse_list(out)
+        _, rents, _ = parse_list(ref)
+        check(res and res[0] == 0 and [e['name'] for e in ents] == [e['name'] for e in rents],
+              f'{name} set with -v: listed like r4 ({res})')
+        _, _, res0 = parse_list(run(['list', os.path.join(CORPUS, order[0])]))
+        check(res0 and res0[0] != 0, f'{name} set without -v: the handler alone fails ({res0})')
+        multi, code, msg = parse_multi(run(['-v', vf, 'extract', os.path.join(CORPUS, order[0]), 'all']))
+        rmulti, rcode, _ = parse_multi(run(['extract', os.path.join(CORPUS, 'r4.part1.rar'), 'all']))
+        check(code == rcode and {k: v[0] for k, v in multi.items()} == {k: v[0] for k, v in rmulti.items()},
+              f'{name} set with -v: extract all equals r4 (R {code} {msg})')
+
+    # A 7z split into four files: joined with -v, as Unarc passes them.
+    vf = os.path.join(TEST, 'split.vols')
+    open(vf, 'w').write(''.join(os.path.join(CORPUS, f'split.7z.00{i}').encode().hex() + '\n'
+                                for i in range(1, 5)))
+    first = os.path.join(CORPUS, 'split.7z.001')
+    arc, ents, res = parse_list(run(['-v', vf, 'list', first]))
+    refl = subprocess.run([SZ, 'l', '-slt', first], stdout=subprocess.PIPE, check=True).stdout.decode()
+    refn = sorted(p for p in (b.split('Path = ')[1].split('\n')[0] for b in refl.split('\n\n') if 'Path = ' in b)
+                  if p not in ('split.7z', first))
+    check(res and res[0] == 0 and sorted(e['name'] for e in ents) == refn,
+          f'split.7z.001..004 with -v: listed like 7zz ({res}, A={arc})')
+    multi, code, msg = parse_multi(run(['-v', vf, 'extract', first, 'all']))
+    ok = code == 0
+    for e in ents:
+        if e['dir']:
+            continue
+        refdata = subprocess.run([SZ, 'e', '-so', first, e['name']], stdout=subprocess.PIPE,
+                                 stderr=subprocess.DEVNULL, check=True).stdout
+        ok = ok and multi.get(e['index'], (None,))[0] == refdata
+    check(ok, f'split.7z.001..004 with -v: every file equal to 7zz (R {code} {msg})')
 
     print(f'{fails} failure(s)')
     sys.exit(1 if fails else 0)

@@ -283,7 +283,8 @@ static int ask_password(const char *archive)
     SetMode(in, 1);
     SetSignal(0, SIGBREAKF_CTRL_C);
     for (;;) {
-        /* In raw mode Ctrl-C comes as a signal, not as a byte. */
+        /* Ctrl-C comes as a signal or, in raw mode on the 2026.09 console, as
+         * the byte 3 (below); both stop. */
         if (!WaitForChar(in, 100000)) {
             if (SetSignal(0, SIGBREAKF_CTRL_C) & SIGBREAKF_CTRL_C) {
                 n = 0;
@@ -311,6 +312,7 @@ static int ask_password(const char *archive)
             break;
         if (c == 3) {                    /* Ctrl-C */
             n = 0;
+            esc = -1;
             break;
         }
         if (c == 8 || c == 127) {

@@ -17,6 +17,10 @@
  *   uatool vols <file>          what Unarc's volume finder makes of <file>
  *   uatool wbclose <drawer> <ticks>  after <ticks>, ask Wanderer to close that drawer
  *   uatool winmove <title> <dx> <dy> <ticks>  after <ticks>, move that window
+ *   uatool winclose <title> <ticks>  after <ticks>, what a click on that window's
+ *                               close gadget sends (IDCMP_CLOSEWINDOW); for Wanderer
+ *                               drawers, as workbench.library's CloseWorkbenchObject
+ *                               is not implemented on AROS
  *   uatool wincycle <x> <y> <seconds>  open and close a small window at x,y again
  *                               and again (a drop target that keeps going away) */
 #include <stdio.h>
@@ -439,6 +443,46 @@ int main(int argc, char **argv)
         printf("winmove \"%s\": %s\n", argv[2], w ? "moved" : "NOT FOUND");
         return w ? 0 : 20;
     }
+    if (argc == 4 && !strcmp(argv[1], "winclose")) {
+        struct MsgPort *rp = CreateMsgPort();
+        struct IntuiMessage *im = AllocVec(sizeof(*im), MEMF_CLEAR | MEMF_PUBLIC);
+        struct Screen *sc;
+        struct Window *w = NULL;
+        ULONG lock;
+        size_t n = strlen(argv[2]);
+        int t, sent = 0, replied = 0;
+        if (!rp || !im)
+            return 20;
+        Delay(atoi(argv[3]));
+        /* Found and sent under the IBase lock: the window cannot close meanwhile. */
+        lock = LockIBase(0);
+        for (sc = IntuitionBase->FirstScreen; sc && !w; sc = sc->NextScreen)
+            for (w = sc->FirstWindow; w; w = w->NextWindow)
+                if (w->Title && !strncmp((char *)w->Title, argv[2], n))
+                    break;
+        if (w && w->UserPort) {
+            im->ExecMessage.mn_ReplyPort = rp;
+            im->ExecMessage.mn_Length = sizeof(*im);
+            im->Class = IDCMP_CLOSEWINDOW;
+            im->IDCMPWindow = w;
+            CurrentTime(&im->Seconds, &im->Micros);
+            PutMsg(w->UserPort, &im->ExecMessage);
+            sent = 1;
+        }
+        UnlockIBase(lock);
+        for (t = 0; sent && t < 250 && !replied; t++) {
+            if (GetMsg(rp))
+                replied = 1;
+            else
+                Delay(1);
+        }
+        printf("winclose \"%s\": %s\n", argv[2], !sent ? "NOT FOUND" : replied ? "sent, answered" :
+               "sent, NO ANSWER");
+        if (replied || !sent)
+            FreeVec(im);
+        DeleteMsgPort(rp);
+        return replied ? 0 : 20;
+    }
     if (argc == 5 && !strcmp(argv[1], "wincycle")) {
         LONG x = atol(argv[2]), y = atol(argv[3]), ticks = atol(argv[4]) * 50, t, n = 0;
         for (t = 0; t < ticks; t += 2) {
@@ -456,6 +500,6 @@ int main(int argc, char **argv)
         return 0;
     }
     printf("usage: uatool icon|open|drop|waitwin|gonewin|running|break|dates|gmt|setgmt|vols|"
-           "wbclose|winmove|wincycle ...\n");
+           "wbclose|winmove|winclose|wincycle ...\n");
     return 20;
 }

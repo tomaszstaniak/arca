@@ -14,9 +14,9 @@ unarc-7z [-p <file>] extractx <hex> <indices or all>
 ```
 
 `version` prints `V <tab> protocol <tab> 7-Zip version` and `R 0`, for
-example `V 2 7-Zip 26.04`. The protocol number changes whenever a record
+example `V 3 7-Zip 26.04`. The protocol number changes whenever a record
 changes meaning; aros-unarc does not use a program with another number.
-This document describes protocol 2.
+This document describes protocol 3.
 
 `listx` and `extractx` take the archive path as hex of its bytes, so that a
 caller never has to quote a file name. On AROS the path bytes are ISO-8859-1,
@@ -24,6 +24,12 @@ as AROS file names are; on a POSIX host they are UTF-8.
 
 `extract` takes one or more indices (in any order, duplicates ignored) or
 `all`, and decodes them in one pass: a solid block is decoded once.
+
+Options before the command: `-p <file>` (the password, below) and
+`-v <file>`: the volumes of a set in order, one per line, each path as hex of
+its bytes. When the handler asks for the next volume, the next line is given,
+whatever name the handler derived; a set whose names have gaps or do not
+follow the volume numbers inside then opens. Without `-v`:
 
 `<archive>` is the first volume of a set (`name.part1.rar`, `name.part01.rar`,
 `name.rar` with `name.r00`...). The other volumes are looked up in the same
@@ -65,7 +71,7 @@ A <tab> format <tab> volumes <tab> flags
 ### E: entry (list only)
 
 ```
-E <tab> index <tab> isdir <tab> size <tab> packed <tab> mtime <tab> attrib <tab> encrypted <tab> name
+E <tab> index <tab> isdir <tab> size <tab> packed <tab> mtime <tab> attrib <tab> encrypted <tab> name <tab> timekind
 ```
 
 - `index`: 0-based. This is the number `extract` takes.
@@ -73,11 +79,8 @@ E <tab> index <tab> isdir <tab> size <tab> packed <tab> mtime <tab> attrib <tab>
 - `size`: unpacked size in bytes, or `-` if unknown.
 - `packed`: packed size in bytes, or `-` if unknown. In a solid 7z block, the
   whole block is counted on its first entry and the rest show `-`.
-- `mtime`: modification time in seconds since 1970-01-01, or `-`. For `7z`,
-  `Rar5` and `zip` it is UTC. RAR 1.5 to 4.x stores local time; for `Rar` the
-  value is that stored local time, counted as if it were UTC, whatever time
-  zone the process has (7-Zip's conversion to UTC is undone with the same
-  zone). The caller applies its own zone to the UTC values only.
+- `mtime`: modification time in seconds since 1970-01-01, or `-`; see
+  `timekind`.
 - `attrib`: the 7-Zip attribute word in lowercase hex, or `-`. The low 16 bits
   are Windows attributes (`10` = directory). If bit 15 (`8000`) is set, the
   high 16 bits are a Unix `st_mode`. Example: `81a48000` is a regular file with
@@ -88,6 +91,13 @@ E <tab> index <tab> isdir <tab> size <tab> packed <tab> mtime <tab> attrib <tab>
   name. Bytes that the handler could not read as UTF-8 (a ZIP name in a code
   page, without the UTF-8 flag) are given back as they are, so the hex is not
   always valid UTF-8; a caller decides what such bytes mean.
+- `timekind`: `u` when `mtime` is UTC (7z, RAR 5, a ZIP entry with a UTC
+  extra field), `l` when the archive stores local time (RAR 1.5 to 4.x, the
+  DOS time of a ZIP entry without such a field). An `l` value is the stored
+  local time counted as if it were UTC, whatever time zone the process has
+  (7-Zip's conversion to UTC is undone with the same zone). The caller
+  applies its own zone to `u` values only. (Protocol 3; protocol 2 had no
+  such field and gave only RAR 1.5 to 4.x as stored.)
 
 ### D and F: data and result per entry (extract only)
 

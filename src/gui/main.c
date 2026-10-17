@@ -1217,14 +1217,19 @@ static void presize_columns(void)
                 colmax[c] = w;
         }
     }
-    /* Pad each title with spaces to its column's width; Size is right-aligned,
-     * so its padding goes in front. Bold text is a little wider; the spaces
-     * are counted against the plain width, with one to spare. */
+    /* Pad each title with spaces to its column's width and a little more:
+     * the candidates are chosen by length, and in a proportional font a name
+     * of the same length can be a few pixels wider (digits differ). Entries
+     * up to the padded width then fit the column; colmax becomes that width,
+     * so that only an entry wider still counts as widening. Size is
+     * right-aligned, so its padding goes in front. */
     sw = TextLength(&colrp, " ", 1);
     for (c = 0; c < 5 && sw > 0; c++) {
         static const char *const t[5] = { "Name", "Size", "Date", "Protection", "Note" };
         char pad[160];
         int np;
+        if (colmax[c])
+            colmax[c] += 4 * sw;
         tw = TextLength(&colrp, (STRPTR)t[c], strlen(t[c]));
         np = colmax[c] > tw ? (colmax[c] - tw) / sw + 1 : 0;
         if (np > (int)sizeof(pad) - 1)
@@ -2023,6 +2028,11 @@ static IPTR drag_handle(struct IClass *cl, Object *obj, struct MUIP_HandleEvent 
         if (im->MouseX < _mleft(obj) || im->MouseX > _mright(obj) || im->MouseY < _mtop(obj) ||
             im->MouseY > _mbottom(obj) || !b_loaded)
             return 0;
+        /* A click in the list moves the keyboard to it. Zune keeps a string
+         * field as the window's active object after the click, and Amiga+A
+         * below would then still be taken for that field's. */
+        if (active_object(_win(obj)) != lv)
+            SetAttrs(_win(obj), MUIA_Window_ActiveObject, (IPTR)lv, TAG_DONE);
         DoMethod(obj, MUIM_List_TestPos, im->MouseX, im->MouseY, (IPTR)&pos);
         if (pos.entry < 0)
             return 0;

@@ -35,9 +35,9 @@ static void poke(child *c)
 }
 
 static int child_start(child *c, const char *verb, const char *archive, const char *which,
-                       const char *password, char *err, int errlen)
+                       char **vols, const char *password, char *err, int errlen)
 {
-    (void)archive; (void)err; (void)errlen;
+    (void)archive; (void)err; (void)errlen; (void)vols;
     memset(c, 0, sizeof(*c));
     c->buf = malloc(BUFSZ);
     c->out = fake_out;

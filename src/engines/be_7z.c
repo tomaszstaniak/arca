@@ -30,7 +30,7 @@
 #include "../core/ua.h"
 
 #define PROG "unarc-7z"
-#define PROTOCOL 2           /* experiments/7z-backend/PROTOCOL.md */
+#define PROTOCOL 3           /* experiments/7z-backend/PROTOCOL.md */
 #define BUFSZ 65536
 
 typedef struct child child;
@@ -55,6 +55,7 @@ struct child {
     LONG len, pos;
     int eof, cancelled;
     char idxfile[80];
+    char volfile[80];         /* the set's volumes in order (-v), deleted at the end */
     char pwpipe[64];          /* drained in child_end when a password went in */
 };
 
@@ -63,7 +64,7 @@ static int prog_ok = -1;      /* -1: not asked; 0: another protocol; 1: ours */
 static char prog[UA_PATHMAX], prog_why[200];
 
 static int child_start(child *c, const char *verb, const char *archive, const char *which,
-                       const char *password, char *err, int errlen);
+                       char **vols, const char *password, char *err, int errlen);
 static int child_end(child *c);
 static void find_prog_now(void);
 
@@ -90,7 +91,7 @@ static void check_version(void)
     char err[160], *line;
     int proto = -1, rc = -1;
     prog_ok = 0;
-    if (child_start(&c, "version", NULL, NULL, NULL, err, sizeof(err)) < 0) {
+    if (child_start(&c, "version", NULL, NULL, NULL, NULL, err, sizeof(err)) < 0) {
         snprintf(prog_why, sizeof(prog_why), "%s next to Unarc could not be started: %s.", PROG,
                  err);
         return;
@@ -195,6 +196,8 @@ static void child_free(child *c)
 {
     if (c->idxfile[0])
         DeleteFile((STRPTR)c->idxfile);
+    if (c->volfile[0])
+        DeleteFile((STRPTR)c->volfile);
     if (c->sig >= 0)
         FreeSignal(c->sig);
     if (c->dp)
@@ -220,9 +223,35 @@ static void drain_password(const char *pipe)
     }
 }
 
-/* verb: "listx" or "extractx"; which: NULL, "all" or "@file". */
+/* The volumes of a set, in volumes.c's order, for -v: one hex path a line. */
+static int write_vols(char **vols, char *file, size_t n)
+{
+    BPTR fh;
+    int i, ok = 1;
+    snprintf(file, n, "T:unarc7z-%08lx.vol", (unsigned long)(IPTR)FindTask(NULL));
+    if (!(fh = Open((STRPTR)file, MODE_NEWFILE)))
+        return 0;
+    for (i = 0; vols[i] && ok; i++) {
+        char *h = malloc(2 * strlen(vols[i]) + 2);
+        if (!h) {
+            ok = 0;
+            break;
+        }
+        hex_of(vols[i], h);
+        strcat(h, "\n");
+        ok = FPuts(fh, h) == 0;
+        free(h);
+    }
+    Close(fh);
+    if (!ok)
+        DeleteFile((STRPTR)file);
+    return ok;
+}
+
+/* verb: "listx" or "extractx"; which: NULL, "all" or "@file"; vols: the
+ * set's volumes in order, or NULL. */
 static int child_start(child *c, const char *verb, const char *archive, const char *which,
-                       const char *password, char *err, int errlen)
+                       char **vols, const char *password, char *err, int errlen)
 {
     static ULONG serial;
     char out[64], pw[64], *args;
@@ -240,7 +269,13 @@ static int child_start(child *c, const char *verb, const char *archive, const ch
              (unsigned long)serial);
     snprintf(pw, sizeof(pw), "PIPE:unarc7zp-%08lx-%lu", (unsigned long)(IPTR)FindTask(NULL),
              (unsigned long)serial);
-    alen = 2 * (archive ? strlen(archive) : 0) + strlen(pw) + (which ? strlen(which) : 0) + 32;
+    if (vols && !write_vols(vols, c->volfile, sizeof(c->volfile))) {
+        snprintf(err, errlen, "cannot write the volume list to T:");
+        c->volfile[0] = 0;
+        return -1;
+    }
+    alen = 2 * (archive ? strlen(archive) : 0) + strlen(pw) + strlen(c->volfile) +
+           (which ? strlen(which) : 0) + 40;
     args = malloc(alen);
     c->buf = malloc(BUFSZ);
     c->port = CreateMsgPort();
@@ -255,6 +290,8 @@ static int child_start(child *c, const char *verb, const char *archive, const ch
         char *p = args;
         if (password)
             p += sprintf(p, "-p %s ", pw);
+        if (c->volfile[0])
+            p += sprintf(p, "-v %s ", c->volfile);
         p += sprintf(p, "%s", verb);
         if (archive) {
             *p++ = ' ';
@@ -522,20 +559,17 @@ static ULONG z_caps(ua_format f)
 static int z_list(const char *path, ua_list *out, char *err, int errlen)
 {
     child c;
-    char *line, *f[9];
-    int rc = -1, got_r = 0, oom = 0, cancelled, local_time = 0, zip = 0;
+    char *line, *f[10];
+    int rc = -1, got_r = 0, oom = 0, cancelled, zip = 0;
     const char *first = out->volumes ? out->volumes[0] : path;
 
-    if (child_start(&c, "listx", first, NULL, out->password, err, errlen) < 0)
+    if (child_start(&c, "listx", first, NULL, out->volumes, out->password, err, errlen) < 0)
         return UA_LIST_UNKNOWN;
     while ((line = read_line(&c))) {
-        int n = split(line, f, 9);
+        int n = split(line, f, 10);
         if (f[0][0] == 'A' && n >= 2) {
-            /* RAR 1.5-4 stores local time and the program gives it as stored;
-             * 7z, RAR 5 and ZIP (from its extra fields) give UTC. */
-            local_time = !strcmp(f[1], "Rar");
             zip = !strcmp(f[1], "zip");
-        } else if (f[0][0] == 'E' && n == 9) {
+        } else if (f[0][0] == 'E' && n == 10) {
             ua_entry *e = ua_list_add(out);
             ULONG prot;
             if (!e) {
@@ -555,7 +589,9 @@ static int z_list(const char *path, ua_list *out, char *err, int errlen)
             e->size_valid = f[3][0] != '-';
             e->size = e->size_valid ? strtoull(f[3], NULL, 10) : 0;
             if (f[5][0] != '-') {
-                ua_unix_to_datestamp(strtoll(f[5], NULL, 10), !local_time, &e->date);
+                /* "l": stored local time (RAR 1.5-4, a ZIP's DOS time), given
+                 * as stored; "u": UTC, shifted to the locale's time. */
+                ua_unix_to_datestamp(strtoll(f[5], NULL, 10), f[9][0] != 'l', &e->date);
                 e->date_valid = 1;
             }
             if (f[6][0] != '-' && e->type == UA_ET_FILE &&
@@ -676,7 +712,7 @@ static int z_extract(const char *path, ua_list *l, ua_sink *s, char *err, int er
         snprintf(err, errlen, "cannot write %s", which);
         return -1;
     }
-    if (child_start(&c, "extractx", first, which, l->password, err, errlen) < 0) {
+    if (child_start(&c, "extractx", first, which, l->volumes, l->password, err, errlen) < 0) {
         if (which[0] == '@')
             DeleteFile((STRPTR)which + 1);
         return -1;

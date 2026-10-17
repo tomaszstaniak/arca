@@ -180,7 +180,7 @@ case(30, "cp437n.zip ENGINE 7-zip", "ZIP name in CP437, 7-Zip: the same names as
 case(31, "solid.7z ENGINE 7-zip", "Ctrl-C while 7-Zip reads the entry list", 10, "-",
      pre="Run >NIL: RAM:u/uatool break unarc-cli 10")
 case(32, "solid.7z ENGINE 7-zip", "Ctrl-C while 7-Zip decodes the solid block", 10, "7-zip",
-     pre="Run >NIL: RAM:u/uatool break unarc-cli 250")
+     pre="Run >NIL: RAM:u/uatool break unarc-cli 100")
 # Without the helper; with a helper of another release.
 case(33, "hdr.7z PASSWORD secret", "no helper: encrypted list cannot be read here", 20, "-",
      cli="RAM:nh/unarc-cli")

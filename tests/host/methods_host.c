@@ -20,8 +20,10 @@ int main(int argc, char **argv)
     for (i = 2; i < argc; i++) {
         ua_needs n;
         int ok = ua_needs_read(argv[i], !strcmp(argv[1], "7z") ? UA_FMT_7Z : UA_FMT_ZIP, &n);
-        printf("%s: ok=%d list_enc=%d data_enc=%d multi=%d unsupported='%s' seeks=%ld\n", argv[i],
-               ok, n.list_encrypted, n.data_encrypted, n.multi_disk, n.unsupported, shim_seek_calls);
+        printf("%s: ok=%d list_enc=%d data_enc=%d multi=%d unsupported='%s' seeks=%ld dos=%lu "
+               "dos_x=%d\n", argv[i], ok, n.list_encrypted, n.data_encrypted, n.multi_disk,
+               n.unsupported, shim_seek_calls, (unsigned long)n.ndos, ua_needs_dos_time(&n, "x.txt"));
+        ua_needs_free(&n);
     }
     return 0;
 }

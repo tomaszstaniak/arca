@@ -131,13 +131,17 @@ static int la_list_mode(const char *path, int stream, ua_list *out, char *err, i
         if (ua_sniff_file(path, &f, &ioerr) == 0 && (f == UA_FMT_7Z || f == UA_FMT_ZIP))
             have_needs = ua_needs_read(path, f, &nd);
         if (have_needs && nd.list_encrypted) {
+            ua_needs_free(&nd);
             snprintf(err, errlen, "the entry list is encrypted, which this engine cannot read");
             return UA_LIST_UNSUPPORTED;
         }
     }
     a = la_open(path, out->volumes, stream, &unknown, err, errlen);
-    if (!a)
+    if (!a) {
+        if (have_needs)
+            ua_needs_free(&nd);
         return unknown ? UA_LIST_UNKNOWN : UA_LIST_FAILED;
+    }
     while ((r = archive_read_next_header(a, &ae)) == ARCHIVE_OK || r == ARCHIVE_WARN) {
         ua_entry *e = ua_list_add(out);
         const char *u = la_name(ae);
@@ -150,6 +154,8 @@ static int la_list_mode(const char *path, int stream, ua_list *out, char *err, i
         e->name_src = ua_strdup(u);
         if (ua_list_break(out)) {
             archive_read_free(a);
+            if (have_needs)
+                ua_needs_free(&nd);
             return UA_LIST_CANCELLED;
         }
         if (ua_utf8_valid(u))
@@ -168,10 +174,14 @@ static int la_list_mode(const char *path, int stream, ua_list *out, char *err, i
             e->prot_valid = 1;
         }
         if (archive_entry_mtime_is_set(ae)) {
-            /* libarchive gives UTC for every format; a format that stores
-             * local time was converted with the C library's zone, which on
-             * AROS is the locale's, so shifting back gives the stored time. */
-            ua_unix_to_datestamp(archive_entry_mtime(ae), 1, &e->date);
+            /* libarchive gives UTC where the archive stores UTC. Where it
+             * stores local time (RAR 1.5-4, CAB, a ZIP entry with only the DOS
+             * field) it converts with mktime(), which on AROS ignores the
+             * time zone, so the value is the stored local time as it is. */
+            int af = archive_format(a), local =
+                af == ARCHIVE_FORMAT_RAR || af == ARCHIVE_FORMAT_CAB ||
+                (af == ARCHIVE_FORMAT_ZIP && have_needs && ua_needs_dos_time(&nd, u));
+            ua_unix_to_datestamp(archive_entry_mtime(ae), !local, &e->date);
             e->date_valid = 1;
         }
         archive_read_data_skip(a);
@@ -180,10 +190,21 @@ static int la_list_mode(const char *path, int stream, ua_list *out, char *err, i
         snprintf(err, errlen, "%s", archive_error_string(a) ? archive_error_string(a)
                                                             : "damaged archive");
         archive_read_free(a);
+        if (have_needs)
+            ua_needs_free(&nd);
         /* A partial listing is still useful to show, but the caller must know. */
         return out->n ? UA_LIST_PARTIAL : UA_LIST_FAILED;
     }
     archive_read_free(a);
+    if (have_needs) {
+        int unsup = nd.unsupported[0] != 0, enc = nd.data_encrypted;
+        char what[80];
+        snprintf(what, sizeof(what), "%s", nd.unsupported);
+        ua_needs_free(&nd);
+        nd.data_encrypted = enc;
+        if (unsup)
+            snprintf(nd.unsupported, sizeof(nd.unsupported), "%s", what);
+    }
     /* Read, but not all of it can be extracted here: another engine may.
      * The list stays, for when none does. */
     if (have_needs && nd.unsupported[0]) {

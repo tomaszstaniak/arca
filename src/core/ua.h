@@ -247,10 +247,18 @@ typedef struct ua_needs {
     int data_encrypted;       /* some entry's data is encrypted */
     int multi_disk;           /* a ZIP spanning several files */
     char unsupported[80];     /* the first thing libarchive here cannot decode, "" if none */
+    /* ZIP: names of the entries whose only time is the DOS field (local
+     * time), sorted; the others have a UTC time in an extra field. */
+    char **dos_names;
+    ULONG ndos;
 } ua_needs;
 /* 7z and ZIP only. 1 when the index was read and n filled, 0 when it could
- * not be read here (the engine then finds out for itself). */
+ * not be read here (the engine then finds out for itself). Free with
+ * ua_needs_free. */
 int ua_needs_read(const char *path, ua_format fmt, ua_needs *n);
+void ua_needs_free(ua_needs *n);
+/* 1 when the ZIP entry of that name (as stored) has only a DOS time. */
+int ua_needs_dos_time(const ua_needs *n, const char *name);
 
 /* list.c */
 ua_entry *ua_list_add(ua_list *l);
