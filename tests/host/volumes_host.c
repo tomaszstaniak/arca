@@ -33,6 +33,10 @@ int main(int argc, char **argv)
             shim_exnext_fail = atoi(argv[++i]);
             continue;
         }
+        if (!strcmp(argv[i], "-sfs")) {
+            shim_sfs = 1;
+            continue;
+        }
         if (!strcmp(argv[i], "-oom") && i + 1 < argc) {
             oom_at = atol(argv[++i]);
             continue;

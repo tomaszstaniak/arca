@@ -131,6 +131,9 @@ rar5_volume(os.path.join(d, "big5.part3.rar"), 2, False, 1000)
 rc, out, err = run("big5.part2.rar", cwd=d)
 check("RAR 5 set, end headers past 2 GB and 4 GB", rc == 0 and 'set of 3, first given 0, problem ""' in out,
       out + err[-300:])
+rc, out, err = run("-sfs", "big5.part2.rar", cwd=d)
+check("RAR 5 set over 2 GB where no seek works (SFS): read forward", rc == 0 and
+      'set of 3, first given 0, problem ""' in out, out + err[-300:])
 os.remove(os.path.join(d, "big5.part3.rar"))
 rc, out, err = run("big5.part1.rar", cwd=d)
 check("RAR 5 set, last volume missing after a 4 GB volume",
@@ -154,6 +157,9 @@ rc, out, err = run("big4.r00", cwd=d)
 want = ['set of 3, first given 0, problem ""', "1 big4.rar", "2 big4.r01", "3 big4.r00"]
 check("RAR 4 set ordered by end blocks past 2 GB and 4 GB", rc == 0 and all(w in out for w in want),
       out + err[-300:])
+rc, out, err = run("-sfs", "big4.r00", cwd=d)
+check("RAR 4 set over 2 GB where no seek works (SFS): read forward", rc == 0 and
+      all(w in out for w in want), out + err[-300:])
 
 # ---- 4. the corpus, as recorded before the change to 64-bit positions
 EXPECT = """\

@@ -3,13 +3,32 @@
  * LONG (posixc's lseek goes through the same call), so a position past 2 GB
  * cannot be given; the reader keeps its own 64-bit position and gets there by
  * relative moves of at most 1 GB. Callers check what they find (a CRC, a
- * signature): a handler that cannot move past 2 GB fails the move or gives
- * bytes that do not check out, and is then not believed. */
+ * signature): a move that went wrong is not believed.
+ *
+ * SFS (ABIv11 2026.09, AROS One 1.3) refuses every seek in a file over 2 GB:
+ * its ACTION_SEEK compares the new position with the size as a LONG, which
+ * is negative there (rom/filesys/SFS/FS/filesystemmain.c). Reading on works.
+ * So when a move fails, the reader reads forward to the position instead,
+ * and to go back it opens the file again (when it has the path). Slow, but
+ * only on such files. */
 #include <string.h>
 #include <proto/exec.h>
 #include <proto/dos.h>
 #include <zlib.h>
 #include "ua.h"
+
+static int skip_forward(ua_rdr *r, UQUAD to)
+{
+    static UBYTE junk[65536];
+    while (r->pos < to) {
+        UQUAD gap = to - r->pos;
+        LONG got = Read(r->fh, junk, gap > sizeof(junk) ? (LONG)sizeof(junk) : (LONG)gap);
+        if (got <= 0)
+            return 0;
+        r->pos += got;
+    }
+    return 1;
+}
 
 int ua_rdr_goto(ua_rdr *r, UQUAD to)
 {
@@ -18,10 +37,24 @@ int ua_rdr_goto(ua_rdr *r, UQUAD to)
         LONG step = gap > 0x40000000 ? 0x40000000 : (LONG)gap;
         if (to < r->pos)
             step = -step;
-        SetIoErr(0);
-        if (Seek(r->fh, step, OFFSET_CURRENT) == -1 && IoErr())
+        if (!r->noseek) {
+            SetIoErr(0);
+            if (Seek(r->fh, step, OFFSET_CURRENT) != -1 || !IoErr()) {
+                r->pos += step;
+                continue;
+            }
+            r->noseek = 1;
+        }
+        if (to > r->pos)
+            return skip_forward(r, to);
+        /* Back: from the start again. */
+        if (!r->path)
             return 0;
-        r->pos += step;
+        Close(r->fh);
+        r->fh = Open((STRPTR)r->path, MODE_OLDFILE);
+        r->pos = 0;
+        if (!r->fh)
+            return 0;
     }
     return 1;
 }
@@ -54,10 +87,11 @@ int ua_stamp_file(const char *path, ua_stamp *st)
     LONG n;
     int ok = 0;
     memset(st, 0, sizeof(*st));
+    memset(&r, 0, sizeof(r));
     if (!fib)
         return 0;
     r.fh = Open((STRPTR)path, MODE_OLDFILE);
-    r.pos = 0;
+    r.path = path;
     if (r.fh && ExamineFH(r.fh, fib)) {
         st->size = UA_FIB_SIZE(fib);
         st->date = fib->fib_Date;

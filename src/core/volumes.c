@@ -80,15 +80,21 @@ static void rar5_scan(ua_rdr *r, cand *c)
     int guard = 0;
     c->rar = 5;
     while (guard++ < 100000) {
-        UBYTE pre[16];
+        UBYTE pre[8];
         UQUAD hsize, type, hflags, extra = 0, data = 0, aflags, vol;
-        ULONG at = 4, n, szlen;
-        if (!ua_rdr_goto(r, pos) || (LONG)(n = ua_rdr_read(r, pre, sizeof(pre))) < 7)
+        ULONG at = 4, n = 4, szlen;
+        /* CRC, then the size's bytes one by one: only forward, so that a
+         * file that cannot seek (bigfile.c) is read once. */
+        if (!ua_rdr_goto(r, pos) || ua_rdr_read(r, pre, 4) != 4)
             break;
+        do {
+            if (n == sizeof(pre) || ua_rdr_read(r, pre + n, 1) != 1)
+                break;
+        } while (pre[n++] & 0x80);
         if (!vint(pre, n, &at, &hsize) || hsize == 0 || hsize > 0x200000)
             break;
         szlen = at - 4;
-        if (!ua_rdr_goto(r, pos + at) || !r_take(r, &hb, &cap, (ULONG)hsize, &c->oom))
+        if (!r_take(r, &hb, &cap, (ULONG)hsize, &c->oom))
             break;
         {
             uLong crc = crc32(0L, pre + 4, szlen);
@@ -183,19 +189,22 @@ static void scan(BPTR dir, cand *c)
     BPTR old = CurrentDir(dir);
     ua_rdr r;
     UBYTE sig[8];
+    memset(&r, 0, sizeof(r));     /* forward moves only: no path needed */
     r.fh = Open((STRPTR)c->name, MODE_OLDFILE);
-    r.pos = 0;
     CurrentDir(old);
     c->volnum = -1;
     if (!r.fh)
         return;
-    if (ua_rdr_read(&r, sig, 8) == 8 && !memcmp(sig, "Rar!\x1A\x07", 6)) {
-        if (sig[6] == 1 && sig[7] == 0)
+    /* RAR 4's signature has 7 bytes, RAR 5's 8: read the 8th only for RAR 5
+     * (no going back on a file that cannot seek). */
+    if (ua_rdr_read(&r, sig, 7) == 7 && !memcmp(sig, "Rar!\x1A\x07", 6)) {
+        if (sig[6] == 1 && ua_rdr_read(&r, sig + 7, 1) == 1 && sig[7] == 0)
             rar5_scan(&r, c);
         else if (sig[6] == 0)
             rar4_scan(&r, c);
     }
-    Close(r.fh);
+    if (r.fh)
+        Close(r.fh);
 }
 
 /* ---- names ---- */

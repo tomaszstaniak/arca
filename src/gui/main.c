@@ -1274,6 +1274,8 @@ static void on_batch(uj_msg *m)
             for (c = 0; c < 5; c++) {
                 WORD w = TextLength(&colrp, col[c], strlen(col[c]));
                 if (w > colmax[c]) {
+                    dbg("batch at %lu: entry %lu widens column %d (%d > %d)",
+                        (unsigned long)m->first, (unsigned long)k, c, (int)w, (int)colmax[c]);
                     colmax[c] = w;
                     widened = 1;
                 }
@@ -1419,6 +1421,9 @@ static void extract_done(uj_job *j)
                                                    !r->cancelled && !r->failed)) {
         snprintf(head, sizeof(head), "Failed");
         snprintf(body, sizeof(body), "%s\nNothing was written.", j->err[0] ? j->err : "See Details.");
+    } else if (r->cancelled && !extracted_any) {
+        snprintf(head, sizeof(head), "Cancelled");
+        snprintf(body, sizeof(body), "Nothing was extracted.");
     } else if (r->cancelled) {
         snprintf(head, sizeof(head), "Cancelled");
         snprintf(body, sizeof(body), "%s (%s) were extracted to\n%s\nand kept; the file in "
@@ -2098,13 +2103,16 @@ BOOPSI_DISPATCHER(IPTR, drag_dispatcher, cl, obj, msg)
 {
     struct dragdata *d;
     switch (msg->MethodID) {
-    case MUIM_DrawBackground:
-        if (append_noclear) {
-            struct MUIP_DrawBackground *db = (struct MUIP_DrawBackground *)msg;
-            if (db->width >= _mwidth(obj) && db->height >= _mheight(obj) - 2)
-                return 0;
-        }
+    case MUIM_DrawBackground: {
+        struct MUIP_DrawBackground *db = (struct MUIP_DrawBackground *)msg;
+        int whole = db->width >= _mwidth(obj) && db->height >= _mheight(obj) - 2;
+        if (append_noclear && whole)
+            return 0;
+        if (whole && b_job)
+            dbg("list background cleared while reading (%d rows so far, noclear %d)",
+                (int)b_count, append_noclear);
         break;
+    }
     case MUIM_Setup: {
         IPTR r = DoSuperMethodA(cl, obj, msg);
         if (!r)

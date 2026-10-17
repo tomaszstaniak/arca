@@ -1,7 +1,8 @@
 /* Host shim: the DOS calls volumes.c makes, on POSIX. A lock is an index into
  * a table of paths, a file handle a FILE pointer. Seek behaves like ABIv11's:
  * a LONG position in, the old position cut to a LONG out.
- * Test hooks: shim_exnext_fail (ExNext fails with an error after that many
+ * Test hooks: shim_sfs (as SFS on ABIv11: any seek in a file over 2 GB
+ * fails), shim_exnext_fail (ExNext fails with an error after that many
  * names), shim_seek_calls / shim_seek_max (largest step asked for). */
 #ifndef SHIM_PROTO_DOS_H
 #define SHIM_PROTO_DOS_H
@@ -18,6 +19,7 @@ static char shim_cwd[4096] = ".";
 static BPTR shim_cur;
 static LONG shim_ioerr;
 static int shim_exnext_fail = -1, shim_exnext_count;
+static int shim_sfs;          /* behave like SFS: no seek at all in a file over 2 GB */
 static long shim_seek_calls;
 static void SetIoErr(LONG e) { shim_ioerr = e; }
 static LONG IoErr(void) { return shim_ioerr; }
@@ -40,6 +42,7 @@ static LONG Seek(BPTR f, LONG p, LONG m) {
     struct stat st;
     shim_seek_calls++;
     fstat(fileno(fp), &st);
+    if (shim_sfs && st.st_size > 0x7fffffffLL) { shim_ioerr = ERROR_SEEK_ERROR; return -1; }
     to = m == OFFSET_BEGINNING ? (off_t)p : m == OFFSET_CURRENT ? old + p : st.st_size + p;
     if (to < 0 || to > st.st_size || fseeko(fp, to, SEEK_SET)) { shim_ioerr = ERROR_SEEK_ERROR; return -1; }
     return (LONG)old; }

@@ -109,8 +109,11 @@ Known limitations
 -----------------
 
 - Archive files over 2 GB: files over 2 GB inside an archive extract
-  correctly, and a RAR set's volumes over 2 GB are found; but 7z and ZIP
-  archives that are themselves over 2 GB have not been tested here.
+  correctly, and the volumes of a RAR set are found whatever their size.
+  But on SFS volumes (the usual AROS system disk) a file over 2 GB cannot be
+  read from anywhere but its start: SFS refuses every seek in such a file.
+  So a 7z or ZIP archive that is itself over 2 GB cannot be opened there.
+  Keep such archives under 2 GB, or split them into volumes.
 - Names are shown and written in ISO-8859-1, AROS's character set. A name
   with characters outside it is changed, and Unarc lists such changes before
   extracting.

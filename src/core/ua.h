@@ -230,11 +230,14 @@ void ua_volumes_free(ua_volumes *v);
 LONG ua_gmtoff_minutes(void);
 void ua_unix_to_datestamp(long long t, int utc, struct DateStamp *ds);
 
-/* bigfile.c: reading at 64-bit positions (ABIv11's Seek is 32-bit). The
- * handle must be at position 0, or at pos, when given. */
+/* bigfile.c: reading at 64-bit positions (ABIv11's Seek is 32-bit; SFS
+ * refuses any seek in a file over 2 GB, read forward instead). The handle
+ * must be at pos; zero the rest. */
 typedef struct ua_rdr {
     BPTR fh;
     UQUAD pos;
+    const char *path;         /* to open it again when it must go back; may be NULL */
+    int noseek;               /* Seek failed once: read forward instead */
 } ua_rdr;
 int ua_rdr_goto(ua_rdr *r, UQUAD to);
 LONG ua_rdr_read(ua_rdr *r, void *buf, LONG n);

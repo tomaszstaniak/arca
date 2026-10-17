@@ -603,10 +603,11 @@ int ua_needs_read(const char *path, ua_format fmt, ua_needs *n)
     UQUAD size = 0;
     int ok = 0;
     memset(n, 0, sizeof(*n));
+    memset(&r, 0, sizeof(r));
     if (fmt != UA_FMT_7Z && fmt != UA_FMT_ZIP)
         return 0;
     r.fh = Open((STRPTR)path, MODE_OLDFILE);
-    r.pos = 0;
+    r.path = path;
     if (!r.fh)
         return 0;
     fib = AllocDosObject(DOS_FIB, NULL);
@@ -618,7 +619,8 @@ int ua_needs_read(const char *path, ua_format fmt, ua_needs *n)
         ok = needs_7z(&r, n);
     else if (size)
         ok = needs_zip(&r, size, n);
-    Close(r.fh);
+    if (r.fh)
+        Close(r.fh);
     if (!ok)
         ua_needs_free(n);
     return ok;
