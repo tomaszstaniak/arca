@@ -1,0 +1,135 @@
+Unarc (working name), test build
+=================================
+
+Unarc lists, extracts and makes archives on AROS. It comes as two programs
+over one core: Unarc, a Zune program, and unarc-cli, a Shell command. A
+third program, unarc-7z, reads 7z, RAR and ZIP with 7-Zip's own code; Unarc
+and unarc-cli start it when they need it.
+
+This is a test build for AROS ABIv11 on x86_64 (AROS One and the 2026.09
+base). It does not run on mainline AROS (ABIv1).
+
+
+Installing
+----------
+
+Copy the Unarc drawer anywhere, for example to SYS:Utilities or to a drawer
+whose name has spaces. Nothing else is installed and nothing outside the
+drawer is changed, apart from ENVARC:Unarc.prefs when you change a setting
+in the start window. Keep unarc-7z in the same drawer as Unarc and
+unarc-cli. To remove Unarc, delete the drawer (and ENVARC:Unarc.prefs).
+
+No file type is associated with Unarc. To open archives with it from
+Wanderer, give an archive a project icon whose default tool is Unarc, or set
+Unarc as the default tool of the archive types in Wanderer's preferences.
+
+
+The Zune program
+----------------
+
+Started on its own, Unarc opens a start window: drop archives on it to
+extract them, or files and drawers to pack them. The buttons do the same
+through file requesters.
+
+Started with an archive (a double-click on an archive whose default tool is
+Unarc), it extracts the archive next to itself into a new drawer and shows
+what happened. The start window's "Double-clicked archives" setting, or the
+tool type MODE=BROWSE, shows the contents first instead.
+
+In the browser you can select entries and extract only those, extract everything,
+or drag the selected entries onto an open Wanderer drawer window. Amiga+A
+selects every entry. Several archives dropped at once are extracted one
+after another; the progress window lists them and ends with one summary.
+
+When a file already exists, Unarc asks. Cancel keeps the files already
+finished and removes the one in progress. Nothing that was there before is
+overwritten unless you say so.
+
+
+The Shell command
+-----------------
+
+    unarc-cli <archive>                 extract next to the archive
+    unarc-cli <archive> TO Work:Out     extract into Work:Out
+    unarc-cli <archive> LIST            show the contents, write nothing
+    unarc-cli new.zip PACK <files>      make an archive (.zip, .tar.gz, .7z)
+    unarc-cli HELP                      all options, with examples
+    unarc-cli FORMATS                   what each format supports
+
+Return codes: 0 done, 5 done with notes (something skipped or renamed),
+10 partly done, cancelled or stopped by an error, 20 nothing done. Ctrl-C
+stops the command; finished files are kept.
+
+
+Formats
+-------
+
+Extracting: ZIP (also ZIP64), 7z, RAR 1.5 to 5, LhA,
+LZX, DMS, tar, tar.gz, tar.bz2, tar.xz, gzip, bzip2, xz, ISO 9660 and more.
+Making: ZIP, tar.gz and 7z.
+
+Multi-volume sets (name.part1.rar, name.rar + name.r00, name.7z.001) can be
+opened through any of their volumes. A set with a volume missing is refused
+before anything is written, and the message names the missing volume.
+
+Archives with Amiga protection bits and comments (LhA, LZX) keep them.
+
+
+Passwords
+---------
+
+Encrypted 7z, RAR and ZIP archives (ZipCrypto and AES) are read through
+unarc-7z. When the list of entries itself is encrypted, Unarc asks for the
+password at once; when only the data is, before anything is written. The
+Shell command asks without showing what you type; in scripts, give it with
+PASSWORD. Without a password, encrypted entries are left out and reported.
+The password is not saved or logged anywhere.
+
+
+unarc-7z
+--------
+
+unarc-7z is 7-Zip 26.04 (7z, RAR and ZIP handlers only), built for AROS as a
+program of its own. Unarc uses it for:
+
+- every RAR archive;
+- encrypted 7z and ZIP archives;
+- 7z and ZIP archives in a method the built-in reader lacks (for example
+  Deflate64);
+- 7z archives split into several files.
+
+Plain 7z and ZIP archives are read by the built-in reader, which is faster.
+Without unarc-7z, Unarc still reads 7z, RAR and ZIP as far as the built-in
+reader can, without passwords, and says so when an archive needs unarc-7z.
+An unarc-7z from another Unarc release is not used; install both from one
+package.
+
+
+Known limitations
+-----------------
+
+- Archive files over 2 GB: files over 2 GB inside an archive extract
+  correctly, and a RAR set's volumes over 2 GB are found; but 7z and ZIP
+  archives that are themselves over 2 GB have not been tested here.
+- Names are shown and written in ISO-8859-1, AROS's character set. A name
+  with characters outside it is changed, and Unarc lists such changes before
+  extracting.
+- Links stored in archives are not created; they are listed as not
+  extracted.
+- Disk images in archives (DMS) are listed but not written to a disk.
+
+
+Licences
+--------
+
+Unarc's own code is under the MIT licence. It contains libarchive, XAD,
+liblzma, zlib, bzip2 and GNU libiconv, each under its own licence; XAD and
+GNU libiconv are under the GNU LGPL 2.1, which lets you rebuild Unarc with a
+changed version of them. unarc-7z contains 7-Zip under the GNU LGPL 2.1, and
+its RAR code comes with the unRAR licence restriction: it may not be used to
+re-create the RAR compression algorithm. The full texts are in the Licences
+drawer, and THIRD_PARTY_NOTICES there lists what is used where.
+
+This test build comes from the aros-unarc source tree at the revision named
+in the file Revision; the sources of the libraries are the upstream releases
+named in THIRD_PARTY_NOTICES.

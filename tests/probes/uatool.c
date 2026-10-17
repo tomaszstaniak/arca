@@ -9,7 +9,16 @@
  *   uatool gonewin <title> <s>  wait until no such window exists (RC 5 if one stays)
  *   uatool sum <drawer>         SHA-256 of every file under the drawer, one per line
  *   uatool running <name>       RC 0 if a process runs the command <name> (the file
- *                               part of a Shell command, or a task of that name) */
+ *                               part of a Shell command, or a task of that name)
+ *   uatool break <name> <ticks> after <ticks>, Ctrl-C to the process running <name>
+ *   uatool dates <drawer>       "YYYY-MM-DD HH:MM:SS  path" of every file, as AROS keeps it
+ *   uatool gmt                  the locale's GMT offset (minutes west), as programs see it
+ *   uatool setgmt <minutes>     write that offset into ENV: and ENVARC: Sys/locale.prefs
+ *   uatool vols <file>          what Unarc's volume finder makes of <file>
+ *   uatool wbclose <drawer> <ticks>  after <ticks>, ask Wanderer to close that drawer
+ *   uatool winmove <title> <dx> <dy> <ticks>  after <ticks>, move that window
+ *   uatool wincycle <x> <y> <seconds>  open and close a small window at x,y again
+ *                               and again (a drop target that keeps going away) */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,6 +33,8 @@
 #include <proto/intuition.h>
 #include <proto/icon.h>
 #include <proto/workbench.h>
+#include <proto/locale.h>
+#include "../../src/core/ua.h"
 
 /* ---- SHA-256 (FIPS 180-4), for checking extracted files in the guest ---- */
 typedef struct { ULONG h[8]; UBYTE buf[64]; UQUAD len; ULONG n; } sha;
@@ -148,6 +159,129 @@ static struct Window *find_win(const char *title)
     return found;
 }
 
+/* volumes.c needs it; the program's own is in registry.c. */
+char *ua_strdup(const char *s)
+{
+    char *d = s ? malloc(strlen(s) + 1) : NULL;
+    if (d)
+        strcpy(d, s);
+    return d;
+}
+
+/* The process running the command <name>: by task name, or the file part of
+ * a Shell command (Run starts a program in a CLI named after the CLI). Call
+ * under Forbid. */
+static struct Task *find_cmd(const char *want)
+{
+    struct List *lists[2];
+    struct Node *n;
+    int i;
+    lists[0] = &SysBase->TaskReady;
+    lists[1] = &SysBase->TaskWait;
+    for (i = 0; i < 2; i++)
+        for (n = lists[i]->lh_Head; n->ln_Succ; n = n->ln_Succ) {
+            struct Task *t = (struct Task *)n;
+            if (n->ln_Name && !strcmp(n->ln_Name, want))
+                return t;
+            if (t->tc_Node.ln_Type == NT_PROCESS && ((struct Process *)t)->pr_CLI) {
+                struct CommandLineInterface *cli = BADDR(((struct Process *)t)->pr_CLI);
+                UBYTE *b = BADDR(cli->cli_CommandName);
+                char name[256];
+                if (b && b[0]) {
+                    memcpy(name, b + 1, b[0]);
+                    name[b[0]] = 0;
+                    if (!strcmp((char *)FilePart(name), want))
+                        return t;
+                }
+            }
+        }
+    return NULL;
+}
+
+/* Days since 1978-01-01 to a calendar date. */
+static void civil(LONG days, int *y, int *m, int *d)
+{
+    static const int ml[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+    int yy = 1978, mm = 0;
+    for (;;) {
+        int leap = (yy % 4 == 0 && yy % 100) || yy % 400 == 0, yl = leap ? 366 : 365;
+        if (days < yl)
+            break;
+        days -= yl;
+        yy++;
+    }
+    for (;; mm++) {
+        int leap = (yy % 4 == 0 && yy % 100) || yy % 400 == 0;
+        int l = ml[mm] + (mm == 1 && leap);
+        if (days < l)
+            break;
+        days -= l;
+    }
+    *y = yy;
+    *m = mm + 1;
+    *d = days + 1;
+}
+
+static void dates_tree(BPTR dir, const char *rel)
+{
+    struct FileInfoBlock *fib = AllocDosObject(DOS_FIB, NULL);
+    if (!fib || !Examine(dir, fib)) {
+        FreeDosObject(DOS_FIB, fib);
+        return;
+    }
+    while (ExNext(dir, fib)) {
+        char sub[1024];
+        int y, m, d;
+        struct DateStamp *ds = &fib->fib_Date;
+        snprintf(sub, sizeof(sub), "%s%s%s", rel, *rel ? "/" : "", fib->fib_FileName);
+        civil(ds->ds_Days, &y, &m, &d);
+        printf("%04d-%02d-%02d %02ld:%02ld:%02ld  %s%s\n", y, m, d, (long)ds->ds_Minute / 60,
+               (long)ds->ds_Minute % 60, (long)ds->ds_Tick / TICKS_PER_SECOND, sub,
+               fib->fib_DirEntryType > 0 ? "/" : "");
+        if (fib->fib_DirEntryType > 0) {
+            BPTR old = CurrentDir(dir), l = Lock(fib->fib_FileName, SHARED_LOCK);
+            CurrentDir(old);
+            if (l) {
+                dates_tree(l, sub);
+                UnLock(l);
+            }
+        }
+    }
+    FreeDosObject(DOS_FIB, fib);
+}
+
+/* lp_GMTOffset in the LCLE chunk of a locale prefs file (prefs/locale.h:
+ * 16 reserved bytes, a 32-byte region name, 10 x 30 bytes of languages). */
+static int set_gmt_file(const char *path, LONG minutes)
+{
+    static UBYTE b[8192];
+    BPTR fh = Open((STRPTR)path, MODE_OLDFILE);
+    LONG n, i;
+    if (!fh)
+        return 0;
+    n = Read(fh, b, sizeof(b));
+    Close(fh);
+    for (i = 12; i + 8 < n; i++)
+        if (!memcmp(b + i, "LCLE", 4)) {
+            UBYTE *o = b + i + 8 + 16 + 32 + 300;
+            if (o + 4 > b + n)
+                return 0;
+            printf("%s: offset was %ld, now %ld\n", path,
+                   (long)((o[0] << 24) | (o[1] << 16) | (o[2] << 8) | o[3]), (long)minutes);
+            o[0] = (UBYTE)(minutes >> 24);
+            o[1] = (UBYTE)(minutes >> 16);
+            o[2] = (UBYTE)(minutes >> 8);
+            o[3] = (UBYTE)minutes;
+            fh = Open((STRPTR)path, MODE_NEWFILE);
+            if (!fh)
+                return 0;
+            Write(fh, b, n);
+            Close(fh);
+            return 1;
+        }
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc >= 4 && !strcmp(argv[1], "icon")) {
@@ -242,6 +376,86 @@ int main(int argc, char **argv)
         printf("running \"%s\": %s\n", argv[2], found ? "yes" : "no");
         return found ? 0 : 5;
     }
-    printf("usage: uatool icon|open|drop|waitwin|gonewin|running ...\n");
+    if (argc == 4 && !strcmp(argv[1], "break")) {
+        struct Task *t;
+        Delay(atoi(argv[3]));
+        Forbid();
+        t = find_cmd(argv[2]);
+        if (t)
+            Signal(t, SIGBREAKF_CTRL_C);
+        Permit();
+        printf("break \"%s\": %s\n", argv[2], t ? "sent" : "NOT RUNNING");
+        return t ? 0 : 5;
+    }
+    if (argc == 3 && !strcmp(argv[1], "dates")) {
+        BPTR l = Lock(argv[2], SHARED_LOCK);
+        if (!l) {
+            printf("cannot open %s\n", argv[2]);
+            return 20;
+        }
+        dates_tree(l, "");
+        UnLock(l);
+        return 0;
+    }
+    if (argc == 2 && !strcmp(argv[1], "gmt")) {
+        struct Locale *loc = OpenLocale(NULL);
+        printf("gmt offset %ld\n", loc ? (long)loc->loc_GMTOffset : -99999L);
+        if (loc)
+            CloseLocale(loc);
+        return 0;
+    }
+    if (argc == 3 && !strcmp(argv[1], "setgmt")) {
+        LONG m = atol(argv[2]);
+        int a = set_gmt_file("ENV:Sys/locale.prefs", m);
+        int b = set_gmt_file("ENVARC:Sys/locale.prefs", m);
+        return a && b ? 0 : 10;
+    }
+    if (argc == 3 && !strcmp(argv[1], "vols")) {
+        ua_volumes v;
+        int k;
+        if (ua_volumes_find(argv[2], &v)) {
+            printf("set of %d, first given %d, problem \"%s\"\n", v.count, v.first_given, v.problem);
+            for (k = 0; k < v.count; k++)
+                printf("   %d %s\n", k + 1, v.path[k]);
+        } else {
+            printf("single archive\n");
+        }
+        ua_volumes_free(&v);
+        return 0;
+    }
+    if (argc == 4 && !strcmp(argv[1], "wbclose")) {
+        BOOL ok;
+        Delay(atoi(argv[3]));
+        ok = CloseWorkbenchObject(argv[2], TAG_DONE);
+        printf("wbclose %s: %s\n", argv[2], ok ? "asked" : "FAILED");
+        return ok ? 0 : 20;
+    }
+    if (argc == 6 && !strcmp(argv[1], "winmove")) {
+        struct Window *w;
+        Delay(atoi(argv[5]));
+        w = find_win(argv[2]);
+        if (w)
+            MoveWindow(w, atoi(argv[3]), atoi(argv[4]));
+        printf("winmove \"%s\": %s\n", argv[2], w ? "moved" : "NOT FOUND");
+        return w ? 0 : 20;
+    }
+    if (argc == 5 && !strcmp(argv[1], "wincycle")) {
+        LONG x = atol(argv[2]), y = atol(argv[3]), ticks = atol(argv[4]) * 50, t, n = 0;
+        for (t = 0; t < ticks; t += 2) {
+            struct Window *w = OpenWindowTags(NULL, WA_Left, x - 60, WA_Top, y - 40, WA_Width, 120,
+                                              WA_Height, 80, WA_Title, (IPTR)"RAM:", WA_IDCMP, 0,
+                                              WA_Flags, WFLG_NOCAREREFRESH, TAG_DONE);
+            Delay(1);
+            if (w) {
+                CloseWindow(w);
+                n++;
+            }
+            Delay(1);
+        }
+        printf("wincycle: %ld windows opened and closed\n", (long)n);
+        return 0;
+    }
+    printf("usage: uatool icon|open|drop|waitwin|gonewin|running|break|dates|gmt|setgmt|vols|"
+           "wbclose|winmove|wincycle ...\n");
     return 20;
 }
