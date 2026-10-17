@@ -547,7 +547,9 @@ static int run(IPTR *args)
                 if (e->map_flags & UA_MAP_UNSAFE)
                     diag("refused (path leaves the destination): %s\n", nm);
                 else if (e->encrypted && e->skip)
-                    diag("not extracted (encrypted, no password): %s\n", nm);
+                    diag("not extracted (encrypted, %s): %s\n",
+                         l.engine->caps(l.format) & UA_CAP_PASSWORD ? "no password" :
+                         "this engine cannot decrypt it", nm);
                 else if (e->map_flags && e->target) {
                     flags_str(e->map_flags, fl, sizeof(fl));
                     diag("name changed (%s): \"%s\" -> \"%s\"\n", fl + 1, nm, e->target);

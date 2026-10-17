@@ -140,6 +140,13 @@ int ua_read_list(const char *archive, ua_format fmt, ua_op op, int recover,
             }
             continue;
         }
+        if (have_fallback && !recover) {
+            /* An earlier engine read the archive and only lacked a method or
+             * a key; a later one that calls it damaged is not believed (XAD
+             * takes an AES ZIP for a damaged one). */
+            ua_list_free(&t);
+            continue;
+        }
         if (!recover) {
             damaged = 1;
             if (r == UA_LIST_PARTIAL && op == UA_OP_LIST) {
