@@ -23,8 +23,8 @@ def check(cond, what):
     if not cond:
         fails += 1
 
-# RAR 1.5-4.x stores local DOS times; 7-Zip converts them with the process's
-# time zone. Fix it so that the saved listings do not depend on the host.
+# Listings must not depend on the host's time zone (checked below); TZ=UTC
+# only keeps the saved reference listings comparable with older ones.
 ENV = dict(os.environ, TZ='UTC')
 
 def run(args, password=None):
@@ -274,6 +274,70 @@ def main():
     # Missing middle volume: gap.part1, part2, part4 (no part3).
     expect(['list', os.path.join(CORPUS, 'gap.part1.rar')], None, 4, 'gap.part1.rar list (part3 missing)')
     expect(['list', os.path.join(CORPUS, 'tree.tar.gz')], None, 5, 'tree.tar.gz list (format not in this build)')
+
+    # Version and protocol number, which the AROS engine checks.
+    out = subprocess.run([U, 'version'], stdout=subprocess.PIPE, check=False).stdout.decode()
+    check(out == 'V\t2\t7-Zip 26.04\nR\t0\tok\n', f'version: {out!r}')
+
+    # Times. 7z and RAR 5 store UTC; RAR 1.5-4 stores local time, which must
+    # come out as stored (seconds as if UTC), whatever zone the process has.
+    for f in ('old.rar', 'r5.part01.rar', 'tree.7z'):
+        path = os.path.join(CORPUS, f)
+        outs = {tz: subprocess.run([U, 'list', path], stdout=subprocess.PIPE, check=False,
+                                   env=dict(os.environ, TZ=tz)).stdout
+                for tz in ('UTC', 'America/New_York', 'Asia/Tokyo')}
+        check(len(set(outs.values())) == 1, f'{f}: listing the same in UTC, New York and Tokyo')
+    import calendar, struct
+    raw = open(os.path.join(CORPUS, 'old.rar'), 'rb').read()
+    pos = 7 + struct.unpack_from('<H', raw, 7 + 5)[0]          # past the main header
+    assert raw[pos + 2] == 0x74
+    dos = struct.unpack_from('<I', raw, pos + 20)[0]
+    d, t = dos >> 16, dos & 0xFFFF
+    stored = calendar.timegm((1980 + (d >> 9), (d >> 5) & 15, d & 31, t >> 11, (t >> 5) & 63, (t & 31) * 2))
+    for tz in ('America/New_York', 'Asia/Tokyo'):
+        o = subprocess.run([U, 'list', os.path.join(CORPUS, 'old.rar')], stdout=subprocess.PIPE,
+                           check=False, env=dict(os.environ, TZ=tz)).stdout.decode()
+        first = [l.split('\t') for l in o.splitlines() if l.startswith('E\t0\t')][0]
+        # The DOS field has 2-second steps; RAR's extended time adds the rest.
+        check(0 <= int(first[5]) - stored < 2,
+              f'old.rar (RAR 4) in {tz}: first entry time {first[5]} is the stored local time {stored} (+ext)')
+
+    # ZIP: ZipCrypto and WinZip AES (libarchive in aros-unarc has no AES), plain,
+    # and names: a CP437 name (no UTF-8 flag) must come out as its raw bytes,
+    # a flagged one as UTF-8.
+    zdir = os.path.join(TEST, 'zip')
+    os.makedirs(zdir, exist_ok=True)
+    zips = {}
+    for name, extra in (('zc.zip', ['-psecret', '-mem=ZipCrypto']), ('za.zip', ['-psecret', '-mem=AES256']),
+                        ('zp.zip', [])):
+        p = os.path.join(zdir, name)
+        if not os.path.exists(p):
+            subprocess.run([SZ, 'a', '-tzip'] + extra + [p, 'a.txt', 'sub'], cwd=src, check=True,
+                           stdout=subprocess.DEVNULL)
+        zips[name] = p
+    test_7z(zips['zc.zip'], 'secret')
+    test_7z(zips['za.zip'], 'secret')
+    test_7z(zips['zp.zip'])
+    for name in ('zc.zip', 'za.zip'):
+        _, ents, _ = parse_list(run(['list', zips[name]]))
+        i = str([e for e in ents if not e['dir']][0]['index'])
+        expect(['extract', zips[name], i], None, 1, f'{name} extract, no password')
+        expect(['extract', zips[name], i], 'wrong', 2, f'{name} extract, wrong password')
+    import zipfile
+    zn = os.path.join(zdir, 'names.zip')
+    with zipfile.ZipFile(zn, 'w') as z:
+        z.writestr('GrXn.txt', b'cp437 name\n')                # patched to CP437 below: no flag
+        z.writestr('\u20acuro.txt', b'utf-8 name\n')          # Python sets the UTF-8 flag
+    raw = open(zn, 'rb').read()
+    open(zn, 'wb').write(raw.replace(b'GrXn.txt', b'Gr\x81n.txt'))   # both headers; no CRC covers names
+    out = run(['list', zn])
+    names = [bytes.fromhex(l.split('\t')[8]) for l in out.decode().splitlines() if l.startswith('E\t')]
+    # 7-Zip on AROS (and here) decodes a name without the flag as UTF-8 and
+    # keeps bytes that are not UTF-8 as they were; aros-unarc then reads such
+    # bytes as CP437, as it does for libarchive.
+    check(names == [b'Gr\x81n.txt', '\u20acuro.txt'.encode()], f'names.zip: raw CP437 and UTF-8 names {names}')
+    arc = [l for l in out.decode().splitlines() if l.startswith('A\t')]
+    check(arc and arc[0].split('\t')[1] == 'zip', f'names.zip: A record {arc}')
 
     print(f'{fails} failure(s)')
     sys.exit(1 if fails else 0)

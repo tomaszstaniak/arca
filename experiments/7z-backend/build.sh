@@ -23,7 +23,9 @@ list_sources() {
     aros) echo "$HERE/aros_system.cpp" ;;      # GetRamSize via exec AvailMem
     host) echo "$SZ/CPP/Windows/System.cpp" ;;  # upstream, builds on macOS
   esac
+  echo "$HERE/zip_out_stub.cpp"
 }
+
 
 build_target() {
   local t=$1 CC CXX AR NM extra_c extra_cxx
@@ -44,7 +46,9 @@ build_target() {
       ;;
     host)
       CC="clang"; CXX="clang++"; AR="ar"; NM="nm"
-      extra_c=(); extra_cxx=(-std=c++11)
+      # Keep names that are not UTF-8 byte for byte, as on AROS (UTFConvert.cpp
+      # leaves this off on macOS only).
+      extra_c=(); extra_cxx=(-std=c++11 -DMY_UTF8_RAW_NON_UTF8_SUPPORTED)
       ;;
   esac
   local B=$OUT/$t
@@ -55,6 +59,10 @@ build_target() {
     local o=$B/obj/$base.o
     case $src in
       *.c)   $CC  "${COMMON[@]}" "${DEFS[@]}" ${extra_c[@]+"${extra_c[@]}"}   -c "$src" -o "$o" ;;
+      */zip_out_stub.cpp|*/Archive/Zip/*)
+             # No extract-only ZIP upstream: zip_extract_only.h fills the gap.
+             $CXX "${COMMON[@]}" "${DEFS[@]}" ${extra_cxx[@]+"${extra_cxx[@]}"} -I"$SZ/CPP" \
+               -include "$HERE/zip_extract_only.h" -c "$src" -o "$o" ;;
       */aros_system.cpp)  # plain AROS code, no 7-Zip headers, no shim
              $CXX "${COMMON[@]}" -c "$src" -o "$o" ;;
       *.cpp) $CXX "${COMMON[@]}" "${DEFS[@]}" ${extra_cxx[@]+"${extra_cxx[@]}"} -I"$SZ/CPP" -c "$src" -o "$o" ;;

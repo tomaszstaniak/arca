@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
-// unarc-7z: front end for the 7-Zip archive handlers (7z, RAR, RAR5) linked
-// statically. Prints the machine protocol of PROTOCOL.md on stdout.
+// unarc-7z: front end for the 7-Zip archive handlers (7z, RAR, RAR5, ZIP)
+// linked statically. Prints the machine protocol of PROTOCOL.md on stdout.
 //
 //   unarc-7z [-p <file>] list <archive>
 //   unarc-7z [-p <file>] extract <archive> <index>[,<index>...] | all
 //   listx / extractx: the same with the archive path in hex
+//   unarc-7z version
 //
 // A password, when the archive asks for one, is read as one line from the
 // -p file, or from stdin without -p.
@@ -45,6 +46,10 @@ STDAPI GetHandlerProperty2(UInt32 formatIndex, PROPID propID, PROPVARIANT *value
 STDAPI GetNumberOfFormats(UINT32 *numFormats);
 
 using namespace NWindows;
+
+// Raised whenever a record changes meaning; the caller refuses another one.
+#define UNARC7Z_PROTOCOL 2
+#define UNARC7Z_7ZIP "7-Zip 26.04"
 
 enum
 {
@@ -89,7 +94,9 @@ static void Finish(int code, const char *msg)
 static void OutHexUtf8(const UString &u)
 {
   AString a;
-  ConvertUnicodeToUTF8(u, a);
+  // Bytes of a name that were not UTF-8 (a ZIP name in a code page) come
+  // back as they were, from the escapes the handlers put in their place.
+  ConvertUnicodeToUTF8_Flags(u, a, Z7_UTF_FLAG_TO_UTF8_EXTRACT_BMP_ESCAPE);
   static const char hex[] = "0123456789abcdef";
   for (unsigned i = 0; i < a.Len(); i++)
   {
@@ -906,6 +913,7 @@ static int CmdList(const char *path)
   if (o.CbSpec->NumVolumes > 1 || ArcPropBool(arc, kpidIsVolume)) flags += "multivolume,";
   if (flags.IsEmpty()) flags = "-"; else flags.DeleteBack();
 
+  const bool rarLocal = o.Format.Name == "Rar";
   Out("A\t"); Out(o.Format.Name); Out("\t");
   OutU64(o.CbSpec->NumVolumes); Out("\t"); Out(flags); Out("\n");
 
@@ -928,8 +936,18 @@ static int CmdList(const char *path)
     Int64 unixTime = 0;
     if (arc->GetProperty(i, kpidMTime, &tprop) == S_OK && tprop.vt == VT_FILETIME)
     {
-      const UInt64 ft = ((UInt64)tprop.filetime.dwHighDateTime << 32) | tprop.filetime.dwLowDateTime;
-      // FILETIME: 100 ns units since 1601-01-01 UTC.
+      FILETIME f = tprop.filetime;
+      // RAR 1.5-4 stores local time, which the handler turned into UTC with
+      // this process's time zone; turn it back with the same zone, so the
+      // caller gets the stored time whatever the C library thinks the zone is.
+      if (rarLocal)
+      {
+        FILETIME loc;
+        if (FileTimeToLocalFileTime(&f, &loc))
+          f = loc;
+      }
+      const UInt64 ft = ((UInt64)f.dwHighDateTime << 32) | f.dwLowDateTime;
+      // FILETIME: 100 ns units since 1601-01-01.
       unixTime = (Int64)(ft / 10000000) - (Int64)11644473600LL;
       hasTime = true;
     }
@@ -1111,9 +1129,17 @@ static int CmdExtract(const char *path, const char *which)
   return code;
 }
 
+static int CmdVersion()
+{
+  printf("V\t%d\t%s\n", UNARC7Z_PROTOCOL, UNARC7Z_7ZIP);
+  Finish(kCodeOk, "ok");
+  return kCodeOk;
+}
+
 static void Usage()
 {
-  fputs("usage: unarc-7z [-p <file>] list <archive>\n"
+  fputs("usage: unarc-7z version\n"
+        "       unarc-7z [-p <file>] list <archive>\n"
         "       unarc-7z [-p <file>] extract <archive> <index>[,<index>...] | all\n"
         "       listx / extractx: the archive path as hex of its bytes\n"
         "A password, if needed, is read as one line from <file>, else from stdin.\n", stderr);
@@ -1123,6 +1149,12 @@ int main(int argc, char **argv)
 {
   int code;
   int a = 1;
+  if (argc == 2 && strcmp(argv[1], "version") == 0)
+  {
+    CmdVersion();
+    fflush(stdout);
+    return 0;
+  }
   if (argc > 2 && strcmp(argv[1], "-p") == 0)
   {
     g_PasswordFile = argv[2];

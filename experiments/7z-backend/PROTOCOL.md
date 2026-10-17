@@ -5,12 +5,18 @@ program, not by a person. Records are lines of tab-separated fields ending in
 `\n` (LF). The only exception is the raw data that follows a `D` record.
 
 ```
+unarc-7z version
 unarc-7z [-p <file>] list <archive>
 unarc-7z [-p <file>] extract <archive> <index>[,<index>...]
 unarc-7z [-p <file>] extract <archive> all
 unarc-7z [-p <file>] listx <hex>
 unarc-7z [-p <file>] extractx <hex> <indices or all>
 ```
+
+`version` prints `V <tab> protocol <tab> 7-Zip version` and `R 0`, for
+example `V 2 7-Zip 26.04`. The protocol number changes whenever a record
+changes meaning; aros-unarc does not use a program with another number.
+This document describes protocol 2.
 
 `listx` and `extractx` take the archive path as hex of its bytes, so that a
 caller never has to quote a file name. On AROS the path bytes are ISO-8859-1,
@@ -46,7 +52,8 @@ console.
 A <tab> format <tab> volumes <tab> flags
 ```
 
-- `format`: the 7-Zip handler name: `7z`, `Rar` (RAR 1.5 to 4.x) or `Rar5`.
+- `format`: the 7-Zip handler name: `7z`, `Rar` (RAR 1.5 to 4.x), `Rar5` or
+  `zip`.
 - `volumes`: the number of files opened, the first one included.
 - `flags`: `-`, or a comma-separated list of:
   - `solid`: the archive is solid;
@@ -66,9 +73,11 @@ E <tab> index <tab> isdir <tab> size <tab> packed <tab> mtime <tab> attrib <tab>
 - `size`: unpacked size in bytes, or `-` if unknown.
 - `packed`: packed size in bytes, or `-` if unknown. In a solid 7z block, the
   whole block is counted on its first entry and the rest show `-`.
-- `mtime`: modification time in seconds since 1970-01-01 UTC, or `-`. RAR 1.5
-  to 4.x stores local time, and 7-Zip converts it using the time zone of the
-  process. The value is therefore only as correct as that time zone.
+- `mtime`: modification time in seconds since 1970-01-01, or `-`. For `7z`,
+  `Rar5` and `zip` it is UTC. RAR 1.5 to 4.x stores local time; for `Rar` the
+  value is that stored local time, counted as if it were UTC, whatever time
+  zone the process has (7-Zip's conversion to UTC is undone with the same
+  zone). The caller applies its own zone to the UTC values only.
 - `attrib`: the 7-Zip attribute word in lowercase hex, or `-`. The low 16 bits
   are Windows attributes (`10` = directory). If bit 15 (`8000`) is set, the
   high 16 bits are a Unix `st_mode`. Example: `81a48000` is a regular file with
@@ -76,7 +85,9 @@ E <tab> index <tab> isdir <tab> size <tab> packed <tab> mtime <tab> attrib <tab>
 - `encrypted`: `1` if the entry's data is encrypted.
 - `name`: the path inside the archive with `/` separators, as hex of its UTF-8
   bytes in lowercase (`612f62` = `a/b`). It is empty for an entry without a
-  name.
+  name. Bytes that the handler could not read as UTF-8 (a ZIP name in a code
+  page, without the UTF-8 flag) are given back as they are, so the hex is not
+  always valid UTF-8; a caller decides what such bytes mean.
 
 ### D and F: data and result per entry (extract only)
 
