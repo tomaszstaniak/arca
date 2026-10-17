@@ -80,31 +80,6 @@ static struct archive *la_open(const char *path, char **vols, int stream, int *u
     return a;
 }
 
-/* Unix time (UTC) to a DOS date stamp, which AROS keeps in local time. */
-static void to_datestamp(time_t t, struct DateStamp *ds)
-{
-    static LONG gmtoff_min = 0x7fffffff;
-    long long s;
-    if (gmtoff_min == 0x7fffffff) {
-        struct Library *LocaleBase = OpenLibrary("locale.library", 0);
-        gmtoff_min = 0;
-        if (LocaleBase) {
-            struct Locale *loc = OpenLocale(NULL);
-            if (loc) {
-                gmtoff_min = loc->loc_GMTOffset;   /* minutes west of GMT */
-                CloseLocale(loc);
-            }
-            CloseLibrary(LocaleBase);
-        }
-    }
-    s = (long long)t - 252460800LL - (long long)gmtoff_min * 60;  /* 1978-01-01 */
-    if (s < 0)
-        s = 0;
-    ds->ds_Days = (LONG)(s / 86400);
-    ds->ds_Minute = (LONG)((s % 86400) / 60);
-    ds->ds_Tick = (LONG)((s % 60) * TICKS_PER_SECOND);
-}
-
 static ULONG mode_to_prot(mode_t m)
 {
     ULONG p = 0;     /* RWED bits are active low */
@@ -141,11 +116,26 @@ static ua_etype la_type(struct archive_entry *ae)
 
 static int la_list_mode(const char *path, int stream, ua_list *out, char *err, int errlen)
 {
-    int unknown = 0;
-    struct archive *a = la_open(path, out->volumes, stream, &unknown, err, errlen);
+    int unknown = 0, have_needs = 0, any_enc = 0;
+    struct archive *a;
     struct archive_entry *ae;
+    ua_needs nd;
     int r;
 
+    /* 7z and ZIP: what the archive needs, from its index, before reading it.
+     * An encrypted list cannot be read here at all. (A set's index is in its
+     * last volume; sets go to 7-Zip first anyway.) */
+    if (!stream && !out->volumes) {
+        ua_format f;
+        LONG ioerr;
+        if (ua_sniff_file(path, &f, &ioerr) == 0 && (f == UA_FMT_7Z || f == UA_FMT_ZIP))
+            have_needs = ua_needs_read(path, f, &nd);
+        if (have_needs && nd.list_encrypted) {
+            snprintf(err, errlen, "the entry list is encrypted, which this engine cannot read");
+            return UA_LIST_UNSUPPORTED;
+        }
+    }
+    a = la_open(path, out->volumes, stream, &unknown, err, errlen);
     if (!a)
         return unknown ? UA_LIST_UNKNOWN : UA_LIST_FAILED;
     while ((r = archive_read_next_header(a, &ae)) == ARCHIVE_OK || r == ARCHIVE_WARN) {
@@ -172,12 +162,16 @@ static int la_list_mode(const char *path, int stream, ua_list *out, char *err, i
         e->size_valid = archive_entry_size_is_set(ae) != 0;
         e->size = e->size_valid ? (UQUAD)archive_entry_size(ae) : 0;
         e->encrypted = archive_entry_is_encrypted(ae);
+        any_enc |= e->encrypted;
         if (archive_entry_perm_is_set(ae) && e->type == UA_ET_FILE) {
             e->prot = mode_to_prot(archive_entry_perm(ae));
             e->prot_valid = 1;
         }
         if (archive_entry_mtime_is_set(ae)) {
-            to_datestamp(archive_entry_mtime(ae), &e->date);
+            /* libarchive gives UTC for every format; a format that stores
+             * local time was converted with the C library's zone, which on
+             * AROS is the locale's, so shifting back gives the stored time. */
+            ua_unix_to_datestamp(archive_entry_mtime(ae), 1, &e->date);
             e->date_valid = 1;
         }
         archive_read_data_skip(a);
@@ -190,6 +184,17 @@ static int la_list_mode(const char *path, int stream, ua_list *out, char *err, i
         return out->n ? UA_LIST_PARTIAL : UA_LIST_FAILED;
     }
     archive_read_free(a);
+    /* Read, but not all of it can be extracted here: another engine may.
+     * The list stays, for when none does. */
+    if (have_needs && nd.unsupported[0]) {
+        snprintf(err, errlen, "the archive uses %s, which this engine cannot decode",
+                 nd.unsupported);
+        return UA_LIST_UNSUPPORTED;
+    }
+    if (any_enc || (have_needs && nd.data_encrypted)) {
+        snprintf(err, errlen, "the archive has encrypted entries, which this engine cannot decrypt");
+        return UA_LIST_UNSUPPORTED;
+    }
     return UA_LIST_OK;
 }
 

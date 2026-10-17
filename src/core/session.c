@@ -2,6 +2,7 @@
 /* Opening an archive: the format from its first bytes, then the engines in
  * preference order. The command line and the GUI worker both come through
  * here, so they choose engines and treat damage the same way. */
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <proto/exec.h>
@@ -52,7 +53,10 @@ int ua_read_list(const char *archive, ua_format fmt, ua_op op, int recover,
                  const char *engine, ua_list *l, ua_note note, void *ctx)
 {
     const ua_engine *eng[4];
-    int neng, i, got = -1, damaged = 0;
+    int neng, i, got = -1, damaged = 0, have_fallback = 0;
+    ua_list fallback;
+    const ua_engine *fallback_engine = NULL;
+    char why[200] = "";
     char err[256];
     void (*reading)(void *, ULONG) = l->reading;
     void *reading_ctx = l->reading_ctx;
@@ -61,6 +65,7 @@ int ua_read_list(const char *archive, ua_format fmt, ua_op op, int recover,
 
     slow_ticks = -1;
     memset(l, 0, sizeof(*l));
+    memset(&fallback, 0, sizeof(fallback));
     if (engine) {
         eng[0] = ua_engine_by_name(engine);
         if (!eng[0]) {
@@ -69,7 +74,7 @@ int ua_read_list(const char *archive, ua_format fmt, ua_op op, int recover,
         }
         neng = 1;
     } else {
-        neng = ua_engines_for(fmt, op, recover, eng, 4);
+        neng = ua_engines_for(fmt, op, recover, vols != NULL, eng, 4);
     }
     if (!neng)
         return UA_OPEN_NOENGINE;
@@ -86,6 +91,8 @@ int ua_read_list(const char *archive, ua_format fmt, ua_op op, int recover,
         if (r == UA_LIST_CANCELLED) {
             ua_list_free(&t);
             ua_list_free(l);
+            if (have_fallback)
+                ua_list_free(&fallback);
             note(ctx, "Reading stopped by the user");
             return UA_OPEN_CANCELLED;
         }
@@ -94,6 +101,8 @@ int ua_read_list(const char *archive, ua_format fmt, ua_op op, int recover,
             note(ctx, "Engine %s: %s", eng[i]->name, err);
             ua_list_free(&t);
             ua_list_free(l);
+            if (have_fallback)
+                ua_list_free(&fallback);
             l->pw_state = pw;
             l->password = password;
             l->volumes = vols;          /* still the caller's, for a retry */
@@ -115,6 +124,20 @@ int ua_read_list(const char *archive, ua_format fmt, ua_op op, int recover,
         note(ctx, "Engine %s: %s", eng[i]->name, err);
         if (r == UA_LIST_UNKNOWN) {
             ua_list_free(&t);
+            continue;
+        }
+        if (r == UA_LIST_UNSUPPORTED) {
+            /* Not damage: an engine that reads it may come next. The first
+             * such list is kept in case none does. */
+            if (!why[0])
+                snprintf(why, sizeof(why), "%s", err);
+            if (!have_fallback) {
+                fallback = t;
+                fallback_engine = eng[i];
+                have_fallback = 1;
+            } else {
+                ua_list_free(&t);
+            }
             continue;
         }
         if (!recover) {
@@ -140,8 +163,30 @@ int ua_read_list(const char *archive, ua_format fmt, ua_op op, int recover,
             ua_list_free(&t);
         }
     }
+    if (got < 0 && !damaged && have_fallback && fallback.n) {
+        /* No engine reads all of it: the first one's list, as far as it goes
+         * (encrypted entries are left out by the plan, entries in a method
+         * it lacks fail one by one). */
+        note(ctx, "Using %s's list: %s", fallback_engine->name, why);
+        ua_list_free(l);
+        *l = fallback;
+        l->engine = fallback_engine;
+        got = 0;
+        have_fallback = 0;
+    }
+    if (have_fallback)
+        ua_list_free(&fallback);
     l->password = password;
     if (got >= 0) {
+        int nv = 1, k;
+        if (vols)
+            for (nv = 0; vols[nv]; nv++)
+                ;
+        l->stamps = calloc(nv, sizeof(*l->stamps));
+        for (k = 0; l->stamps && k < nv; k++)
+            if (!ua_stamp_file(vols ? vols[k] : archive, &l->stamps[k]))
+                break;
+        l->nstamps = l->stamps && k == nv ? nv : 0;
         l->format = fmt;
         l->partial = got == 1;
         l->volumes = NULL;
@@ -158,6 +203,10 @@ int ua_read_list(const char *archive, ua_format fmt, ua_op op, int recover,
     }
     if (damaged && got < 0)
         return UA_OPEN_DAMAGED;
+    if (got < 0 && why[0]) {
+        snprintf(l->why, sizeof(l->why), "%s", why);
+        return UA_OPEN_UNSUPPORTED;
+    }
     if (got < 0)
         return UA_OPEN_ERROR;
     return got == 1 ? UA_OPEN_PARTIAL : UA_OPEN_OK;

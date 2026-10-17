@@ -833,9 +833,22 @@ int ua_extract(const char *archive, ua_list *l, ua_plan *p, ua_extract_opts *o,
     fsl f;
     int rc;
     ULONG i;
+    char tv[8];
 
     memset(&f, 0, sizeof(f));
     memset(r, 0, sizeof(*r));
+    /* The archive must still be the one that was listed (and planned).
+     * Test aid UnarcTestNoStamp skips this, so that the engines' header
+     * comparison can be tested on its own. */
+    for (i = 0; i < (ULONG)l->nstamps && GetVar("UnarcTestNoStamp", (STRPTR)tv, sizeof(tv), 0) < 0;
+         i++) {
+        ua_stamp now;
+        const char *path = l->volumes ? l->volumes[i] : archive;
+        if (!ua_stamp_file(path, &now) || memcmp(&now, &l->stamps[i], sizeof(now))) {
+            snprintf(err, errlen, "%s (%s)", UA_REPLACED_MSG, (const char *)FilePart((STRPTR)path));
+            return -1;
+        }
+    }
     f.plan = p;
     f.o = o;
     f.r = r;
@@ -936,6 +949,12 @@ int ua_extract(const char *archive, ua_list *l, ua_plan *p, ua_extract_opts *o,
         r->failed = 1;
     else if (!r->failed && (rc == 1 || f.cancel))
         r->cancelled = 1;
+    else if (!r->failed && rc < 0 && (r->files || r->dirs || r->skipped || r->errors)) {
+        /* The engine stopped, or reported an error for the whole job, after
+         * part of it was done: the result says so instead of "complete". */
+        r->failed = 1;
+        snprintf(r->why, sizeof(r->why), "%s", *err ? err : "the engine reported an error");
+    }
 
     /* Directory metadata last: writing files into a directory changes its date. */
     if (!r->cancelled)

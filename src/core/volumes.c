@@ -17,6 +17,7 @@
 #include <ctype.h>
 #include <proto/exec.h>
 #include <proto/dos.h>
+#include <zlib.h>
 #include "ua.h"
 
 typedef struct cand {
@@ -25,17 +26,32 @@ typedef struct cand {
     long volnum;              /* number from the content, -1 if none */
     int first, cont;          /* content says: first volume / continues */
     int rar;                  /* 4 or 5 for RAR, 0 otherwise */
+    int oom;                  /* reading its headers ran out of memory */
 } cand;
 
 /* ---- reading RAR headers ---- */
 
-static int rd(BPTR fh, void *buf, LONG n)
+/* Headers past 2 GB are reached through ua_rdr (bigfile.c); each one is
+ * checked against its CRC, so a move that went wrong is not taken for a
+ * header. */
+/* The whole header at the current position, n bytes, into a buffer that
+ * grows as needed. */
+static UBYTE *r_take(ua_rdr *r, UBYTE **buf, ULONG *cap, ULONG n, int *oom)
 {
-    return Read(fh, buf, n) == n;
+    if (n > *cap) {
+        UBYTE *nb = realloc(*buf, n);
+        if (!nb) {
+            *oom = 1;
+            return NULL;
+        }
+        *buf = nb;
+        *cap = n;
+    }
+    return ua_rdr_read(r, *buf, (LONG)n) == (LONG)n ? *buf : NULL;
 }
 
 /* RAR 5 variable-length integer. */
-static int vint(const UBYTE *b, int len, int *at, UQUAD *v)
+static int vint(const UBYTE *b, ULONG len, ULONG *at, UQUAD *v)
 {
     int shift = 0;
     *v = 0;
@@ -49,124 +65,137 @@ static int vint(const UBYTE *b, int len, int *at, UQUAD *v)
     return 0;
 }
 
-static void rar5_scan(BPTR fh, cand *c)
+static ULONG le32(const UBYTE *b)
 {
-    UBYTE hb[512];
-    LONG pos = 8;
+    return b[0] | (b[1] << 8) | ((ULONG)b[2] << 16) | ((ULONG)b[3] << 24);
+}
+
+/* RAR 5: a header is CRC32, size (vint), then size bytes; the CRC covers the
+ * size and the bytes. */
+static void rar5_scan(ua_rdr *r, cand *c)
+{
+    UBYTE *hb = NULL;
+    ULONG cap = 0;
+    UQUAD pos = 8;
     int guard = 0;
     c->rar = 5;
     while (guard++ < 100000) {
         UBYTE pre[16];
         UQUAD hsize, type, hflags, extra = 0, data = 0, aflags, vol;
-        int at = 0, n;
-        if (Seek(fh, pos, OFFSET_BEGINNING) < 0)
-            return;
-        n = Read(fh, pre, sizeof(pre));
-        if (n < 7)
-            return;
-        at = 4;
+        ULONG at = 4, n, szlen;
+        if (!ua_rdr_goto(r, pos) || (LONG)(n = ua_rdr_read(r, pre, sizeof(pre))) < 7)
+            break;
         if (!vint(pre, n, &at, &hsize) || hsize == 0 || hsize > 0x200000)
-            return;
+            break;
+        szlen = at - 4;
+        if (!ua_rdr_goto(r, pos + at) || !r_take(r, &hb, &cap, (ULONG)hsize, &c->oom))
+            break;
         {
-            LONG start = pos + at;       /* header data begins here */
-            LONG want = hsize < sizeof(hb) ? (LONG)hsize : (LONG)sizeof(hb);
-            if (Seek(fh, start, OFFSET_BEGINNING) < 0 || Read(fh, hb, want) != want)
-                return;
-            at = 0;
-            if (!vint(hb, want, &at, &type) || !vint(hb, want, &at, &hflags))
-                return;
-            if ((hflags & 1) && !vint(hb, want, &at, &extra))
-                return;
-            if ((hflags & 2) && !vint(hb, want, &at, &data))
-                return;
-            if (type == 1) {                    /* main archive header */
-                if (!vint(hb, want, &at, &aflags))
-                    return;
-                if (aflags & 2) {
-                    if (!vint(hb, want, &at, &vol))
-                        return;
-                    c->volnum = (long)vol;
-                } else {
-                    c->volnum = 0;
-                    c->first = (aflags & 1) != 0;
-                }
-            } else if (type == 5) {             /* end of archive */
-                UQUAD eflags = 0;
-                vint(hb, want, &at, &eflags);
-                c->cont = (eflags & 1) != 0;
-                return;
-            }
-            pos = start + (LONG)hsize + (LONG)data;
+            uLong crc = crc32(0L, pre + 4, szlen);
+            if (crc32(crc, hb, (uInt)hsize) != le32(pre))
+                break;
         }
+        at = 0;
+        if (!vint(hb, hsize, &at, &type) || !vint(hb, hsize, &at, &hflags))
+            break;
+        if ((hflags & 1) && !vint(hb, hsize, &at, &extra))
+            break;
+        if ((hflags & 2) && !vint(hb, hsize, &at, &data))
+            break;
+        if (type == 1) {                    /* main archive header */
+            if (!vint(hb, hsize, &at, &aflags))
+                break;
+            if (aflags & 2) {
+                if (!vint(hb, hsize, &at, &vol))
+                    break;
+                c->volnum = (long)vol;
+            } else {
+                c->volnum = 0;
+                c->first = (aflags & 1) != 0;
+            }
+        } else if (type == 5) {             /* end of archive */
+            UQUAD eflags = 0;
+            vint(hb, hsize, &at, &eflags);
+            c->cont = (eflags & 1) != 0;
+            break;
+        }
+        pos += 4 + szlen + hsize + data;
     }
+    free(hb);
 }
 
-static void rar4_scan(BPTR fh, cand *c)
+/* RAR 1.5-4: CRC16 (the low half of a CRC32 of the header from its type
+ * byte on), type, flags, size; then the header's data area if it has one. */
+static void rar4_scan(ua_rdr *r, cand *c)
 {
-    LONG pos = 7;
+    UBYTE *h = NULL;
+    ULONG cap = 0;
+    UQUAD pos = 7;
     int guard = 0;
     c->rar = 4;
     while (guard++ < 100000) {
-        UBYTE h[40];
+        UBYTE pre[7];
         UWORD flags, size;
         UBYTE type;
         UQUAD total;
-        LONG n;
-        if (Seek(fh, pos, OFFSET_BEGINNING) < 0)
-            return;
-        n = Read(fh, h, sizeof(h));
-        if (n < 7)
-            return;
-        type = h[2];
-        flags = h[3] | (h[4] << 8);
-        size = h[5] | (h[6] << 8);
-        if (size < 7)
-            return;
+        if (!ua_rdr_goto(r, pos) || ua_rdr_read(r, pre, 7) != 7)
+            break;
+        type = pre[2];
+        flags = pre[3] | (pre[4] << 8);
+        size = pre[5] | (pre[6] << 8);
+        if (size < 7 || !r_take(r, &h, &cap, size - 7, &c->oom))
+            break;
+        if ((crc32(crc32(0L, pre + 2, 5), h, size - 7) & 0xFFFF) != (ULONG)(pre[0] | (pre[1] << 8)))
+            break;
         total = size;
+        /* h holds the header from offset 7 on. */
         if (type == 0x73) {                     /* main header */
             if (flags & 0x0100)
                 c->first = 1;
         } else if (type == 0x74 || type == 0x7A) {   /* file or service header */
             UQUAD pack;
-            if (n < 11)
-                return;
-            pack = h[7] | (h[8] << 8) | ((ULONG)h[9] << 16) | ((ULONG)h[10] << 24);
-            if ((flags & 0x0100) && n >= 36)      /* LHD_LARGE: high 32 bits */
-                pack |= (UQUAD)(h[32] | (h[33] << 8) | ((ULONG)h[34] << 16) |
-                                ((ULONG)h[35] << 24)) << 32;
+            if (size < 11)
+                break;
+            pack = le32(h);
+            if ((flags & 0x0100) && size >= 36)   /* LHD_LARGE: high 32 bits */
+                pack |= (UQUAD)le32(h + 25) << 32;
             total += pack;
         } else if (type == 0x7B) {              /* end of archive */
-            int at = 7;
+            ULONG at = 0;
             c->cont = (flags & 0x0001) != 0;
             if (flags & 0x0002)
                 at += 4;                        /* archive data CRC */
-            if ((flags & 0x0008) && n >= at + 2)
+            if ((flags & 0x0008) && size >= 7 + at + 2)
                 c->volnum = h[at] | (h[at + 1] << 8);
-            return;
+            break;
         } else if (flags & 0x8000) {            /* other block with data */
-            if (n < 11)
-                return;
-            total += h[7] | (h[8] << 8) | ((ULONG)h[9] << 16) | ((ULONG)h[10] << 24);
+            if (size < 11)
+                break;
+            total += le32(h);
         }
-        pos += (LONG)total;
+        pos += total;
     }
+    free(h);
 }
 
 static void scan(BPTR dir, cand *c)
 {
-    BPTR old = CurrentDir(dir), fh = Open((STRPTR)c->name, MODE_OLDFILE);
+    BPTR old = CurrentDir(dir);
+    ua_rdr r;
     UBYTE sig[8];
+    r.fh = Open((STRPTR)c->name, MODE_OLDFILE);
+    r.pos = 0;
     CurrentDir(old);
     c->volnum = -1;
-    if (!fh)
+    if (!r.fh)
         return;
-    if (rd(fh, sig, 8) && !memcmp(sig, "Rar!\x1A\x07", 6)) {
+    if (ua_rdr_read(&r, sig, 8) == 8 && !memcmp(sig, "Rar!\x1A\x07", 6)) {
         if (sig[6] == 1 && sig[7] == 0)
-            rar5_scan(fh, c);
+            rar5_scan(&r, c);
         else if (sig[6] == 0)
-            rar4_scan(fh, c);
+            rar4_scan(&r, c);
     }
-    Close(fh);
+    Close(r.fh);
 }
 
 /* ---- names ---- */
@@ -263,6 +292,7 @@ int ua_volumes_find(const char *path, ua_volumes *v)
     cand *c = NULL;
     BPTR dir;
     struct FileInfoBlock *fib;
+    const char *bad = NULL;
 
     memset(v, 0, sizeof(*v));
     fam = classify(leaf, base, sizeof(base), &num);
@@ -277,52 +307,73 @@ int ua_volumes_find(const char *path, ua_volumes *v)
             width++;
         }
     }
-    /* name.rar alone, with no .r00 or .part beside it, is one archive. */
     snprintf(drawer, sizeof(drawer), "%.*s", (int)(leaf - path), path);
     dir = Lock((STRPTR)(drawer[0] ? drawer : ""), SHARED_LOCK);
     if (!dir)
-        return 0;
+        return 0;                 /* opening the archive will say why */
     fib = AllocDosObject(DOS_FIB, NULL);
-    if (fib && Examine(dir, fib)) {
-        while (ExNext(dir, fib)) {
-            long nn;
-            if (fib->fib_DirEntryType > 0)
-                continue;
-            if (classify(fib->fib_FileName, b2, sizeof(b2), &nn) != fam || strcasecmp(b2, base))
-                continue;
-            if (n == cap) {
-                cand *nc = realloc(c, (cap = cap ? cap * 2 : 16) * sizeof(*c));
-                if (!nc)
-                    break;
-                c = nc;
-            }
-            memset(&c[n], 0, sizeof(c[n]));
-            c[n].name = ua_strdup(fib->fib_FileName);
-            c[n].namenum = nn;
-            n++;
+    if (!fib || !Examine(dir, fib))
+        bad = "the drawer could not be read";
+    while (!bad) {
+        long nn;
+        if (!ExNext(dir, fib)) {
+            if (IoErr() != ERROR_NO_MORE_ENTRIES)
+                bad = "the drawer could not be read completely";
+            break;
         }
+        if (fib->fib_DirEntryType > 0)
+            continue;
+        if (classify(fib->fib_FileName, b2, sizeof(b2), &nn) != fam || strcasecmp(b2, base))
+            continue;
+        if (n == cap) {
+            cand *nc = realloc(c, (cap ? cap * 2 : 16) * sizeof(*c));
+            if (!nc) {
+                bad = "out of memory";
+                break;
+            }
+            c = nc;
+            cap = cap ? cap * 2 : 16;
+        }
+        memset(&c[n], 0, sizeof(c[n]));
+        if (!(c[n].name = ua_strdup(fib->fib_FileName))) {
+            bad = "out of memory";
+            break;
+        }
+        c[n].namenum = nn;
+        n++;
     }
-    FreeDosObject(DOS_FIB, fib);
+    if (fib)
+        FreeDosObject(DOS_FIB, fib);
+    if (bad) {
+        /* A set that cannot be seen whole is refused, not guessed at. */
+        v->multi = 1;
+        snprintf(v->problem, sizeof(v->problem), "its volumes could not be found: %s", bad);
+        goto out;
+    }
+    if (n == 0)
+        goto out;                 /* the file named is not there: not a set */
     if (n < 2 && fam != FAM_SPLIT) {
-        /* One file: an ordinary archive, unless its content says it is part
+        /* name.rar alone, with no .r00 or .part beside it: an ordinary archive, unless its content says it is part
          * of a set (a continued RAR volume with its partners missing). */
-        if (n == 1) {
-            scan(dir, &c[0]);
-            if (c[0].cont || (c[0].volnum > 0)) {
-                v->multi = 1;
-                v->count = 0;
-                snprintf(v->problem, sizeof(v->problem), "\"%s\" is one volume of a set and "
-                         "the other volumes are not in this drawer", c[0].name);
-            }
-            free(c[0].name);
+        scan(dir, &c[0]);
+        if (c[0].oom) {
+            v->multi = 1;
+            snprintf(v->problem, sizeof(v->problem), "its volumes could not be read: out of memory");
+        } else if (c[0].cont || (c[0].volnum > 0)) {
+            v->multi = 1;
+            snprintf(v->problem, sizeof(v->problem), "\"%s\" is one volume of a set and "
+                     "the other volumes are not in this drawer", c[0].name);
         }
-        free(c);
-        UnLock(dir);
-        return v->multi;
+        goto out;
     }
-    for (i = 0; i < n; i++)
+    for (i = 0; i < n; i++) {
         scan(dir, &c[i]);
-    UnLock(dir);
+        if (c[i].oom) {
+            v->multi = 1;
+            snprintf(v->problem, sizeof(v->problem), "its volumes could not be read: out of memory");
+            goto out;
+        }
+    }
     qsort(c, n, sizeof(*c), cmp_cand);
 #ifdef VOL_DEBUG
     for (i = 0; i < n; i++)
@@ -330,13 +381,22 @@ int ua_volumes_find(const char *path, ua_volumes *v)
                c[i].volnum, c[i].first, c[i].cont, c[i].rar);
 #endif
     v->multi = 1;
-    v->count = n;
     v->path = calloc(n + 1, sizeof(char *));
     for (i = 0; v->path && i < n; i++) {
         char p[UA_PATHMAX];
         snprintf(p, sizeof(p), "%s%s", drawer, c[i].name);
-        v->path[i] = ua_strdup(p);
+        if (!(v->path[i] = ua_strdup(p)))
+            break;
     }
+    if (!v->path || i < n) {
+        for (i = 0; v->path && v->path[i]; i++)
+            free(v->path[i]);
+        free(v->path);
+        v->path = NULL;
+        snprintf(v->problem, sizeof(v->problem), "its volumes could not be listed: out of memory");
+        goto out;
+    }
+    v->count = n;
     /* Completeness, from the content where there is any. */
     v->problem[0] = 0;
     if (c[0].rar) {
@@ -374,8 +434,10 @@ int ua_volumes_find(const char *path, ua_volumes *v)
     }
     v->first_given = !strcasecmp(c[0].name, leaf);
     snprintf(v->setname, sizeof(v->setname), "%s", base);
+out:
     for (i = 0; i < n; i++)
         free(c[i].name);
     free(c);
-    return 1;
+    UnLock(dir);
+    return v->multi;
 }

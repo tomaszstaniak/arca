@@ -59,7 +59,7 @@ static void stat_point(IPTR on, const char *what)
     fflush(stdout);
 }
 
-const char version[] = "$VER: unarc-cli 0.0.2 (16.10.2026)";
+const char version[] = "$VER: unarc-cli 0.0.3 (17.10.2026)";
 
 /* Whether each stream goes to a Limpet window. Asked once: the query is a
  * DOS packet, which CON: and file handlers refuse at once. */
@@ -379,7 +379,7 @@ static int run(IPTR *args)
             FilePart((STRPTR)vs.path[vs.count - 1]));
     if (recover)
         out("Mode:    RECOVERY (reading what can be read from a damaged archive)\n");
-    if (!args[A_ENGINE] && !ua_engines_for(fmt, op, recover, eng, 4)) {
+    if (!args[A_ENGINE] && !ua_engines_for(fmt, op, recover, vs.count > 0, eng, 4)) {
         diag("No engine can %s this format.\n", op == UA_OP_LIST ? "list" : "extract");
         return 20;
     }
@@ -420,6 +420,14 @@ static int run(IPTR *args)
     if (st == UA_OPEN_CANCELLED) {
         diag("Stopped while reading the archive; nothing was written.\n");
         return 10;
+    }
+    if (st == UA_OPEN_UNSUPPORTED) {
+        char why7[160];
+        diag("This archive cannot be read here: %s.\n", l.why);
+        if (!ua_7z_available(why7, sizeof(why7)))
+            diag("%s\n", why7);
+        diag("Nothing was written.\n");
+        return 20;
     }
     if (st != UA_OPEN_OK && st != UA_OPEN_PARTIAL)
         return 20;

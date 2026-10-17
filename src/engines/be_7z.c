@@ -1,11 +1,13 @@
 /* SPDX-License-Identifier: MIT */
-/* 7-Zip engine: 7z and RAR (1.5 to 5) through 7-Zip's own handlers, which
- * read every method and encryption those formats have. They run in a
- * separate program, unarc-7z, next to this one (PROGDIR:): 7-Zip is C++
- * under the LGPL, and its RAR code carries the unRAR licence restriction,
- * so it stays a program of its own that can be replaced or left out. When
- * it is not there, this engine declares no formats and libarchive reads
- * them as before.
+/* 7-Zip engine: 7z, RAR (1.5 to 5) and ZIP through 7-Zip's own handlers,
+ * which read every method and encryption those formats have. It reads RAR
+ * first; 7z and ZIP only when libarchive cannot (encryption, a method it
+ * lacks, a 7z set: registry.c). The handlers run in a separate program,
+ * unarc-7z, next to this one (PROGDIR:): 7-Zip is C++ under the LGPL, and
+ * its RAR code carries the unRAR licence restriction, so it stays a program
+ * of its own that can be replaced or left out. When it is not there, or
+ * speaks another protocol version, this engine declares no formats and
+ * libarchive reads what it can as before.
  *
  * The program is started with LoadSeg and CreateNewProc, not through a
  * Shell: the archive path goes as hex, so no name needs quoting, and a Shell
@@ -21,25 +23,56 @@
 #include <string.h>
 #include <proto/exec.h>
 #include <proto/dos.h>
+#ifndef UA_7Z_HOST_TEST
 #include <dos/dostags.h>
 #include <dos/dosextens.h>
+#endif
 #include "../core/ua.h"
 
 #define PROG "unarc-7z"
+#define PROTOCOL 2           /* experiments/7z-backend/PROTOCOL.md */
 #define BUFSZ 65536
 
-static void find_prog_now(void);
+typedef struct child child;
+static int fill(child *c);
+static char *read_line(child *c);
 
+#ifdef UA_7Z_HOST_TEST
+/* tests/host/be7z_host.c: the program's output from a file instead. */
+#include UA_7Z_HOST_TEST
+#else
 /* ---------------------------------------------------------------- the program */
 
-static int have_prog = -1;
-static char prog[UA_PATHMAX];
+struct child {
+    struct Process *proc;
+    struct Task *parent;
+    BYTE sig;                 /* signalled by the exit code below */
+    volatile int exited;
+    BPTR rd;                  /* our end of the output pipe */
+    struct MsgPort *port;
+    struct DosPacket *dp;     /* AllocDosObject(DOS_STDPKT) gives the packet itself */
+    UBYTE *buf;
+    LONG len, pos;
+    int eof, cancelled;
+    char idxfile[80];
+    char pwpipe[64];          /* drained in child_end when a password went in */
+};
+
+static int have_prog = -1;    /* -1: not looked for yet */
+static int prog_ok = -1;      /* -1: not asked; 0: another protocol; 1: ours */
+static char prog[UA_PATHMAX], prog_why[200];
+
+static int child_start(child *c, const char *verb, const char *archive, const char *which,
+                       const char *password, char *err, int errlen);
+static int child_end(child *c);
+static void find_prog_now(void);
 
 /* Called by the main program at start: the GUI's job worker has no home
  * drawer, so PROGDIR: is found here once. */
 void ua_7z_init(void)
 {
     have_prog = -1;
+    prog_ok = -1;
     find_prog_now();
 }
 
@@ -47,6 +80,70 @@ static int find_prog(void)
 {
     return have_prog > 0;
 }
+
+/* Once per run: "version" answers with the protocol number. A program of
+ * another release (copied over, or left from an older install) would read
+ * the records differently, so it is not used at all. */
+static void check_version(void)
+{
+    child c;
+    char err[160], *line;
+    int proto = -1, rc = -1;
+    prog_ok = 0;
+    if (child_start(&c, "version", NULL, NULL, NULL, err, sizeof(err)) < 0) {
+        snprintf(prog_why, sizeof(prog_why), "%s next to Unarc could not be started: %s.", PROG,
+                 err);
+        return;
+    }
+    while ((line = read_line(&c))) {
+        if (line[0] == 'V' && line[1] == '\t')
+            proto = atoi(line + 2);
+        else if (line[0] == 'R' && line[1] == '\t')
+            rc = atoi(line + 2);
+    }
+    if (child_end(&c)) {
+        /* Ctrl-C came while we waited: it is the caller's, and the answer
+         * says nothing about the program; ask again next time. */
+        SetSignal(SIGBREAKF_CTRL_C, SIGBREAKF_CTRL_C);
+        prog_ok = -1;
+        return;
+    }
+    if (proto == PROTOCOL && rc == 0)
+        prog_ok = 1;
+    else if (proto > 0)
+        snprintf(prog_why, sizeof(prog_why), "%s next to Unarc is from another release (protocol "
+                 "%d, this Unarc needs %d), so it is not used; install both from one package.",
+                 PROG, proto, PROTOCOL);
+    else
+        snprintf(prog_why, sizeof(prog_why), "%s next to Unarc did not answer as expected, so it "
+                 "is not used; install it from the Unarc package.", PROG);
+}
+#endif /* UA_7Z_HOST_TEST */
+
+int ua_7z_available(char *why, int whylen)
+{
+    find_prog_now();
+    if (!find_prog()) {
+        if (why)
+            snprintf(why, whylen, "%s is not next to Unarc; with it, Unarc also reads encrypted "
+                     "7z and ZIP archives and every RAR.", PROG);
+        return 0;
+    }
+    if (prog_ok < 0)
+        check_version();
+    if (prog_ok < 0) {            /* interrupted: not now */
+        if (why)
+            snprintf(why, whylen, "%s was not asked for its version (stopped).", PROG);
+        return 0;
+    }
+    if (!prog_ok) {
+        if (why)
+            snprintf(why, whylen, "%s", prog_why);
+        return 0;
+    }
+    return 1;
+}
+#ifndef UA_7Z_HOST_TEST
 
 static void find_prog_now(void)
 {
@@ -61,20 +158,6 @@ static void find_prog_now(void)
     }
 }
 
-typedef struct child {
-    struct Process *proc;
-    struct Task *parent;
-    BYTE sig;                 /* signalled by the exit code below */
-    volatile int exited;
-    BPTR rd;                  /* our end of the output pipe */
-    struct MsgPort *port;
-    struct DosPacket *dp;     /* AllocDosObject(DOS_STDPKT) gives the packet itself */
-    UBYTE *buf;
-    LONG len, pos;
-    int eof, cancelled;
-    char idxfile[80];
-    char pwpipe[64];          /* drained in child_end when a password went in */
-} child;
 
 /* Runs in the program's process when it ends, before DOS frees it. Only
  * this function's own return is left to run in our code after the signal;
@@ -157,7 +240,7 @@ static int child_start(child *c, const char *verb, const char *archive, const ch
              (unsigned long)serial);
     snprintf(pw, sizeof(pw), "PIPE:unarc7zp-%08lx-%lu", (unsigned long)(IPTR)FindTask(NULL),
              (unsigned long)serial);
-    alen = 2 * strlen(archive) + strlen(pw) + (which ? strlen(which) : 0) + 32;
+    alen = 2 * (archive ? strlen(archive) : 0) + strlen(pw) + (which ? strlen(which) : 0) + 32;
     args = malloc(alen);
     c->buf = malloc(BUFSZ);
     c->port = CreateMsgPort();
@@ -172,9 +255,12 @@ static int child_start(child *c, const char *verb, const char *archive, const ch
         char *p = args;
         if (password)
             p += sprintf(p, "-p %s ", pw);
-        p += sprintf(p, "%s ", verb);
-        hex_of(archive, p);
-        p += strlen(p);
+        p += sprintf(p, "%s", verb);
+        if (archive) {
+            *p++ = ' ';
+            hex_of(archive, p);
+            p += strlen(p);
+        }
         if (which)
             p += sprintf(p, " %s", which);
         strcpy(p, "\n");
@@ -270,6 +356,37 @@ static LONG child_read(child *c, void *buf, LONG len)
     }
 }
 
+/* Reads to the end, waits for the program to end and frees everything.
+ * Returns whether the run was cancelled (by us or by Ctrl-C passed on),
+ * taken before the structure is cleared. */
+static int child_end(child *c)
+{
+    int cancelled;
+    if (c->rd) {
+        /* Read to the end, whatever is left. Closing the reader early would
+         * leave the program waiting for ever on a full pipe: PIPE: holds a
+         * writer until someone reads. */
+        c->pos = c->len = 0;
+        while (fill(c))
+            c->pos = c->len = 0;
+        Close(c->rd);
+    }
+    if (c->proc) {
+        while (!c->exited)
+            Wait(1UL << c->sig);
+        Delay(1);      /* let child_exit return out of our code */
+    }
+    if (c->pwpipe[0])
+        drain_password(c->pwpipe);
+    cancelled = c->cancelled;
+    child_free(c);
+    return cancelled;
+}
+
+#endif /* UA_7Z_HOST_TEST */
+
+/* ---------------------------------------------------------------- output */
+
 static int fill(child *c)
 {
     LONG n;
@@ -328,28 +445,6 @@ static int read_data(child *c, UQUAD n, ua_sink *s)
     return 0;
 }
 
-/* Reads to the end, waits for the program to end and frees everything. */
-static void child_end(child *c)
-{
-    if (c->rd) {
-        /* Read to the end, whatever is left. Closing the reader early would
-         * leave the program waiting for ever on a full pipe: PIPE: holds a
-         * writer until someone reads. */
-        c->pos = c->len = 0;
-        while (fill(c))
-            c->pos = c->len = 0;
-        Close(c->rd);
-    }
-    if (c->proc) {
-        while (!c->exited)
-            Wait(1UL << c->sig);
-        Delay(1);      /* let child_exit return out of our code */
-    }
-    if (c->pwpipe[0])
-        drain_password(c->pwpipe);
-    child_free(c);
-}
-
 /* ---------------------------------------------------------------- records */
 
 static int split(char *line, char **f, int max)
@@ -379,20 +474,6 @@ static char *unhex(const char *h)
     }
     s[n] = 0;
     return s;
-}
-
-/* The program's times are seconds since 1970 as the handlers give them: UTC
- * for 7z and RAR 5, the stored local time for RAR 1.5-4 (the program runs
- * with no time zone, so nothing is added). AROS file dates are local time;
- * the UTC ones are shifted as in the libarchive engine. */
-static void to_datestamp(long long t, struct DateStamp *ds)
-{
-    long long s = t - 252460800LL;    /* 1978-01-01 */
-    if (s < 0)
-        s = 0;
-    ds->ds_Days = (LONG)(s / 86400);
-    ds->ds_Minute = (LONG)((s % 86400) / 60);
-    ds->ds_Tick = (LONG)((s % 60) * TICKS_PER_SECOND);
 }
 
 /* The handlers' attribute word: Windows bits below, a Unix mode above when
@@ -433,7 +514,7 @@ static const char *code_text(int code, const char *msg)
 
 static ULONG z_caps(ua_format f)
 {
-    if ((f == UA_FMT_7Z || f == UA_FMT_RAR) && find_prog())
+    if ((f == UA_FMT_7Z || f == UA_FMT_RAR || f == UA_FMT_ZIP) && ua_7z_available(NULL, 0))
         return UA_CAP_LIST | UA_CAP_EXTRACT | UA_CAP_PASSWORD | UA_CAP_UTF8_NAMES;
     return 0;
 }
@@ -442,14 +523,19 @@ static int z_list(const char *path, ua_list *out, char *err, int errlen)
 {
     child c;
     char *line, *f[9];
-    int rc = -1, got_r = 0, oom = 0;
+    int rc = -1, got_r = 0, oom = 0, cancelled, local_time = 0, zip = 0;
     const char *first = out->volumes ? out->volumes[0] : path;
 
     if (child_start(&c, "listx", first, NULL, out->password, err, errlen) < 0)
         return UA_LIST_UNKNOWN;
     while ((line = read_line(&c))) {
         int n = split(line, f, 9);
-        if (f[0][0] == 'E' && n == 9) {
+        if (f[0][0] == 'A' && n >= 2) {
+            /* RAR 1.5-4 stores local time and the program gives it as stored;
+             * 7z, RAR 5 and ZIP (from its extra fields) give UTC. */
+            local_time = !strcmp(f[1], "Rar");
+            zip = !strcmp(f[1], "zip");
+        } else if (f[0][0] == 'E' && n == 9) {
             ua_entry *e = ua_list_add(out);
             ULONG prot;
             if (!e) {
@@ -469,7 +555,7 @@ static int z_list(const char *path, ua_list *out, char *err, int errlen)
             e->size_valid = f[3][0] != '-';
             e->size = e->size_valid ? strtoull(f[3], NULL, 10) : 0;
             if (f[5][0] != '-') {
-                to_datestamp(strtoll(f[5], NULL, 10), &e->date);
+                ua_unix_to_datestamp(strtoll(f[5], NULL, 10), !local_time, &e->date);
                 e->date_valid = 1;
             }
             if (f[6][0] != '-' && e->type == UA_ET_FILE &&
@@ -479,12 +565,15 @@ static int z_list(const char *path, ua_list *out, char *err, int errlen)
             }
             e->encrypted = f[7][0] == '1';
             e->name_src = unhex(f[8]);
-            e->name_kind = UA_NAME_UTF8;
             if (!e->name_src) {
                 oom = 1;
                 poke(&c);
                 break;
             }
+            /* The program gives a name's bytes as they are when they are not
+             * UTF-8; as with libarchive, those are CP437 in a ZIP. */
+            e->name_kind = ua_utf8_valid(e->name_src) ? UA_NAME_UTF8 :
+                           zip ? UA_NAME_CP437 : UA_NAME_GUESSED;
             if (ua_list_break(out) && !c.cancelled) {
                 c.cancelled = 1;
                 poke(&c);
@@ -495,12 +584,12 @@ static int z_list(const char *path, ua_list *out, char *err, int errlen)
             snprintf(err, errlen, "%s", n >= 3 ? f[2] : "");
         }
     }
-    child_end(&c);
+    cancelled = child_end(&c);
     if (oom) {
         snprintf(err, errlen, "out of memory");
         return UA_LIST_FAILED;
     }
-    if (c.cancelled || rc == 8)
+    if (cancelled || rc == 8)
         return UA_LIST_CANCELLED;
     if (!got_r) {
         snprintf(err, errlen, "%s stopped without an answer", PROG);
@@ -541,12 +630,20 @@ static int wanted(const ua_entry *e)
     return !e->excluded && !e->skip && e->target;
 }
 
+/* Returns 0 when every entry was handled, 1 when cancelled, -1 on an error
+ * that stopped the walk or that the program reported for the job as a whole.
+ * The program's final R code means:
+ *   0  done; every wanted entry must have had its answer;
+ *   8  cancelled;
+ *   another, after an F record with an error: that entry's error, already
+ *      reported for it (and counted by the file layer); the job is done;
+ *   another, with every F record 0: an error of the whole job, so -1. */
 static int z_extract(const char *path, ua_list *l, ua_sink *s, char *err, int errlen)
 {
     child c;
     char *line, *f[6], which[80];
-    ULONG k, next = 0, cur = (ULONG)-1, nwant = 0;
-    int result = 0, begun = 0, rc = -1, stop = 0;
+    ULONG k, next = 0, cur = (ULONG)-1, nwant = 0, f_errors = 0;
+    int result = 0, begun = 0, rc = -1, stop = 0, cancelled;
     ua_wdecision d = UA_W_SKIP;
     const char *first = l->volumes ? l->volumes[0] : path;
     BPTR fh;
@@ -654,6 +751,8 @@ static int z_extract(const char *path, ua_list *l, ua_sink *s, char *err, int er
         } else if (f[0][0] == 'F' && n >= 3 && cur != (ULONG)-1) {
             int code = atoi(f[2]);
             e = &l->v[cur];
+            if (code)
+                f_errors++;
             if (!begun) {
                 /* No data came (missing or wrong password, an error before
                  * the first byte). */
@@ -682,15 +781,17 @@ static int z_extract(const char *path, ua_list *l, ua_sink *s, char *err, int er
         c.cancelled = 1;
         poke(&c);
     }
-    child_end(&c);
+    cancelled = child_end(&c);
     if (result)
         return result;
-    if (c.cancelled || rc == 8)
+    if (cancelled || rc == 8)
         return 1;
     if (rc < 0) {
         snprintf(err, errlen, "%s stopped without an answer", PROG);
         return -1;
     }
+    if (rc && !f_errors)
+        return -1;                  /* err holds the program's message */
     /* Everything after the last entry it sent. A wanted entry here was never
      * answered for: the archive ended early (a missing volume, damage). */
     for (; next < l->n; next++) {

@@ -28,10 +28,14 @@ static const struct pref {
     { UA_FMT_LHA,   { &ua_engine_xad, &ua_engine_libarchive } },  /* Amiga metadata */
     { UA_FMT_LZX,   { &ua_engine_xad } },
     { UA_FMT_DMS,   { &ua_engine_xad } },
-    { UA_FMT_ZIP,   { &ua_engine_libarchive, &ua_engine_xad } }, /* UTF-8, zipx, AES later */
-    /* 7-Zip's own handlers when unarc-7z is installed: every method and
-     * encryption of both formats. libarchive otherwise. */
-    { UA_FMT_7Z,    { &ua_engine_7z, &ua_engine_libarchive } },
+    /* libarchive first where it reads the archive: it is 2-3 times faster
+     * than going through unarc-7z with many small entries. It answers
+     * UA_LIST_UNSUPPORTED, before anything is written, for what it cannot
+     * read (encryption, some methods: methods.c), and 7-Zip takes over. */
+    { UA_FMT_ZIP,   { &ua_engine_libarchive, &ua_engine_7z, &ua_engine_xad } },
+    { UA_FMT_7Z,    { &ua_engine_libarchive, &ua_engine_7z } },
+    /* RAR: 7-Zip reads every method, encryption and RAR 4 volume set;
+     * libarchive's RAR 4 reader does not. */
     { UA_FMT_RAR,   { &ua_engine_7z, &ua_engine_libarchive } },
     { UA_FMT_TAR,   { &ua_engine_libarchive, &ua_engine_xad } },
     { UA_FMT_GZIP,  { &ua_engine_libarchive, &ua_engine_xad } },
@@ -40,6 +44,11 @@ static const struct pref {
     { UA_FMT_ISO9660, { &ua_engine_libarchive } },
     /* Unknown signature: let each engine try its own recognition. */
     { UA_FMT_UNKNOWN, { &ua_engine_libarchive, &ua_engine_xad } },
+};
+
+/* Multi-volume sets go to 7-Zip first: it reads each volume as one. */
+static const struct pref multi_prefs[] = {
+    { UA_FMT_7Z,    { &ua_engine_7z, &ua_engine_libarchive } },
 };
 
 /* Recovery: readers that walk local headers instead of trusting an index. */
@@ -101,13 +110,18 @@ static int pick(const struct pref *t, unsigned nt, ua_format f, ULONG need,
     return n;
 }
 
-int ua_engines_for(ua_format f, ua_op op, int recover, const ua_engine **out, int max)
+int ua_engines_for(ua_format f, ua_op op, int recover, int multi, const ua_engine **out, int max)
 {
     ULONG need = (op == UA_OP_LIST) ? UA_CAP_LIST : UA_CAP_EXTRACT;
     int n;
     if (recover) {
         n = pick(recover_prefs, sizeof(recover_prefs) / sizeof(recover_prefs[0]), f,
                  need | UA_CAP_RECOVERY, out, max);
+        if (n)
+            return n;
+    }
+    if (multi) {
+        n = pick(multi_prefs, sizeof(multi_prefs) / sizeof(multi_prefs[0]), f, need, out, max);
         if (n)
             return n;
     }
@@ -163,6 +177,7 @@ void ua_list_free(ua_list *l)
         free(l->v[i].target);
     }
     free(l->v);
+    free(l->stamps);
     memset(l, 0, sizeof(*l));
 }
 

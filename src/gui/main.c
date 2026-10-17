@@ -29,7 +29,7 @@
 #include "../engines/xad_static.h"
 
 #define APPNAME "Unarc"
-const char version[] = "$VER: Unarc 0.0.2 (16.10.2026)";
+const char version[] = "$VER: Unarc 0.0.3 (17.10.2026)";
 
 /* From 0x100: Zune's MUI_Request runs the application's input loop and takes
  * return IDs 1..buttons+1 as its own answer (mui_request.c). */
@@ -82,6 +82,7 @@ static char b_filter[128];
  * skipped; a batch that widens a column is drawn the normal way. */
 static int append_noclear;
 static WORD colmax[5];
+static char coltitle[5][200];             /* titles, padded to the widest text */
 static struct RastPort colrp;
 static int colrp_ready;
 static uj_job *b_job;                     /* LIST job of the browser */
@@ -452,11 +453,13 @@ static void make_cols(ua_entry *e, char **col)
 {
     static char name[UA_PATHMAX], size[32], date[32], prot[12], note[64];
     if (!e) {
-        col[0] = "\33bName";
-        col[1] = "\33bSize";
-        col[2] = "\33bDate";
-        col[3] = "\33bProtection";
-        col[4] = "\33bNote";
+        static const char *const t[5] = { "Name", "Size", "Date", "Protection", "Note" };
+        int c;
+        for (c = 0; c < 5; c++) {
+            if (!coltitle[c][0])
+                snprintf(coltitle[c], sizeof(coltitle[c]), "\33b%s", t[c]);
+            col[c] = coltitle[c];
+        }
         return;
     }
     {
@@ -761,6 +764,7 @@ static void browse(const char *archive)
     DoMethod(lv, MUIM_List_Clear);
     b_reset();
     memset(colmax, 0, sizeof(colmax));
+    memset(coltitle, 0, sizeof(coltitle));
     snprintf(b_archive, sizeof(b_archive), "%s", archive);
     SetAttrs(wbrowse, MUIA_Window_Title, (IPTR)leafname(b_archive), TAG_DONE);
     SetAttrs(s_find, MUIA_NoNotify, TRUE, MUIA_String_Contents, (IPTR)"", TAG_DONE);
@@ -1148,6 +1152,92 @@ static void on_progress(uj_msg *m)
     }
 }
 
+/* The worker reads the whole list before it sends the first rows. So the
+ * widest text of each column can be found then, from a few candidates (the
+ * longest names, the largest sizes, one entry of each fixed-width column,
+ * the first entries with each kind of note), and the column titles padded to
+ * it: Zune sizes a column by its widest row, the title row included. The
+ * first rows are then drawn at the final widths and no later batch widens a
+ * column, which would need a full redraw (an empty list for a moment). An
+ * entry wider than every candidate still widens its column, drawn normally. */
+static void presize_columns(void)
+{
+    enum { K = 12, KN = 24 };
+    ULONG name_c[KN], size_c[K], other_c[16];
+    size_t name_l[KN];
+    UQUAD size_v[K];
+    int nn = 0, ns = 0, no = 0, c, k;
+    int have_date = 0, have_prot = 0;
+    ULONG notes = 0, i;
+    WORD tw, sw;
+    for (i = 0; i < blist.n; i++) {
+        const ua_entry *e = &blist.v[i];
+        size_t l = e->name_src ? strlen(e->name_src) : 0;
+        ULONG kind;
+        /* the KN longest names */
+        if (nn < KN || l > name_l[nn - 1]) {
+            k = nn < KN ? nn++ : KN - 1;
+            while (k > 0 && name_l[k - 1] < l) {
+                name_l[k] = name_l[k - 1];
+                name_c[k] = name_c[k - 1];
+                k--;
+            }
+            name_l[k] = l;
+            name_c[k] = i;
+        }
+        /* the K largest sizes */
+        if (e->type != UA_ET_DIR && e->size_valid && (ns < K || e->size > size_v[ns - 1])) {
+            k = ns < K ? ns++ : K - 1;
+            while (k > 0 && size_v[k - 1] < e->size) {
+                size_v[k] = size_v[k - 1];
+                size_c[k] = size_c[k - 1];
+                k--;
+            }
+            size_v[k] = e->size;
+            size_c[k] = i;
+        }
+        kind = (e->map_flags & UA_MAP_UNSAFE ? 1 : e->encrypted ? 2 : e->skip ? 4 :
+                e->map_flags ? 8 : 0) | (e->comment && *e->comment ? 16 : 0) |
+               (!e->size_valid && e->type != UA_ET_DIR ? 32 : 0);
+        if (((e->date_valid && !have_date) || (e->prot_valid && !have_prot) ||
+             (kind && !(notes & (1UL << kind)))) && no < 16) {
+            have_date |= e->date_valid;
+            have_prot |= e->prot_valid;
+            notes |= 1UL << kind;
+            other_c[no++] = i;
+        }
+    }
+    for (k = 0; k < nn + ns + no; k++) {
+        ULONG idx = k < nn ? name_c[k] : k < nn + ns ? size_c[k - nn] : other_c[k - nn - ns];
+        char *col[5];
+        make_cols(&blist.v[idx], col);
+        for (c = 0; c < 5; c++) {
+            WORD w = TextLength(&colrp, col[c], strlen(col[c]));
+            if (w > colmax[c])
+                colmax[c] = w;
+        }
+    }
+    /* Pad each title with spaces to its column's width; Size is right-aligned,
+     * so its padding goes in front. Bold text is a little wider; the spaces
+     * are counted against the plain width, with one to spare. */
+    sw = TextLength(&colrp, " ", 1);
+    for (c = 0; c < 5 && sw > 0; c++) {
+        static const char *const t[5] = { "Name", "Size", "Date", "Protection", "Note" };
+        char pad[160];
+        int np;
+        tw = TextLength(&colrp, (STRPTR)t[c], strlen(t[c]));
+        np = colmax[c] > tw ? (colmax[c] - tw) / sw + 1 : 0;
+        if (np > (int)sizeof(pad) - 1)
+            np = sizeof(pad) - 1;
+        memset(pad, ' ', np);
+        pad[np] = 0;
+        if (c == 1)
+            snprintf(coltitle[c], sizeof(coltitle[c]), "\33b%s%s", pad, t[c]);
+        else
+            snprintf(coltitle[c], sizeof(coltitle[c]), "\33b%s%s", t[c], pad);
+    }
+}
+
 static void on_batch(uj_msg *m)
 {
     uj_job *j = m->job;
@@ -1170,6 +1260,9 @@ static void on_batch(uj_msg *m)
             SetFont(&colrp, _font(inner));
             colrp_ready = 1;
         }
+        int presized = colrp_ready && m->first == 0 && !b_filter[0];
+        if (presized)
+            presize_columns();
         for (k = m->first; colrp_ready && k < m->first + m->count; k++) {
             char *col[5];
             make_cols(&blist.v[k], col);
@@ -1184,6 +1277,8 @@ static void on_batch(uj_msg *m)
         /* The first batch is drawn normally; later ones only append. */
         append_noclear = colrp_ready && !widened && m->first > 0 && !b_filter[0];
         SetAttrs(lv, MUIA_List_Quiet, TRUE, TAG_DONE);
+        if (presized)       /* the title row measured again: still the only row */
+            DoMethod(lv, MUIM_List_Redraw, MUIV_List_Redraw_All);
         b_add(m->first, m->count);
         SetAttrs(lv, MUIA_List_Quiet, FALSE, TAG_DONE);
         append_noclear = 0;
@@ -1271,6 +1366,8 @@ static void list_done(uj_job *j)
             SetAttrs(b_brecover, MUIA_ShowMe, TRUE, TAG_DONE);
         } else if (j->open_status == UA_OPEN_NOENGINE)
             settext(t_bstatus, "This is not an archive Unarc can read (%s).", ua_format_name(j->fmt));
+        else if (j->open_status == UA_OPEN_UNSUPPORTED)
+            settext(t_bstatus, "Unarc cannot read this archive: %s. See Details.", blist.why);
         else
             settext(t_bstatus, "Cannot read the archive. %s", j->err[0] ? j->err : "See Details.");
     }
@@ -1301,6 +1398,15 @@ static void extract_done(uj_job *j)
     } else if (j->open_status == UA_OPEN_NOENGINE) {
         snprintf(head, sizeof(head), "Not an archive Unarc can read");
         snprintf(body, sizeof(body), "Format: %s. Nothing was written.", ua_format_name(j->fmt));
+    } else if (j->open_status == UA_OPEN_UNSUPPORTED) {
+        char why7[160];
+        if (ua_7z_available(why7, sizeof(why7)))
+            why7[0] = 0;
+        else
+            strncat(why7, "\n", sizeof(why7) - strlen(why7) - 1);
+        snprintf(head, sizeof(head), "Not supported");
+        snprintf(body, sizeof(body), "Unarc cannot read this archive: %s.\n%sNothing was written.",
+                 j->list.why, why7);
     } else if (j->open_status == UA_OPEN_ERROR && !strncmp(j->err, "Incomplete multi-volume", 23)) {
         snprintf(head, sizeof(head), "Incomplete set");
         snprintf(body, sizeof(body), "%s\nNothing was written.", j->err);
@@ -1810,33 +1916,56 @@ static struct MUI_CustomClass *dragcls;
 static char drag_target[UA_PATHMAX];
 static char drag_why[160];
 
+/* The window under the pointer belongs to another program and can close at
+ * any moment, so nothing of it is used after the locks are let go: its
+ * owner's name and its title are copied while they are held, and the drawer
+ * is checked on disk afterwards. intuition frees a closing window while it
+ * holds the screen's LayerInfo lock (closewindow.c, LOCK_REFRESH), and the
+ * window's port goes after that, so holding the lock from WhichLayer to the
+ * last read keeps both. The port and the title are read under Forbid as
+ * well: Zune takes a window's shared port away under Forbid before closing
+ * it, and SetWindowTitles takes no lock at all. */
 static int wanderer_drawer_at(struct Window *from, WORD mx, WORD my, char *out, size_t n)
 {
     struct Screen *scr = from->WScreen;
     struct Layer *layer;
-    struct Window *w;
-    struct Task *owner;
+    char owner[64] = "", title[UA_PATHMAX] = "";
+    int found = 0, have_title = 0;
     BPTR l;
     int ok = 0;
 
     LockLayerInfo(&scr->LayerInfo);
     layer = WhichLayer(&scr->LayerInfo, from->LeftEdge + mx, from->TopEdge + my);
+    Forbid();
+    if (layer && layer->Window) {
+        struct Window *w = layer->Window;
+        struct MsgPort *port = w->UserPort;
+        struct Task *t = port ? port->mp_SigTask : NULL;
+        if (t && t->tc_Node.ln_Name) {
+            snprintf(owner, sizeof(owner), "%s", t->tc_Node.ln_Name);
+            found = 1;
+        }
+        if (w->Title) {
+            snprintf(title, sizeof(title), "%s", (char *)w->Title);
+            have_title = 1;
+        }
+    }
+    Permit();
     UnlockLayerInfo(&scr->LayerInfo);
-    w = layer ? layer->Window : NULL;
-    if (!w || !w->UserPort || !(owner = w->UserPort->mp_SigTask) || !owner->tc_Node.ln_Name) {
+
+    if (!found) {
         snprintf(drag_why, sizeof(drag_why), "not dropped on a window");
         return 0;
     }
-    if (!strstr(owner->tc_Node.ln_Name, "Wanderer")) {
-        snprintf(drag_why, sizeof(drag_why), "dropped on a window of \"%s\"",
-                 owner->tc_Node.ln_Name);
+    if (!strstr(owner, "Wanderer")) {
+        snprintf(drag_why, sizeof(drag_why), "dropped on a window of \"%s\"", owner);
         return 0;
     }
-    if (!w->Title || !strchr((char *)w->Title, ':')) {
+    if (!have_title || !strchr(title, ':')) {
         snprintf(drag_why, sizeof(drag_why), "dropped on Wanderer, but not on a drawer");
         return 0;
     }
-    snprintf(out, n, "%s", (char *)w->Title);
+    snprintf(out, n, "%s", title);
     l = Lock((STRPTR)out, SHARED_LOCK);
     if (l) {
         struct FileInfoBlock *fib = AllocDosObject(DOS_FIB, NULL);
@@ -1909,10 +2038,11 @@ static IPTR drag_handle(struct IClass *cl, Object *obj, struct MUIP_HandleEvent 
         return MUI_EventHandlerRC_Eat;
     }
     /* Amiga+A selects every entry: the list has no key for it, and dragging
-     * many entries out needs it. */
+     * many entries out needs it. Not while typing in the search or the
+     * destination field: the key belongs to the text there. */
     if (im->Class == IDCMP_RAWKEY && im->Code == RAWKEY_A &&
         (im->Qualifier & (IEQUALIFIER_LCOMMAND | IEQUALIFIER_RCOMMAND)) && b_loaded &&
-        active_object(_win(obj)) != s_find) {
+        active_object(_win(obj)) != s_find && active_object(_win(obj)) != s_to) {
         DoMethod(obj, MUIM_List_Select, MUIV_List_Select_All, MUIV_List_Select_On, NULL);
         DoMethod(app, MUIM_Application_ReturnID, ID_B_SEL);
         return MUI_EventHandlerRC_Eat;
@@ -2152,6 +2282,12 @@ static int build(void)
                     Child, (IPTR)(b_qcancelall = button("Cancel _all")),
                     MUIA_ShowMe, FALSE,
                 End),
+                /* No upper limit on the window's height: when progress turns
+                 * into the result, rows are hidden, and a window whose content
+                 * had a smaller maximum would be made smaller by Zune. The
+                 * browser under it then kept the uncovered part unpainted (a
+                 * ghost Cancel button). The window now only grows. */
+                Child, (IPTR)VSpace(0),
                 Child, (IPTR)(HGroup,
                     Child, (IPTR)(b_popen = button("_Open folder")),
                     Child, (IPTR)(b_precover = button("_Recover...")),

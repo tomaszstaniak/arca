@@ -13,7 +13,7 @@ CC="$TC/x86_64-aros-gcc"
 CFLAGS=(--sysroot="$SDK" -O2 -Wall -Wno-pointer-sign -I"$P/include" -I"$R/src/third_party/limpet/include")
 mkdir -p "$B/obj" "$B/bin"
 objs=()
-for f in core/compat core/session core/volumes core/pack core/registry core/names core/plan core/fsl engines/be_libarchive engines/be_xad engines/be_7z third_party/limpet/limpet_query third_party/limpet/limpet_format cli/main; do
+for f in core/compat core/session core/volumes core/bigfile core/methods core/times core/pack core/registry core/names core/plan core/fsl engines/be_libarchive engines/be_xad engines/be_7z third_party/limpet/limpet_query third_party/limpet/limpet_format cli/main; do
   o=$B/obj/$(basename "$f").o
   "$CC" "${CFLAGS[@]}" -c "$R/src/$f.c" -o "$o"
   objs+=("$o")
@@ -54,5 +54,7 @@ ls -l "$B/bin/Unarc"
 "$CC" --sysroot="$SDK" -O2 -o "$B/bin/longpath-probe" "$R/tests/probes/longpath_probe.c"
 "$CC" --sysroot="$SDK" -O2 -o "$B/bin/reldel" "$R/tests/probes/reldel.c"
 "$CC" --sysroot="$SDK" -O2 -o "$B/bin/ffs-probe" "$R/tests/probes/ffs_probe.c"
-"$CC" --sysroot="$SDK" -O2 -o "$B/bin/uatool" "$R/tests/probes/uatool.c"
+"$CC" --sysroot="$SDK" -O2 -I"$P/include" -o "$B/bin/uatool" "$R/tests/probes/uatool.c" \
+  "$R/src/core/volumes.c" "$R/src/core/bigfile.c" "$SDK/lib/libz.static.a"
 "$CC" --sysroot="$SDK" -O2 -o "$B/bin/zune-control" "$R/tests/probes/zune_control.c"
+"$CC" --sysroot="$SDK" -O2 -o "$B/bin/fake7z" "$R/tests/probes/fake7z.c"

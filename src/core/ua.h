@@ -33,6 +33,11 @@ typedef enum { UA_OP_LIST, UA_OP_EXTRACT } ua_op;
 #define UA_LIST_UNKNOWN     2   /* this engine does not know the format */
 #define UA_LIST_CANCELLED   3   /* stopped by Ctrl-C while reading */
 #define UA_LIST_PASSWORD    4   /* the entry list is encrypted: see ua_list.pw_state */
+/* Recognised and not damaged, but this engine cannot read all of it: an
+ * encrypted list or entries it cannot decrypt, a method it lacks, a kind of
+ * set it does not read. What it could list stays in the list, as a last
+ * resort when no later engine does better; err says what is missing. */
+#define UA_LIST_UNSUPPORTED 5
 
 /* Capability bits an engine declares per format. The GUI reads these; it never
  * asks an engine by name. */
@@ -82,6 +87,13 @@ typedef struct ua_entry {
 #define UA_MAP_COLLISION  (1UL << 5)  /* same target as an earlier entry: renamed */
 #define UA_MAP_GUESSED    (1UL << 6)  /* encoding guessed */
 
+/* bigfile.c: what an archive file was when it was listed. */
+typedef struct ua_stamp {
+    UQUAD size;
+    struct DateStamp date;
+    ULONG crc_head, crc_tail;     /* first and last 64 KB */
+} ua_stamp;
+
 typedef struct ua_list {
     ua_entry *v;
     ULONG n, cap;
@@ -104,6 +116,11 @@ typedef struct ua_list {
      * use it for encrypted entry lists and data. */
     const char *password;
     int pw_state;            /* UA_PW_*: why a listing ended in UA_LIST_PASSWORD */
+    char why[200];           /* UA_OPEN_UNSUPPORTED: what no engine here can read */
+    /* The archive's file(s) as they were when listed (the volumes in order);
+     * extraction refuses to start if one has changed since. */
+    ua_stamp *stamps;
+    int nstamps;
 } ua_list;
 
 #define UA_PW_NEEDED  1      /* encrypted, and no password was given */
@@ -139,8 +156,8 @@ ua_format ua_sniff(const UBYTE *head, LONG len);
 const char *ua_format_name(ua_format f);
 /* Engines in preference order for this format and operation. Recovery mode
  * (reading what can be read from a damaged archive) has its own order and is
- * only used when asked for. Returns count. */
-int ua_engines_for(ua_format f, ua_op op, int recover, const ua_engine **out, int max);
+ * only used when asked for; multi: a multi-volume set. Returns count. */
+int ua_engines_for(ua_format f, ua_op op, int recover, int multi, const ua_engine **out, int max);
 const ua_engine *ua_engine_by_name(const char *name);
 
 /* session.c: opening an archive, shared by every front end */
@@ -151,6 +168,7 @@ const ua_engine *ua_engine_by_name(const char *name);
 #define UA_OPEN_ERROR     4   /* every engine failed, or an unknown engine was named */
 #define UA_OPEN_CANCELLED 5   /* stopped while reading (Ctrl-C) */
 #define UA_OPEN_PASSWORD  6   /* the entry list needs a (right) password: list.pw_state */
+#define UA_OPEN_UNSUPPORTED 7 /* not damaged, but no engine here reads it: list.why */
 typedef void (*ua_note)(void *ctx, const char *fmt, ...);
 /* 0, or -1 with the DOS error when the file cannot be opened. */
 int ua_sniff_file(const char *archive, ua_format *fmt, LONG *ioerr);
@@ -207,6 +225,33 @@ typedef struct ua_volumes {
 int ua_volumes_find(const char *path, ua_volumes *v);
 void ua_volumes_free(ua_volumes *v);
 
+/* times.c: the locale's offset (minutes west of GMT), and archive times
+ * (seconds since 1970; utc 0: local wall-clock time) to AROS dates. */
+LONG ua_gmtoff_minutes(void);
+void ua_unix_to_datestamp(long long t, int utc, struct DateStamp *ds);
+
+/* bigfile.c: reading at 64-bit positions (ABIv11's Seek is 32-bit). The
+ * handle must be at position 0, or at pos, when given. */
+typedef struct ua_rdr {
+    BPTR fh;
+    UQUAD pos;
+} ua_rdr;
+int ua_rdr_goto(ua_rdr *r, UQUAD to);
+LONG ua_rdr_read(ua_rdr *r, void *buf, LONG n);
+int ua_rdr_at(ua_rdr *r, UQUAD at, void *buf, LONG n);
+int ua_stamp_file(const char *path, ua_stamp *st);
+
+/* methods.c: what an archive asks of a decoder, from its own index. */
+typedef struct ua_needs {
+    int list_encrypted;       /* the entry list itself is encrypted (7z) */
+    int data_encrypted;       /* some entry's data is encrypted */
+    int multi_disk;           /* a ZIP spanning several files */
+    char unsupported[80];     /* the first thing libarchive here cannot decode, "" if none */
+} ua_needs;
+/* 7z and ZIP only. 1 when the index was read and n filled, 0 when it could
+ * not be read here (the engine then finds out for itself). */
+int ua_needs_read(const char *path, ua_format fmt, ua_needs *n);
+
 /* list.c */
 ua_entry *ua_list_add(ua_list *l);
 /* Encrypted entries that the plan will extract (they need a password). */
@@ -214,6 +259,9 @@ ULONG ua_list_encrypted_wanted(const ua_list *l);
 /* be_7z.c: find the unarc-7z program next to this one. Call once from the
  * main program's own process before opening archives. */
 void ua_7z_init(void);
+/* 1 when unarc-7z is there and speaks this protocol; else 0 and why says
+ * what is wrong, in a sentence for the user. */
+int ua_7z_available(char *why, int whylen);
 /* Extraction reopens the archive and walks it again. Each header it meets must
  * be the entry the list (and the plan, and the user's selection) was made
  * from: same name, type and, when both know it, size. An archive replaced or
@@ -222,6 +270,7 @@ void ua_7z_init(void);
 int ua_entry_matches(const ua_entry *e, const char *name, ua_etype type, int size_valid,
                      UQUAD size);
 #define UA_CHANGED_MSG "the archive changed after it was read; nothing more was extracted"
+#define UA_REPLACED_MSG "the archive file changed after it was listed; list it again"
 void ua_list_free(ua_list *l);
 char *ua_strdup(const char *s);
 

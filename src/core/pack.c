@@ -108,31 +108,13 @@ static void latin1_to_utf8(const char *s, char *out, size_t n)
     out[o] = 0;
 }
 
-static LONG gmtoff_minutes(void)
-{
-    static LONG off = 0x7fffffff;
-    if (off == 0x7fffffff) {
-        struct Library *LocaleBase = OpenLibrary("locale.library", 0);
-        off = 0;
-        if (LocaleBase) {
-            struct Locale *loc = OpenLocale(NULL);
-            if (loc) {
-                off = loc->loc_GMTOffset;      /* minutes west of GMT */
-                CloseLocale(loc);
-            }
-            CloseLibrary(LocaleBase);
-        }
-    }
-    return off;
-}
-
 /* A DOS date stamp (local time) to Unix time (UTC); the inverse of the
  * extraction side's to_datestamp. */
 static time_t to_unix(const struct DateStamp *ds)
 {
     long long s = (long long)ds->ds_Days * 86400 + ds->ds_Minute * 60 +
                   ds->ds_Tick / TICKS_PER_SECOND;
-    return (time_t)(s + 252460800LL + (long long)gmtoff_minutes() * 60);
+    return (time_t)(s + 252460800LL + (long long)ua_gmtoff_minutes() * 60);
 }
 
 /* Owner RWED to Unix rwx; the extraction side maps it back. Group and other
