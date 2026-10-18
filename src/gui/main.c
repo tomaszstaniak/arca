@@ -25,7 +25,9 @@
 #include <graphics/layers.h>
 #include <proto/layers.h>
 #include <clib/alib_protos.h>
+#include <mui/NList_mcc.h>
 #include "job.h"
+#include "zk_table.h"
 #include "../engines/xad_static.h"
 
 #define APPNAME "Unarc"
@@ -46,7 +48,7 @@ static Object *t_drop, *t_startnote, *c_onopen, *b_open, *b_extract, *c_packfmt,
 static Object *wpack, *t_kitems, *t_knote, *s_kname, *c_kfmt, *c_klevel, *c_klevel3, *b_kgo,
               *b_kcancel;
 static Object *cb_newfolder;
-static Object *s_find, *lv, *t_active, *t_bstatus, *s_to, *p_to, *b_exsel, *b_exall,
+static Object *s_find, *lv, *lvview, *t_active, *t_bstatus, *s_to, *p_to, *b_exsel, *b_exall,
               *b_info, *b_bclose, *b_brecover;
 static Object *t_ptitle, *t_pto, *t_pname, *g_gauge, *t_pcount, *t_presult,
               *b_pcancel, *b_popen, *b_pdetails, *b_pclose, *b_precover;
@@ -74,17 +76,6 @@ static UBYTE *b_sel;                      /* selected, by entry index */
 static ULONG b_selcap;
 static ULONG *b_rows, b_nrows;            /* entry index of each row on screen */
 static char b_filter[128];
-/* Appending rows below what is on screen: Zune's MUIM_List_Insert always asks
- * for a full redraw, which first paints the whole list background
- * (list.c, UPDATEMODE_ALL) and showed as a white flash for every batch of
- * entries. While rows are only appended and no column gets wider, the rows on
- * screen are drawn again exactly as they were, so that background pass is
- * skipped; a batch that widens a column is drawn the normal way. */
-static int append_noclear;
-static WORD colmax[5];
-static char coltitle[5][200];             /* titles, padded to the widest text */
-static struct RastPort colrp;
-static int colrp_ready;
 static uj_job *b_job;                     /* LIST job of the browser */
 
 /* The last extraction, for the result window and its buttons. */
@@ -447,19 +438,30 @@ static void prefs_save(void)
 
 static void b_note_selection(void);
 
-/* The five column strings of an entry (static buffers, valid until the next
- * call); NULL entry: the titles. */
+/* Protection bits as List shows them ("hspa" set, "rwed" granted). */
+static void protstr(const ua_entry *e, char *prot, size_t n)
+{
+    ULONG p = e->prot;
+    prot[0] = 0;
+    if (e->prot_valid)
+        snprintf(prot, n, "%c%c%c%c%c%c%c%c",
+                 p & (1UL << 7) ? 'h' : '-', p & FIBF_SCRIPT ? 's' : '-',
+                 p & FIBF_PURE ? 'p' : '-', p & FIBF_ARCHIVE ? 'a' : '-',
+                 p & FIBF_READ ? '-' : 'r', p & FIBF_WRITE ? '-' : 'w',
+                 p & FIBF_EXECUTE ? '-' : 'e', p & FIBF_DELETE ? '-' : 'd');
+}
+
+/* The four column strings of an entry (static buffers, valid until the next
+ * call); NULL entry: the titles. Protection and comment are shown for the
+ * active entry under the table, not as columns. */
 static void make_cols(ua_entry *e, char **col)
 {
-    static char name[UA_PATHMAX], size[32], date[32], prot[12], note[64];
+    static char name[UA_PATHMAX], size[32], date[32], note[64];
     if (!e) {
-        static const char *const t[5] = { "Name", "Size", "Date", "Protection", "Note" };
-        int c;
-        for (c = 0; c < 5; c++) {
-            if (!coltitle[c][0])
-                snprintf(coltitle[c], sizeof(coltitle[c]), "\33b%s", t[c]);
-            col[c] = coltitle[c];
-        }
+        col[0] = "Name";
+        col[1] = "Size";
+        col[2] = "Date";
+        col[3] = "Note";
         return;
     }
     {
@@ -488,15 +490,6 @@ static void make_cols(ua_entry *e, char **col)
             if (DateToStr(&dt))
                 snprintf(date, sizeof(date), "%s %.5s", d, t);
         }
-        prot[0] = 0;
-        if (e->prot_valid) {
-            ULONG p = e->prot;
-            snprintf(prot, sizeof(prot), "%c%c%c%c%c%c%c%c",
-                     p & (1UL << 7) ? 'h' : '-', p & FIBF_SCRIPT ? 's' : '-',
-                     p & FIBF_PURE ? 'p' : '-', p & FIBF_ARCHIVE ? 'a' : '-',
-                     p & FIBF_READ ? '-' : 'r', p & FIBF_WRITE ? '-' : 'w',
-                     p & FIBF_EXECUTE ? '-' : 'e', p & FIBF_DELETE ? '-' : 'd');
-        }
         note[0] = 0;
         if (e->map_flags & UA_MAP_UNSAFE)
             snprintf(note, sizeof(note), "refused: unsafe path");
@@ -512,38 +505,27 @@ static void make_cols(ua_entry *e, char **col)
         col[0] = name;
         col[1] = size;
         col[2] = date;
-        col[3] = prot;
-        col[4] = note;
+        col[3] = note;
     }
 }
 
-AROS_UFH3S(void, display_func,
-    AROS_UFHA(struct Hook *, hook, A0),
-    AROS_UFHA(char **, col, A2),
-    AROS_UFHA(APTR, ent, A1))
+static void table_columns(void *ctx, APTR row, char **col)
 {
-    AROS_USERFUNC_INIT
-    (void)hook;
-    make_cols(ent ? &blist.v[(IPTR)ent - 1] : NULL, col);
-    AROS_USERFUNC_EXIT
+    (void)ctx;
+    make_cols(row ? &blist.v[(IPTR)row - 1] : NULL, col);
 }
-static struct Hook display_hook;
 
 /* Copy the list's selection into b_sel for the rows on screen. Rows hidden by
  * the filter keep what they had. */
 static void b_sync_selection(void)
 {
-    LONG pos = MUIV_List_NextSelected_Start;
+    LONG pos = -1;
     ULONG r;
     for (r = 0; r < b_nrows; r++)
         b_sel[b_rows[r]] = 0;
-    for (;;) {
-        DoMethod(lv, MUIM_List_NextSelected, (IPTR)&pos);
-        if (pos == MUIV_List_NextSelected_End)
-            break;
+    while ((pos = zk_table_next_selected(lv, pos)) >= 0)
         if ((ULONG)pos < b_nrows)
             b_sel[b_rows[pos]] = 1;
-    }
 }
 
 static int b_matches(const ua_entry *e)
@@ -600,12 +582,11 @@ static void b_add(ULONG first, ULONG count)
         b_rows[b_nrows++] = k;
         buf[nb++] = (APTR)(IPTR)(k + 1);
         if (nb == UJ_BATCH) {
-            DoMethod(lv, MUIM_List_Insert, (IPTR)buf, nb, MUIV_List_Insert_Bottom);
+            zk_table_append(lv, buf, nb);
             nb = 0;
         }
     }
-    if (nb)
-        DoMethod(lv, MUIM_List_Insert, (IPTR)buf, nb, MUIV_List_Insert_Bottom);
+    zk_table_append(lv, buf, nb);
 }
 
 static void b_refilter(void)
@@ -615,17 +596,14 @@ static void b_refilter(void)
     b_sync_selection();
     GetAttr(MUIA_String_Contents, s_find, (IPTR *)&s);
     snprintf(b_filter, sizeof(b_filter), "%s", s ? (char *)s : "");
-    SetAttrs(lv, MUIA_List_Quiet, TRUE, TAG_DONE);
-    DoMethod(lv, MUIM_List_Clear);
+    zk_table_quiet(lv, 1);
+    zk_table_clear(lv);
     b_nrows = 0;
     b_add(0, b_count);
     for (r = 0; r < b_nrows; r++)
         if (b_sel[b_rows[r]])
-            DoMethod(lv, MUIM_List_Select, r, MUIV_List_Select_On, NULL);
-    SetAttrs(lv, MUIA_List_Quiet, FALSE, TAG_DONE);
-    /* Zune left rows of the previous contents on screen after a Clear and
-     * Insert inside Quiet (AROS One 1.3); draw everything again. */
-    DoMethod(lv, MUIM_List_Redraw, MUIV_List_Redraw_All);
+            zk_table_select(lv, r, 1);
+    zk_table_quiet(lv, 0);
     b_note_selection();
 }
 
@@ -705,11 +683,11 @@ static void b_note_selection(void)
 
 static void b_show_active(void)
 {
-    IPTR ent = 0;
+    LONG pos = zk_table_active(lv);
+    IPTR ent = pos >= 0 ? (IPTR)zk_table_row(lv, pos) : 0;
     ua_entry *e;
     char *shown;
-    char on[UA_PATHMAX + 64] = "";
-    DoMethod(lv, MUIM_List_GetEntry, MUIV_List_GetEntry_Active, (IPTR)&ent);
+    char on[UA_PATHMAX + 64] = "", prot[12], about[200];
     if (!ent) {
         settext(t_active, "");
         return;
@@ -728,8 +706,11 @@ static void b_show_active(void)
                  e->map_flags & UA_MAP_ILLEGAL ? " (characters not allowed in names were replaced)" :
                  "", e->map_flags & UA_MAP_GUESSED ? " (name encoding guessed)" : "",
                  e->map_flags & UA_MAP_ABSOLUTE ? " (leading / removed)" : "");
-    settext(t_active, "%s\n%s%s%s", on, e->comment && *e->comment ? "Comment: " : "",
-            e->comment && *e->comment ? e->comment : "", shown ? "" : "");
+    protstr(e, prot, sizeof(prot));
+    snprintf(about, sizeof(about), "%s%s%s%s", prot[0] ? "Protection " : "", prot,
+             e->comment && *e->comment ? (prot[0] ? ", comment: " : "Comment: ") : "",
+             e->comment && *e->comment ? e->comment : "");
+    settext(t_active, "%s\n%s", on, about);
     free(shown);
 }
 
@@ -783,10 +764,8 @@ static void browse(const char *archive)
     if (!archive_usable(archive))
         return;
     /* Rows first: the display hook reads blist. */
-    DoMethod(lv, MUIM_List_Clear);
+    zk_table_clear(lv);
     b_reset();
-    memset(colmax, 0, sizeof(colmax));
-    memset(coltitle, 0, sizeof(coltitle));
     snprintf(b_archive, sizeof(b_archive), "%s", archive);
     SetAttrs(wbrowse, MUIA_Window_Title, (IPTR)leafname(b_archive), TAG_DONE);
     SetAttrs(s_find, MUIA_NoNotify, TRUE, MUIA_String_Contents, (IPTR)"", TAG_DONE);
@@ -1189,98 +1168,6 @@ static void on_progress(uj_msg *m)
     }
 }
 
-/* The worker reads the whole list before it sends the first rows. So the
- * widest text of each column can be found then, from a few candidates (the
- * longest names, the largest sizes, one entry of each fixed-width column,
- * the first entries with each kind of note), and the column titles padded to
- * it: Zune sizes a column by its widest row, the title row included. The
- * first rows are then drawn at the final widths and no later batch widens a
- * column, which would need a full redraw (an empty list for a moment). An
- * entry wider than every candidate still widens its column, drawn normally. */
-static void presize_columns(void)
-{
-    enum { K = 12, KN = 24 };
-    ULONG name_c[KN], size_c[K], other_c[16];
-    size_t name_l[KN];
-    UQUAD size_v[K];
-    int nn = 0, ns = 0, no = 0, c, k;
-    int have_date = 0, have_prot = 0;
-    ULONG notes = 0, i;
-    WORD tw, sw;
-    for (i = 0; i < blist.n; i++) {
-        const ua_entry *e = &blist.v[i];
-        size_t l = e->name_src ? strlen(e->name_src) : 0;
-        ULONG kind;
-        /* the KN longest names */
-        if (nn < KN || l > name_l[nn - 1]) {
-            k = nn < KN ? nn++ : KN - 1;
-            while (k > 0 && name_l[k - 1] < l) {
-                name_l[k] = name_l[k - 1];
-                name_c[k] = name_c[k - 1];
-                k--;
-            }
-            name_l[k] = l;
-            name_c[k] = i;
-        }
-        /* the K largest sizes */
-        if (e->type != UA_ET_DIR && e->size_valid && (ns < K || e->size > size_v[ns - 1])) {
-            k = ns < K ? ns++ : K - 1;
-            while (k > 0 && size_v[k - 1] < e->size) {
-                size_v[k] = size_v[k - 1];
-                size_c[k] = size_c[k - 1];
-                k--;
-            }
-            size_v[k] = e->size;
-            size_c[k] = i;
-        }
-        /* 0..19: which note, and whether a comment and an unknown size join it */
-        kind = (e->map_flags & UA_MAP_UNSAFE ? 1 : e->encrypted ? 2 : e->skip ? 3 :
-                e->map_flags ? 4 : 0) + (e->comment && *e->comment ? 5 : 0) +
-               (!e->size_valid && e->type != UA_ET_DIR ? 10 : 0);
-        if (((e->date_valid && !have_date) || (e->prot_valid && !have_prot) ||
-             (kind && !(notes & (1UL << kind)))) && no < 16) {
-            have_date |= e->date_valid;
-            have_prot |= e->prot_valid;
-            notes |= 1UL << kind;
-            other_c[no++] = i;
-        }
-    }
-    for (k = 0; k < nn + ns + no; k++) {
-        ULONG idx = k < nn ? name_c[k] : k < nn + ns ? size_c[k - nn] : other_c[k - nn - ns];
-        char *col[5];
-        make_cols(&blist.v[idx], col);
-        for (c = 0; c < 5; c++) {
-            WORD w = TextLength(&colrp, col[c], strlen(col[c]));
-            if (w > colmax[c])
-                colmax[c] = w;
-        }
-    }
-    /* Pad each title with spaces to its column's width and a little more:
-     * the candidates are chosen by length, and in a proportional font a name
-     * of the same length can be a few pixels wider (digits differ). Entries
-     * up to the padded width then fit the column; colmax becomes that width,
-     * so that only an entry wider still counts as widening. Size is
-     * right-aligned, so its padding goes in front. */
-    sw = TextLength(&colrp, " ", 1);
-    for (c = 0; c < 5 && sw > 0; c++) {
-        static const char *const t[5] = { "Name", "Size", "Date", "Protection", "Note" };
-        char pad[160];
-        int np;
-        if (colmax[c])
-            colmax[c] += 4 * sw;
-        tw = TextLength(&colrp, (STRPTR)t[c], strlen(t[c]));
-        np = colmax[c] > tw ? (colmax[c] - tw) / sw + 1 : 0;
-        if (np > (int)sizeof(pad) - 1)
-            np = sizeof(pad) - 1;
-        memset(pad, ' ', np);
-        pad[np] = 0;
-        if (c == 1)
-            snprintf(coltitle[c], sizeof(coltitle[c]), "\33b%s%s", pad, t[c]);
-        else
-            snprintf(coltitle[c], sizeof(coltitle[c]), "\33b%s%s", t[c], pad);
-    }
-}
-
 static void on_batch(uj_msg *m)
 {
     uj_job *j = m->job;
@@ -1292,42 +1179,7 @@ static void on_batch(uj_msg *m)
     blist = j->list;
     if (!b_grow(m->first + m->count))
         return;
-    {
-        /* Does this batch widen a column? Measured with the list's font. */
-        ULONG k;
-        int widened = 0, c;
-        Object *inner = NULL;
-        GetAttr(MUIA_Listview_List, lv, (IPTR *)&inner);
-        if (!colrp_ready && inner && _font(inner)) {
-            InitRastPort(&colrp);
-            SetFont(&colrp, _font(inner));
-            colrp_ready = 1;
-        }
-        int presized = colrp_ready && m->first == 0 && !b_filter[0];
-        if (presized)
-            presize_columns();
-        for (k = m->first; colrp_ready && k < m->first + m->count; k++) {
-            char *col[5];
-            make_cols(&blist.v[k], col);
-            for (c = 0; c < 5; c++) {
-                WORD w = TextLength(&colrp, col[c], strlen(col[c]));
-                if (w > colmax[c]) {
-                    dbg("batch at %lu: entry %lu widens column %d (%d > %d)",
-                        (unsigned long)m->first, (unsigned long)k, c, (int)w, (int)colmax[c]);
-                    colmax[c] = w;
-                    widened = 1;
-                }
-            }
-        }
-        /* The first batch is drawn normally; later ones only append. */
-        append_noclear = colrp_ready && !widened && m->first > 0 && !b_filter[0];
-        SetAttrs(lv, MUIA_List_Quiet, TRUE, TAG_DONE);
-        if (presized)       /* the title row measured again: still the only row */
-            DoMethod(lv, MUIM_List_Redraw, MUIV_List_Redraw_All);
-        b_add(m->first, m->count);
-        SetAttrs(lv, MUIA_List_Quiet, FALSE, TAG_DONE);
-        append_noclear = 0;
-    }
+    b_add(m->first, m->count);
     b_count = m->first + m->count;
     settext(t_bstatus, "Reading the archive... %lu entries", (unsigned long)b_count);
 }
@@ -1363,7 +1215,7 @@ static void list_done(uj_job *j)
     if (!is_open(wbrowse)) {
         /* The browser was closed while it was reading: nothing to show. The
          * job's list is freed with the job. */
-        DoMethod(lv, MUIM_List_Clear);
+        zk_table_clear(lv);
         /* blist is only a view of the job's list during reading (on_batch);
          * forget it before b_reset so that it is freed once, by uj_free. */
         memset(&blist, 0, sizeof(blist));
@@ -1992,241 +1844,48 @@ static struct Hook qdisplay_hook;
 /* ------------------------------------------------------------- drag out */
 
 /* Rows dragged out of the browser and dropped on a Wanderer drawer window are
- * extracted into that drawer. Zune drags only between windows of one
- * application, and when a drop lands elsewhere it tells the dragged object
- * with MUIM_UnknownDropDestination (window.c, HandleDragging), passing the
- * IntuiMessage of the button release. The window under the pointer is then
- * found here: it must belong to the Wanderer task, and Wanderer titles a
- * drawer window with the drawer's path (iconwindow.c), which must name an
- * existing drawer. workbench.library has no call that says which drawer is
- * open where (WBCTRLA_GetOpenDrawerList is not implemented on AROS). Any other
- * target, the desktop included, extracts nothing. */
-static struct MUI_CustomClass *dragcls;
+ * extracted into that drawer (zk_table finds the drawer); any other target,
+ * the desktop included, extracts nothing. The table calls back from the
+ * window's input handling; the work is done in the main loop. */
 static char drag_target[UA_PATHMAX];
 static char drag_why[160];
 
-/* The window under the pointer belongs to another program and can close at
- * any moment, so nothing of it is used after the locks are let go: its
- * owner's name and its title are copied while they are held, and the drawer
- * is checked on disk afterwards. intuition frees a closing window while it
- * holds the screen's LayerInfo lock (closewindow.c, LOCK_REFRESH), and the
- * window's port goes after that, so holding the lock from WhichLayer to the
- * last read keeps both. The port and the title are read under Forbid as
- * well: Zune takes a window's shared port away under Forbid before closing
- * it, and SetWindowTitles takes no lock at all. */
-static int wanderer_drawer_at(struct Window *from, WORD mx, WORD my, char *out, size_t n)
+static void table_drag_started(void *ctx)
 {
-    struct Screen *scr = from->WScreen;
-    struct Layer *layer;
-    char owner[64] = "", title[UA_PATHMAX] = "";
-    int found = 0, have_title = 0;
-    BPTR l;
-    int ok = 0;
-
-    LockLayerInfo(&scr->LayerInfo);
-    layer = WhichLayer(&scr->LayerInfo, from->LeftEdge + mx, from->TopEdge + my);
-    Forbid();
-    if (layer && layer->Window) {
-        struct Window *w = layer->Window;
-        struct MsgPort *port = w->UserPort;
-        struct Task *t = port ? port->mp_SigTask : NULL;
-        if (t && t->tc_Node.ln_Name) {
-            snprintf(owner, sizeof(owner), "%s", t->tc_Node.ln_Name);
-            found = 1;
-        }
-        if (w->Title) {
-            snprintf(title, sizeof(title), "%s", (char *)w->Title);
-            have_title = 1;
-        }
-    }
-    Permit();
-    UnlockLayerInfo(&scr->LayerInfo);
-
-    if (!found) {
-        snprintf(drag_why, sizeof(drag_why), "not dropped on a window");
-        return 0;
-    }
-    if (!strstr(owner, "Wanderer")) {
-        snprintf(drag_why, sizeof(drag_why), "dropped on a window of \"%s\"", owner);
-        return 0;
-    }
-    if (!have_title || !strchr(title, ':')) {
-        snprintf(drag_why, sizeof(drag_why), "dropped on Wanderer, but not on a drawer");
-        return 0;
-    }
-    snprintf(out, n, "%s", title);
-    l = Lock((STRPTR)out, SHARED_LOCK);
-    if (l) {
-        struct FileInfoBlock *fib = AllocDosObject(DOS_FIB, NULL);
-        ok = fib && Examine(l, fib) && fib->fib_DirEntryType > 0;
-        FreeDosObject(DOS_FIB, fib);
-        UnLock(l);
-    }
-    if (!ok)
-        snprintf(drag_why, sizeof(drag_why), "\"%s\" is not a drawer", out);
-    return ok;
+    (void)ctx;
+    settext(t_active, "Release over a drawer window to extract the selected entries there.");
 }
 
-/* Zune does not start a drag from list entries: the list eats the mouse
- * events and treats a move with the button down as range selection (list.c,
- * List__MUIM_HandleEvent). So the browser list has an event handler of its
- * own, ahead of the list's: a press on an entry that is already selected
- * arms it; moving 6 pixels starts a drag-out (the list keeps its selection);
- * releasing outside the window looks for the drawer there. A press without
- * a move acts as a plain click on that entry. Everything else goes to the
- * list as before. */
-#define RAWKEY_A 0x20
-
-static Object *active_object(Object *win)
+static void table_drag_ended(void *ctx, const char *target, const char *why)
 {
-    IPTR o = 0;
-    GetAttr(MUIA_Window_ActiveObject, win, &o);
-    return (Object *)o;
+    (void)ctx;
+    snprintf(drag_target, sizeof(drag_target), "%s", target ? target : "");
+    snprintf(drag_why, sizeof(drag_why), "%s", why ? why : "");
+    DoMethod(app, MUIM_Application_ReturnID, ID_B_DRAGOUT);
 }
 
-struct dragdata {
-    struct MUI_EventHandlerNode ehn;
-    int armed, dragging, added;
-    WORD x, y;
-    LONG entry;
-};
-
-static void drag_events(Object *obj, struct dragdata *d, ULONG events)
+static void table_selected_all(void *ctx)
 {
-    if (d->added)
-        DoMethod(_win(obj), MUIM_Window_RemEventHandler, (IPTR)&d->ehn);
-    d->ehn.ehn_Events = events;
-    DoMethod(_win(obj), MUIM_Window_AddEventHandler, (IPTR)&d->ehn);
-    d->added = 1;
+    (void)ctx;
+    DoMethod(app, MUIM_Application_ReturnID, ID_B_SEL);
 }
-
-static IPTR drag_handle(struct IClass *cl, Object *obj, struct MUIP_HandleEvent *msg)
-{
-    struct dragdata *d = INST_DATA(cl, obj);
-    struct IntuiMessage *im = msg->imsg;
-    if (!im)
-        return 0;
-    if (im->Class == IDCMP_MOUSEBUTTONS && im->Code == SELECTDOWN) {
-        struct MUI_List_TestPos_Result pos;
-        LONG state = 0;
-        if (im->MouseX < _mleft(obj) || im->MouseX > _mright(obj) || im->MouseY < _mtop(obj) ||
-            im->MouseY > _mbottom(obj) || !b_loaded)
-            return 0;
-        /* A click in the list moves the keyboard to it. Zune keeps a string
-         * field as the window's active object after the click, and Amiga+A
-         * below would then still be taken for that field's. */
-        if (active_object(_win(obj)) != lv)
-            SetAttrs(_win(obj), MUIA_Window_ActiveObject, (IPTR)lv, TAG_DONE);
-        DoMethod(obj, MUIM_List_TestPos, im->MouseX, im->MouseY, (IPTR)&pos);
-        if (pos.entry < 0)
-            return 0;
-        DoMethod(obj, MUIM_List_Select, pos.entry, MUIV_List_Select_Ask, (IPTR)&state);
-        if (!state || (im->Qualifier & (IEQUALIFIER_LSHIFT | IEQUALIFIER_RSHIFT)))
-            return 0;                       /* the list's own click */
-        d->armed = 1;
-        d->dragging = 0;
-        d->x = im->MouseX;
-        d->y = im->MouseY;
-        d->entry = pos.entry;
-        drag_events(obj, d, IDCMP_MOUSEBUTTONS | IDCMP_MOUSEMOVE | IDCMP_RAWKEY);
-        return MUI_EventHandlerRC_Eat;
-    }
-    /* Amiga+A selects every entry: the list has no key for it, and dragging
-     * many entries out needs it. Not while typing in the search or the
-     * destination field: the key belongs to the text there. */
-    if (im->Class == IDCMP_RAWKEY && im->Code == RAWKEY_A &&
-        (im->Qualifier & (IEQUALIFIER_LCOMMAND | IEQUALIFIER_RCOMMAND)) && b_loaded &&
-        active_object(_win(obj)) != s_find && active_object(_win(obj)) != s_to) {
-        DoMethod(obj, MUIM_List_Select, MUIV_List_Select_All, MUIV_List_Select_On, NULL);
-        DoMethod(app, MUIM_Application_ReturnID, ID_B_SEL);
-        return MUI_EventHandlerRC_Eat;
-    }
-    if (!d->armed)
-        return 0;
-    if (im->Class == IDCMP_MOUSEMOVE) {
-        if (!d->dragging && (abs(im->MouseX - d->x) >= 6 || abs(im->MouseY - d->y) >= 6)) {
-            d->dragging = 1;
-            settext(t_active, "Release over a drawer window to extract the selected entries "
-                    "there.");
-        }
-        return MUI_EventHandlerRC_Eat;
-    }
-    if (im->Class == IDCMP_MOUSEBUTTONS && (im->Code == SELECTUP || im->Code == MENUDOWN)) {
-        struct Window *w = im->IDCMPWindow;
-        int outside = im->MouseX < 0 || im->MouseY < 0 || im->MouseX >= w->Width ||
-                      im->MouseY >= w->Height;
-        d->armed = 0;
-        drag_events(obj, d, IDCMP_MOUSEBUTTONS | IDCMP_RAWKEY);
-        if (!d->dragging) {
-            /* A plain click on a selected entry: that entry alone. */
-            DoMethod(obj, MUIM_List_Select, MUIV_List_Select_All, MUIV_List_Select_Off, NULL);
-            DoMethod(obj, MUIM_List_Select, d->entry, MUIV_List_Select_On, NULL);
-            SetAttrs(obj, MUIA_List_Active, d->entry, TAG_DONE);
-            return MUI_EventHandlerRC_Eat;
-        }
-        d->dragging = 0;
-        drag_target[0] = 0;
-        snprintf(drag_why, sizeof(drag_why), "released inside the browser");
-        if (im->Code == SELECTUP && outside &&
-            !wanderer_drawer_at(w, im->MouseX, im->MouseY, drag_target, sizeof(drag_target)))
-            drag_target[0] = 0;
-        if (im->Code == MENUDOWN)
-            snprintf(drag_why, sizeof(drag_why), "the drag was cancelled");
-        DoMethod(app, MUIM_Application_ReturnID, ID_B_DRAGOUT);
-        return MUI_EventHandlerRC_Eat;
-    }
-    return 0;
-}
-
-BOOPSI_DISPATCHER(IPTR, drag_dispatcher, cl, obj, msg)
-{
-    struct dragdata *d;
-    switch (msg->MethodID) {
-    case MUIM_DrawBackground: {
-        struct MUIP_DrawBackground *db = (struct MUIP_DrawBackground *)msg;
-        int whole = db->width >= _mwidth(obj) && db->height >= _mheight(obj) - 2;
-        if (append_noclear && whole)
-            return 0;
-        if (whole && b_job)
-            dbg("list background cleared while reading (%d rows so far, noclear %d)",
-                (int)b_count, append_noclear);
-        break;
-    }
-    case MUIM_Setup: {
-        IPTR r = DoSuperMethodA(cl, obj, msg);
-        if (!r)
-            return 0;
-        d = INST_DATA(cl, obj);
-        memset(d, 0, sizeof(*d));
-        d->ehn.ehn_Priority = 1;          /* ahead of the list's own handler */
-        d->ehn.ehn_Object = obj;
-        d->ehn.ehn_Class = cl;
-        drag_events(obj, d, IDCMP_MOUSEBUTTONS | IDCMP_RAWKEY);
-        return r;
-    }
-    case MUIM_Cleanup:
-        d = INST_DATA(cl, obj);
-        if (d->added)
-            DoMethod(_win(obj), MUIM_Window_RemEventHandler, (IPTR)&d->ehn);
-        d->added = 0;
-        break;
-    case MUIM_HandleEvent: {
-        IPTR r = drag_handle(cl, obj, (struct MUIP_HandleEvent *)msg);
-        if (r)
-            return r;
-        break;
-    }
-    }
-    return DoSuperMethodA(cl, obj, msg);
-}
-BOOPSI_DISPATCHER_END
 
 static int build(void)
 {
-    dragcls = MUI_CreateCustomClass(NULL, MUIC_List, NULL, sizeof(struct dragdata), drag_dispatcher);
-    if (!dragcls)
+    static const struct zk_table_cfg tcfg = {
+        /* NList sizes a column to its widest text: the name column may take
+         * at most 70 % so that size and date stay in view. */
+        "MAW=70 BAR,P=\33r BAR,BAR,", table_columns, NULL, table_drag_started,
+        table_drag_ended, table_selected_all
+    };
+    if (!zk_table_init()) {
+        say("Unarc needs the class NList.mcc, which AROS normally includes,\n"
+            "and it could not be opened.");
         return 0;
-    display_hook.h_Entry = (HOOKFUNC)AROS_ASMSYMNAME(display_func);
+    }
+    lvview = zk_table_new(&tcfg, &lv, NULL);
+    if (!lvview)
+        return 0;
     qdisplay_hook.h_Entry = (HOOKFUNC)AROS_ASMSYMNAME(qdisplay_func);
     drop_hook.h_Entry = (HOOKFUNC)AROS_ASMSYMNAME(drop_func);
 
@@ -2287,18 +1946,7 @@ static int build(void)
                         MUIA_CycleChain, 1,
                     End),
                 End),
-                Child, (IPTR)(lv = ListviewObject,
-                    MUIA_CycleChain, 1,
-                    MUIA_Listview_MultiSelect, MUIV_Listview_MultiSelect_Default,
-                    MUIA_Listview_List, (IPTR)(NewObject(dragcls->mcc_Class, NULL,
-                        InputListFrame,
-                        /* Zune sizes columns by their widest text and ignores MINWIDTH and
-                         * WEIGHT (list.c, CalcDimsOfEntry); DELTA is the gap it does use. */
-                        MUIA_List_Format, (IPTR)"D=8 BAR,D=12 P=\33r BAR,D=12 BAR,D=12 BAR,D=8",
-                        MUIA_List_Title, TRUE,
-                        MUIA_List_DisplayHook, (IPTR)&display_hook,
-                    TAG_DONE)),
-                End),
+                Child, (IPTR)lvview,
                 Child, (IPTR)(t_active = TextObject,
                     MUIA_Text_Contents, (IPTR)"\n",
                     MUIA_Text_SetMin, FALSE,
@@ -2524,9 +2172,9 @@ static void notify(void)
     SetAttrs(cb_newfolder, MUIA_Selected, TRUE, MUIA_CycleChain, 1, TAG_DONE);
     DoMethod(s_find, MUIM_Notify, MUIA_String_Contents, MUIV_EveryTime, (IPTR)app, 2,
              MUIM_Application_ReturnID, ID_B_FIND);
-    DoMethod(lv, MUIM_Notify, MUIA_Listview_SelectChange, TRUE, (IPTR)app, 2,
+    DoMethod(lv, MUIM_Notify, MUIA_NList_SelectChange, TRUE, (IPTR)app, 2,
              MUIM_Application_ReturnID, ID_B_SEL);
-    DoMethod(lv, MUIM_Notify, MUIA_List_Active, MUIV_EveryTime, (IPTR)app, 2,
+    DoMethod(lv, MUIM_Notify, MUIA_NList_Active, MUIV_EveryTime, (IPTR)app, 2,
              MUIM_Application_ReturnID, ID_B_ACTIVE);
     DoMethod(wstart, MUIM_Notify, MUIA_AppMessage, MUIV_EveryTime, (IPTR)wstart, 3,
              MUIM_CallHook, (IPTR)&drop_hook, MUIV_TriggerValue);
@@ -2578,7 +2226,7 @@ static void b_replan(void)
         settext(t_active, "Will extract to %s%s", bplan.root,
                 bplan.kind == UA_ROOT_DEST ? "" : bplan.kind == UA_ROOT_TOPDIR ?
                 " (the archive's own folder)" : " (a new folder)");
-    DoMethod(lv, MUIM_List_Redraw, MUIV_List_Redraw_All);
+    DoMethod(lv, MUIM_NList_Redraw, MUIV_NList_Redraw_All);
     b_note_selection();
 }
 
@@ -3006,8 +2654,7 @@ static int gui_main(int argc, char **argv)
         poll_jobs();
     }
     MUI_DisposeObject(app);
-    if (dragcls)
-        MUI_DeleteCustomClass(dragcls);
+    zk_table_exit();
     DeleteMsgPort(jport);
     b_reset();
     free(r_detail);

@@ -23,6 +23,8 @@ fetch() {
     echo "$dir: exists at another revision; move it aside first" >&2
     exit 1
   fi
+  # A relative URL names a repository beside this one in the workspace.
+  case $url in ../*|./*) url=$(cd "$UNARC_ROOT/$url" && pwd) ;; esac
   local src=$url
   if [ -n "${UNARC_DEPS_MIRROR:-}" ] && [ -d "$UNARC_DEPS_MIRROR/$mirror_name/.git" ]; then
     src=$UNARC_DEPS_MIRROR/$mirror_name

@@ -37,11 +37,16 @@ gobjs=()
 for o in "${objs[@]}"; do
   case $o in */main.o) ;; *) gobjs+=("$o") ;; esac
 done
+# The table comes from zunekit at the revision pinned in deps.lock.
+ZK=$R/deps/zunekit/src
+[ -f "$ZK/zk_table.c" ] || { echo "deps/zunekit missing: run scripts/fetch-deps.sh" >&2; exit 1; }
 for f in gui/job gui/main; do
   o=$B/obj/gui_$(basename "$f").o
-  "$CC" "${CFLAGS[@]}" -c "$R/src/$f.c" -o "$o"
+  "$CC" "${CFLAGS[@]}" -I"$ZK" -c "$R/src/$f.c" -o "$o"
   gobjs+=("$o")
 done
+"$CC" "${CFLAGS[@]}" -c "$ZK/zk_table.c" -o "$B/obj/zk_table.o"
+gobjs+=("$B/obj/zk_table.o")
 "$CC" --sysroot="$SDK" -o "$B/bin/Unarc" "${gobjs[@]}" \
   "$P/lib/libarchive.a" "$P/lib/libxadstatic.a" "$P/lib/liblzma.a" \
   "$SDK/lib/libbz2_nostdio.a" "$SDK/lib/libz.static.a" -liconv -lpthread
