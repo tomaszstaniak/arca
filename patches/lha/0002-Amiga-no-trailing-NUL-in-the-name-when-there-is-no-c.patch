@@ -1,7 +1,7 @@
 From 04aedefae545d5775f02a21158312448aee6d566 Mon Sep 17 00:00:00 2001
 From: tomaszstaniak <68373859+tomaszstaniak@users.noreply.github.com>
 Date: Sun, 18 Oct 2026 13:50:21 +0200
-Subject: [PATCH 2/5] Amiga: no trailing NUL in the name when there is no
+Subject: [PATCH 2/6] Amiga: no trailing NUL in the name when there is no
  comment
 
 Headers of an Amiga build always appended the comment as

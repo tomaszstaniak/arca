@@ -1,0 +1,52 @@
+From aa2933cbd9b78b6aeaa092b2aa425acfd46a2a12 Mon Sep 17 00:00:00 2001
+From: tomaszstaniak <68373859+tomaszstaniak@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 14:58:03 +0200
+Subject: [PATCH 6/6] Say that the program is modified, when built as unarc-lha
+
+LHa for UNIX's terms ask that a modified copy say so. Built with
+UNARC_LHA defined, the version string reads "unarc-lha, modified LHa
+for UNIX for AROS" and --version says where the changes are. Builds
+without UNARC_LHA are unchanged.
+
+Repository: lha (https://github.com/sodero/lha.git)
+Base: 1e7c8f1fc1bd0f72610ca381e21bbda9325cd4f5
+Requires: 0001-Amiga-no-UNIX-permission-headers-beside-the-protecti.patch, 0002-Amiga-no-trailing-NUL-in-the-name-when-there-is-no-c.patch, 0003-Add-list-FILE-archive-and-file-names-from-a-file.patch, 0004-Amiga-stop-on-Ctrl-C-while-compressing-without-a-par.patch, 0005-Amiga-do-not-expand-options-as-file-patterns.patch
+Scope: Amiga builds (_AMIGA)
+Tested: AROS One 1.3, ABIv11 x86_64 (2026-10-18): a 1229-entry Amiga tree packed and read back identically by Unarc (XAD), and by C:lha except comments, which it does not set; Amiga LhA 2.15, LHa for UNIX and 7-Zip test it OK
+Upstream-Status: candidate (not submitted)
+Removal: when sodero/lha carries an equivalent change and the pin moves past it
+---
+ src/lharc.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/src/lharc.c b/src/lharc.c
+index dc1169a..266b6cf 100755
+--- a/src/lharc.c
++++ b/src/lharc.c
+@@ -156,7 +156,11 @@ usage: lha [-]<commands>[<options>] [-<options> ...] archive_file [file...] [tar
+ #define STR(X) STY(X)
+ 
+ static char version[] __attribute__((used)) =
++#ifdef UNARC_LHA
++    "\0$VER: unarc-lha, modified LHa for UNIX for AROS "
++#else
+     "\0$VER: LHa for UNIX for AROS "
++#endif
+ #ifdef __amigaos4__
+     "for AmigaOS "
+ #endif
+@@ -987,6 +991,11 @@ print_version()
+        defined in config.h by configure script */
+     fprintf(stdout, "%s version %s (%s)\n",
+             PACKAGE_NAME, PACKAGE_VERSION, PLATFORM);
++#ifdef UNARC_LHA
++    /* Modified copies must say so (LHa for UNIX's terms, 2a). */
++    fprintf(stdout, "  This is unarc-lha: LHa for UNIX modified for Unarc. The changes are\n"
++            "  in unarc-patches/ of its source, which comes with Unarc.\n");
++#endif
+     
+     if (strlen(LHA_CONFIGURE_OPTIONS) != 0)
+       fprintf(stdout, "  configure options: %s\n", LHA_CONFIGURE_OPTIONS);
+-- 
+2.54.0 (Apple Git-157)
+

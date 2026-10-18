@@ -1,7 +1,7 @@
 From 0d34468cf3c38697c789b389d6cace7a45f5c3cd Mon Sep 17 00:00:00 2001
 From: tomaszstaniak <68373859+tomaszstaniak@users.noreply.github.com>
 Date: Sun, 18 Oct 2026 13:50:52 +0200
-Subject: [PATCH 3/5] Add --list=FILE: archive and file names from a file
+Subject: [PATCH 3/6] Add --list=FILE: archive and file names from a file
 
 The first line names the archive, every further line one file or
 directory to add. A program that runs lha passes names this way without

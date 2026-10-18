@@ -1,7 +1,7 @@
 From a330dce52005a341e0041ab036875fb77c17cbbe Mon Sep 17 00:00:00 2001
 From: tomaszstaniak <68373859+tomaszstaniak@users.noreply.github.com>
 Date: Sun, 18 Oct 2026 13:50:01 +0200
-Subject: [PATCH 1/5] Amiga: no UNIX permission headers beside the protection
+Subject: [PATCH 1/6] Amiga: no UNIX permission headers beside the protection
  byte
 
 An Amiga build wrote the file's protection bits twice: in the header's

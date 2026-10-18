@@ -24,11 +24,13 @@ autoreconf -fi >/dev/null 2>&1 || { aclocal && autoheader && automake -a && auto
 export PATH="$UNARC_TOOLCHAIN_ABIV11:$PATH"
 # The settings of sodero's own AROS build (cicd/aros_x86_64.sh), with our
 # version string and the SDK as sysroot.
+export CC="x86_64-aros-gcc --sysroot=$UNARC_SDK_ABIV11"
+export CFLAGS="-O2 -DUNARC_LHA -DEXPAND_WILDCARDS -D__VER__=1.14i-unarc -D__DAY__=$(date +%d.%m.%Y)"
 ./configure --host=x86_64-aros --disable-iconv --disable-largefile --with-tmp-file=no \
-  --with-additional-suffixes="lha," \
-  CC="x86_64-aros-gcc --sysroot=$UNARC_SDK_ABIV11" \
-  CFLAGS="-O2 -DEXPAND_WILDCARDS -D__VER__=1.14i-unarc -D__DAY__=$(date +%d.%m.%Y)" \
-  >/dev/null
+  --with-additional-suffixes="lha," >/dev/null
+# configure records its options, the compiler with this machine's SDK path
+# among them, and lha --version prints them: replace them with a description.
+sed -i.orig 's|^#define LHA_CONFIGURE_OPTIONS .*|#define LHA_CONFIGURE_OPTIONS "cross build for AROS ABIv11 x86_64 (aros-unarc scripts/build-lha-abiv11.sh)"|' config.h
 make -C src >/dev/null
 cp src/lha "$B/bin/unarc-lha"
 undef=$("$UNARC_TOOLCHAIN_ABIV11/x86_64-aros-nm" -u "$B/bin/unarc-lha" | grep -v ' w ' || true)

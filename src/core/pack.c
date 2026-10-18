@@ -592,6 +592,16 @@ static int finish(pk *p, const char *drawer, const char *leaf, int exists, int r
  * name, as for the other formats. */
 #define LHA_PROG "unarc-lha"
 
+/* Found once, by the program's main process: the GUI's job worker has no
+ * home drawer, so PROGDIR: means nothing there. */
+static int lha_have = -1;
+static char lha_prog[UA_PATHMAX];
+
+void ua_lha_init(void)
+{
+    lha_have = ua_helper_find(LHA_PROG, lha_prog, sizeof(lha_prog));
+}
+
 /* LHa for UNIX follows links (lstat follows AmigaDOS soft links), and a
  * link to a drawer above it would never end. So the inputs are walked first
  * and a link refuses LhA packing; the other formats store links as nothing.
@@ -758,11 +768,14 @@ static int lha_run(pk *p, const char *prog, BPTR dir, char **names, int n, const
 
 static int lha_pack(pk *p, char **inputs, int ninputs, char *err, int errlen)
 {
-    char prog[UA_PATHMAX], arcpath[UA_PATHMAX];
+    char arcpath[UA_PATHMAX];
+    const char *prog = lha_prog;
     char **names = NULL, *taken = NULL;
     int i, rc = 0;
 
-    if (!ua_helper_find(LHA_PROG, prog, sizeof(prog))) {
+    if (lha_have < 0)
+        ua_lha_init();
+    if (!lha_have) {
         snprintf(err, errlen, "%s is not next to the program; it makes LhA archives", LHA_PROG);
         return -1;
     }

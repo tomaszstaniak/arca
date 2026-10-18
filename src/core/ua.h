@@ -211,6 +211,9 @@ int ua_pack_format_from_name(const char *archive, ua_packfmt *f);
  * -1 when it was not; nothing is left under the archive's name then. */
 int ua_pack(const char *archive, char **inputs, int ninputs, ua_pack_opts *o,
             ua_pack_report *r, char *err, int errlen);
+/* Where unarc-lha is: called once by the main process at start (a worker
+ * process has no PROGDIR:). */
+void ua_lha_init(void);
 /* Every capability of every engine for a format (for help texts). */
 ULONG ua_format_caps(ua_format f);
 

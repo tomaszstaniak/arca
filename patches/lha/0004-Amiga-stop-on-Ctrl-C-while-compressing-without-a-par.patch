@@ -1,7 +1,7 @@
 From 0b46cb9411ceb4c731c4584051714fc4077ac4e8 Mon Sep 17 00:00:00 2001
 From: tomaszstaniak <68373859+tomaszstaniak@users.noreply.github.com>
 Date: Sun, 18 Oct 2026 13:51:31 +0200
-Subject: [PATCH 4/5] Amiga: stop on Ctrl-C while compressing, without a
+Subject: [PATCH 4/6] Amiga: stop on Ctrl-C while compressing, without a
  partial archive
 
 On UNIX, SIGINT runs interrupt(), which removes the temporary archive.

@@ -764,6 +764,7 @@ int main(void)
     diag_out = run_args[A_DIAGOUT] != 0;
     detect_consoles();
     ua_7z_init();
+    ua_lha_init();
     if (run_args[A_HELP] || run_args[A_FORMATS] || !run_args[A_ARCHIVE]) {
         if (run_args[A_FORMATS])
             formats();

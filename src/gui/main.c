@@ -3234,6 +3234,7 @@ int main(int argc, char **argv)
     s_argc = argc;
     s_argv = argv;
     ua_7z_init();
+    ua_lha_init();
     /* Started from an icon with a small stack, or from a 40 KB Shell. */
     if (have < want) {
         struct StackSwapStruct sss;
