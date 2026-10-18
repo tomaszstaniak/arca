@@ -2258,8 +2258,10 @@ static int build(void)
     if (!lvview)
         return 0;
     /* Busy.mcc for work of unknown length; a program without it only misses
-     * the moving bar. */
+     * the moving bar. It has no frame of its own: give it the gauge's frame
+     * and height, so it sits where the gauge was and looks like a bar. */
     g_busy = MUI_NewObject(MUIC_Busy, MUIA_Busy_Speed, MUIV_Busy_Speed_User, MUIA_ShowMe, FALSE,
+                           MUIA_Frame, MUIV_Frame_Gauge, MUIA_FixHeightTxt, (IPTR)"0",
                            TAG_DONE);
     busy_child = g_busy ? g_busy : RectangleObject, MUIA_ShowMe, FALSE, End;
     qdisplay_hook.h_Entry = (HOOKFUNC)AROS_ASMSYMNAME(qdisplay_func);
