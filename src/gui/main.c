@@ -1469,8 +1469,13 @@ static void extract_done(uj_job *j)
     }
     if (j->skipped_encrypted)
         snprintf(body + strlen(body), sizeof(body) - strlen(body),
-                 "\n%lu encrypted files were left out (no password).",
-                 (unsigned long)j->skipped_encrypted);
+                 "\n%lu encrypted file%s left out (no password).",
+                 (unsigned long)j->skipped_encrypted,
+                 j->skipped_encrypted == 1 ? " was" : "s were");
+    /* Something to report: say so in the headline as well. */
+    if (!strcmp(head, "Done") && (j->skipped_encrypted ||
+                                  (extracted_any && j->have_plan && j->plan.root_renamed)))
+        snprintf(head, sizeof(head), "Done, with notes");
     if (extracted_any && j->have_plan && j->plan.root_renamed)
         snprintf(body + strlen(body), sizeof(body) - strlen(body),
                  "\nA drawer of the archive's name was already there, so a new one was made.");
