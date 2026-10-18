@@ -15,4 +15,6 @@ Reproduction: mark a file pure, archive it with Amiga LZX, and inspect xadmaster
 
 ## LhA
 
-The four changes in patch 0002 are not ready for submission as one patch. Split directory recognition, unsigned protection, space preservation and UNIX-mode interpretation. The UNIX-mode change needs an extension-order regression: 0x50 followed by 0x40 must not convert MS-DOS attributes as a UNIX mode. Mainline runtime verification remains outstanding.
+Four isolated fixes have been tested on mainline ABIv1 and submitted as contrib PRs #78–81. See [the LhA verification and submission record](upstream-xad-lha.md).
+
+The application's legacy combined patch remains separate. Its protection-extension ordering problem is corrected in the submitted series; do not confuse that upstream series with the current application integration.

@@ -1,24 +1,31 @@
 # XAD LhA upstream fixes
 
-These four independent patches target mainline contrib, based on 6bbefa406c281909294c4c4e8743f7f892caa1cf. They are preserved under the separate `contrib-mainline` manifest/series. The existing application `contrib` pin/series is unchanged; integration is a separate step. Do not apply both series on top of each other.
+Four independent fixes target mainline contrib at `6bbefa406c281909294c4c4e8743f7f892caa1cf`:
 
-| Patch | Reproduction | Expected result |
+| Change | Pull request | Reproduction |
 |---|---|---|
-| spaces | level1/2 member named `space name` | same name, not `space_name` |
-| hold | Amiga level1/2 protection byte 0x80 | protection 0x80, not 0 |
-| directories | named -lhd- at levels1/2; empty level1 basename before its comment | directory flag, correct path and comment |
-| protection | explicit UNIX 0644 or DOSreadonly in an Amiga archive; both extension orders | UNIX 0x8802, DOS 0x15; last explicit type/value remains consistent |
+| Preserve spaces | https://github.com/aros-development-team/contrib/pull/78 | Level 1/2 member `space name` was reported as `space_name`. |
+| Unsigned protection byte | https://github.com/aros-development-team/contrib/pull/79 | Amiga attribute `0x80` was promoted as negative and its hold flag was lost. |
+| Directory recognition | https://github.com/aros-development-team/contrib/pull/80 | Named `-lhd-` entries and an empty basename before an Amiga comment were reported as files. |
+| Protection extension types | https://github.com/aros-development-team/contrib/pull/81 | An explicit UNIX or MS-DOS value was interpreted using the archive OS identifier. |
 
-## Reproduction data
+The saved `contrib-mainline` manifest and series are separate from the application's legacy `contrib` pin/series. Do not apply both series on top of each other. Application integration is a separate step.
 
-Run `python3 tests/upstream/xad_lha/make_cases.py` to generate 18 small stored LHA fixtures and expected.json. Every fixture passed `7zz t`. The output data is synthetic; no third-party archive binary is required. `probe.c` prints each XAD entry's name, type, Amiga protection and comment. It uses the same static initialization adapter as the application, src/engines/xad_static.c. The fixes themselves do not depend on that adapter.
+## Verification
 
-## Mainline verification
+Tested 2026-10-18 on mainline ABIv1 x86_64 under QEMU, GCC 10.5.0 and mainline SDK. A baseline and four isolated variants used the same XAD built-in clients and static initialization adapter. The mainline SDK lacks XAD API declarations; an isolated XAD-only declaration overlay came from SDK-202609. All ABI macros, startup code and linked runtime libraries were mainline. No ABIv11 library or executable was linked, and no system library was replaced.
 
-2026-10-18: mainline ABIv1 x86_64 under QEMU, GCC 10.5.0, mainline SDK. Built baseline and four isolated variants from the same contrib code and initialization adapter. All platform headers, compiler, startup and linked runtime libraries were mainline. Missing XAD API declaration headers were supplied through an isolated SDK-202609 XAD-only include overlay; no ABIv11 library/binary was linked.
+Each variant read 18 synthetic level 1/2 archives, one per command. All 90 exit codes were 0. Each fixture also passed `7zz t` independently.
 
-Ran one fixture per command, 18 per variant (90 processes); every return code0. Spaces and hold each fix 2 target cases with 16 unchanged controls; directory fix covers 4 cases with 14 unchanged controls; protection fixes 8 cases with 10 unchanged controls. The directory-name-only level2 case was already correct and remains a control within the directory group. `check_results.py` checks both target metadata and byte-equivalent parsed control output. Raw receipts are retained in private run evidence. Generate fixtures, then pass the collected guest-result directory to the checker; no private paths are needed to build the application.
+- Spaces: 2 target cases corrected; 16 controls unchanged.
+- Hold: 2 target cases corrected; 16 controls unchanged.
+- Directories: 4 cases passed, including the already-correct directory-name-only level 2 control; 14 other outputs unchanged.
+- Protection: 8 cases corrected; 10 controls unchanged. UNIX mode 0644 maps to `0x8802`, MS-DOS read-only to `0x15`; both mixed extension orders retain the last explicit value and its type.
 
-This checks parser metadata, not filesystem extraction, the installed shared library, or complete Unarc support on mainline. No system library was changed. An initial invalid run used an overlong Execute line and is excluded; the recorded receipts use short individual commands.
+This verifies metadata decoding, not filesystem extraction or complete Unarc support on mainline. An initial run with an overlong Execute line was invalid and excluded. The recorded comparison uses short commands with individual result and return-code files.
 
-Independent code review found no blocker. The previous combined application's UNIX boolean is deliberately not reused: each extension updates its conversion discriminator, avoiding the 0x50/0x40 ordering defect.
+## Reproduction
+
+`tests/upstream/xad_lha/` contains the generator, metadata probe and receipt checker. Run the generator, then pass the collected guest-result directory to the checker. Raw receipts remain in private run evidence. The PR bodies also include small self-contained base64 fixtures, so reproduction does not depend on this application repository.
+
+Independent code review found no blocker. The previous combined application's sticky UNIX flag is not reused: each extension updates the conversion discriminator along with its value.
