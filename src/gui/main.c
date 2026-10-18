@@ -754,12 +754,34 @@ static void pack_done(uj_job *j);
 static void b_replan(void);
 static void start_extract(const char *archive, const char *dest, int recover, int from_browser);
 
+/* A name typed into a requester may be a drawer, a volume, or nothing at
+ * all ("RAM" without its colon is a name in the current drawer). Say so
+ * here instead of opening an empty browser. */
+static int archive_usable(const char *path)
+{
+    BPTR l = Lock((STRPTR)path, SHARED_LOCK);
+    if (!l) {
+        char why[100];
+        Fault(IoErr(), NULL, why, sizeof(why));
+        say("Cannot open \"%s\":\n%s", path, why);
+        return 0;
+    }
+    UnLock(l);
+    if (is_dir(path)) {
+        say("\"%s\" is a drawer or a volume, not an archive.", path);
+        return 0;
+    }
+    return 1;
+}
+
 static void browse(const char *archive)
 {
     if (job) {
         say("Unarc is busy with another archive. Wait for it to finish, or cancel it.");
         return;
     }
+    if (!archive_usable(archive))
+        return;
     /* Rows first: the display hook reads blist. */
     DoMethod(lv, MUIM_List_Clear);
     b_reset();
@@ -796,8 +818,13 @@ static void start_list(const char *archive)
     settext(t_bstatus, "Reading the archive...");
 }
 
+static void queue_reset(void);
+static int queue_busy(void);
+
 static void prog_reset(const char *archive, const char *dest)
 {
+    if (!queue_busy())
+        queue_reset();
     settext(t_ptitle, "Extracting \33b%s", leafname(archive));
     settext(t_pto, "To: %s", dest);
     settext(t_pname, "");
@@ -891,18 +918,28 @@ static int queue_busy(void)
     return 0;
 }
 
+/* Forget a finished queue: its rows, and the window parts that show it. A
+ * later job must not show them, nor have "Open folder" or "Details..." pick
+ * one of its rows. */
+static void queue_reset(void)
+{
+    int i;
+    for (i = 0; i < nq; i++)
+        free(q[i].detail);
+    nq = 0;
+    qcur = -1;
+    qstop = 0;
+    DoMethod(lq, MUIM_List_Clear);
+    SetAttrs(lq, MUIA_ShowMe, FALSE, TAG_DONE);
+    SetAttrs(g_qbtns, MUIA_ShowMe, FALSE, TAG_DONE);
+}
+
 /* Add an archive; a finished queue is cleared first. 0 when full. */
 static int queue_add(const char *path)
 {
     if (!queue_busy() && !job) {
-        int i;
-        for (i = 0; i < nq; i++)
-            free(q[i].detail);
-        nq = 0;
-        qcur = -1;
-        qstop = 0;
+        queue_reset();
         prog_closing = 0;
-        DoMethod(lq, MUIM_List_Clear);
     }
     {
         /* All volumes of one set are one job: the parts given after the
@@ -1303,9 +1340,15 @@ static void detail_text(uj_job *j, const char *title)
     r_detail = s = malloc(n);
     if (!s)
         return;
-    snprintf(s, n, "%s\n\nArchive: %s\nFormat: %s\nEngine: %s\n%s%s\n", title, j->archive,
-             ua_format_name(j->fmt), j->list.engine ? j->list.engine->name : "none",
-             j->recover ? "Mode: recovery\n" : "", j->err[0] ? j->err : "");
+    if (j->kind == UJ_PACK)
+        /* Packing reads no archive: the format is the one written, and
+         * libarchive's writer is the only engine. */
+        snprintf(s, n, "%s\n\nArchive: %s\nFormat: %s\n%s\n", title, j->archive,
+                 ua_pack_format_name(j->pack.fmt), j->err[0] ? j->err : "");
+    else
+        snprintf(s, n, "%s\n\nArchive: %s\nFormat: %s\nEngine: %s\n%s%s\n", title, j->archive,
+                 ua_format_name(j->fmt), j->list.engine ? j->list.engine->name : "none",
+                 j->recover ? "Mode: recovery\n" : "", j->err[0] ? j->err : "");
     if (j->log)
         strncat(s, j->log, n - strlen(s) - 1);
     if (j->logdropped)
@@ -1625,6 +1668,35 @@ static void pack_intent(char **items, int n)
         free(items);
         return;
     }
+    /* Names that do not exist are not packed (and would make an empty
+     * archive): say which, and go on with the rest. */
+    {
+        char missing[300] = "";
+        int kept = 0, gone = 0;
+        for (i = 0; i < n; i++) {
+            BPTR l = Lock((STRPTR)items[i], SHARED_LOCK);
+            if (l) {
+                UnLock(l);
+                items[kept++] = items[i];
+                continue;
+            }
+            if (gone++ < 3)
+                snprintf(missing + strlen(missing), sizeof(missing) - strlen(missing), "%s\"%s\"",
+                         gone > 1 ? ", " : "", items[i]);
+            free(items[i]);
+        }
+        n = kept;
+        if (gone > 3)
+            snprintf(missing + strlen(missing), sizeof(missing) - strlen(missing), " and %d more",
+                     gone - 3);
+        if (gone)
+            say("%s %s not found and will not be packed.%s", missing,
+                gone == 1 ? "was" : "were", n ? "" : "\nThere is nothing left to pack.");
+        if (!n) {
+            free(items);
+            return;
+        }
+    }
     k_clear();
     k_items = items;
     k_n = n;
@@ -1716,7 +1788,7 @@ static void pack_go(void)
 static void pack_done(uj_job *j)
 {
     ua_pack_report *r = &j->prep;
-    char sz[32], out[32], fc[32], head[200], body[UA_PATHMAX + 400];
+    char sz[32], out[32], fc[32], head[200], body[2 * UA_PATHMAX + 400];
     sizestr(r->bytes_in, sz, sizeof(sz));
     sizestr(r->bytes_out, out, sizeof(out));
     snprintf(fc, sizeof(fc), "%lu file%s", (unsigned long)r->files, r->files == 1 ? "" : "s");
@@ -1733,15 +1805,21 @@ static void pack_done(uj_job *j)
         snprintf(head, sizeof(head), "Made, with errors");
         snprintf(body, sizeof(body), "%s\n%s (%s) packed into %s; %lu could not be packed as "
                  "they were: see Details.", j->archive, fc, sz, out, (unsigned long)r->errors);
-    } else if (r->skipped) {
+    } else if (r->skipped || r->kept[0]) {
         snprintf(head, sizeof(head), "Made, with notes");
-        snprintf(body, sizeof(body), "%s\n%s (%s) packed into %s; %lu links were not followed.",
-                 j->archive, fc, sz, out, (unsigned long)r->skipped);
+        snprintf(body, sizeof(body), "%s\n%s (%s) packed into %s.", j->archive, fc, sz, out);
+        if (r->skipped)
+            snprintf(body + strlen(body), sizeof(body) - strlen(body),
+                     "\n%lu links were not followed.", (unsigned long)r->skipped);
     } else {
         snprintf(head, sizeof(head), "Made");
         snprintf(body, sizeof(body), "%s\n%s (%s) packed into %s.", j->archive, fc, sz, out);
     }
-    if (j->extract_rc == 0 && r->replaced)
+    if (j->extract_rc == 0 && r->kept[0])
+        snprintf(body + strlen(body), sizeof(body) - strlen(body),
+                 "\nThe old archive could not be deleted (something had it open);\n"
+                 "it is kept as %s.", r->kept);
+    else if (j->extract_rc == 0 && r->replaced)
         strncat(body, "\nThe old archive was replaced.", sizeof(body) - strlen(body) - 1);
     detail_text(j, head);
     dbg("job pack done: %s | files=%lu dirs=%lu skipped=%lu errors=%lu in=%llu out=%llu "

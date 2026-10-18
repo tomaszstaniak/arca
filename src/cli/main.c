@@ -671,9 +671,11 @@ static int run_pack(IPTR *args)
         (unsigned long)r.files, (unsigned long)r.dirs, (unsigned long)r.skipped,
         (unsigned long)r.errors, (unsigned long long)r.bytes_in, (unsigned long long)r.bytes_out,
         r.replaced ? ", the old archive replaced" : "");
+    if (r.kept[0])
+        out("The old archive could not be deleted; it is kept as %s.\n", r.kept);
     if (rc < 0)
         return 10;
-    return r.errors ? 10 : r.skipped ? 5 : 0;
+    return r.errors ? 10 : (r.skipped || r.kept[0]) ? 5 : 0;
 }
 
 /* ---- HELP and FORMATS ---- */

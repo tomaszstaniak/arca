@@ -289,6 +289,18 @@ if "pack" in opts:
     case("K11-formats", "unarc-cli FORMATS")
     case("K12-missing-input", f"unarc-cli RAM:pk/m.zip PACK {S}/nothere {S}/a.txt",
          ["unarc-cli RAM:pk/m.zip LIST"])
+    # Only names that do not exist: no archive at all (test3 made an empty
+    # ZIP of "RAM", reported as made).
+    case("K18-all-missing", f"unarc-cli RAM:pk/n.zip PACK nothere RAM:nothere/either",
+         ["List RAM:pk PAT=n.zip", "Echo \"leftover .ua files:\"", "List RAM:pk PAT=.ua#?"])
+    # The old archive cannot be deleted after a replace: kept under a name
+    # next to the new one, said in the result, RC 5.
+    case("K19a-keep-make", f"unarc-cli RAM:pk/k.zip PACK {S}/a.txt")
+    L.append("SetEnv UnarcTestKeepOld 1")
+    case("K19b-keep-old", f"unarc-cli RAM:pk/k.zip PACK {S}/sub OVERWRITE",
+         ["List RAM:pk PAT=k.zip#?", "Echo \"leftover .ua files:\"", "List RAM:pk PAT=.ua#?",
+          "unarc-cli RAM:pk/k.zip LIST", "unarc-cli RAM:pk/k.zip.old LIST"])
+    L.append("UnSetEnv UnarcTestKeepOld")
     if "core2" in opts:
         # Disk full while packing onto the FFS test disk: no archive, no temporary.
         case("K13-diskfull", f"unarc-cli UATest:big.zip PACK corpus/big.zip LEVEL 0",

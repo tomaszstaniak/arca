@@ -200,6 +200,9 @@ typedef struct ua_pack_report {
     UQUAD bytes_in, bytes_out;
     int cancelled, failed, replaced;
     char why[160];
+    /* The old archive could not be deleted after the new one took its name
+     * (in use, most often for a moment): where it is now, or "". */
+    char kept[UA_PATHMAX];
 } ua_pack_report;
 const char *ua_pack_format_name(ua_packfmt f);
 /* 1 and the format when the name ends in .zip, .tar.gz/.tgz or .7z. */

@@ -500,6 +500,34 @@ static int setup_format(pk *p, ua_packfmt f, int level, char *err, int errlen)
     return 0;
 }
 
+/* The old archive could not be deleted (most often something had it open
+ * for a moment). It is not deleted by force: it gets a name a user can find
+ * next to the new one, "<name>.old" (or .old2 ...), and the caller is told
+ * where it is. The current directory is the archive's drawer. */
+static void keep_old(pk *p, const char *drawer, const char *leaf, const char *bak)
+{
+    char nm[300];
+    const char *now = bak;
+    int i;
+    for (i = 1; i < 100; i++) {
+        BPTR x;
+        if (i == 1)
+            snprintf(nm, sizeof(nm), "%s.old", leaf);
+        else
+            snprintf(nm, sizeof(nm), "%s.old%d", leaf, i);
+        if ((x = Lock((STRPTR)nm, SHARED_LOCK))) {
+            UnLock(x);
+            continue;
+        }
+        if (Rename((STRPTR)bak, (STRPTR)nm))
+            now = nm;
+        break;
+    }
+    snprintf(p->r->kept, sizeof(p->r->kept), "%s", drawer);
+    AddPart((STRPTR)p->r->kept, (STRPTR)now, sizeof(p->r->kept));
+    msg(p, "warning: the old archive could not be deleted; it is kept as \"%s\"", p->r->kept);
+}
+
 int ua_pack(const char *archive, char **inputs, int ninputs, ua_pack_opts *o,
             ua_pack_report *r, char *err, int errlen)
 {
@@ -625,6 +653,14 @@ int ua_pack(const char *archive, char **inputs, int ninputs, ua_pack_opts *o,
         if (rc == 0 && check_cancel(&p))
             rc = -1;
     }
+    /* Nothing found to pack (names that do not exist, say): no archive,
+     * rather than an empty one reported as made. An empty drawer still
+     * counts, as a drawer. */
+    if (rc == 0 && !r->files && !r->dirs && r->errors) {
+        r->failed = 1;
+        snprintf(r->why, sizeof(r->why), "nothing could be packed");
+        rc = -1;
+    }
     if (rc == 0 && archive_write_close(p.a) != ARCHIVE_OK) {
         r->failed = 1;
         if (p.write_failed)
@@ -680,9 +716,16 @@ out:
             snprintf(r->why, sizeof(r->why), "%s", err);
             rc = -1;
         } else if (exists) {
+            /* Test aid: UnarcTestKeepOld holds the old archive open, as
+             * Wanderer reading the drawer did, so that its delete fails. */
+            char tv[4];
+            BPTR hold = GetVar("UnarcTestKeepOld", tv, sizeof(tv), 0) > 0
+                            ? Lock((STRPTR)bak, SHARED_LOCK) : BNULL;
             SetProtection((STRPTR)bak, 0);
             if (!DeleteFile((STRPTR)bak))
-                msg(&p, "warning: the old archive stays as \"%s\"", bak);
+                keep_old(&p, drawer, leaf, bak);
+            if (hold)
+                UnLock(hold);
             r->replaced = 1;
         }
     } else if (p.out) {
