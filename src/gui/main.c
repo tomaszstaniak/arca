@@ -32,7 +32,7 @@
 #include "../engines/xad_static.h"
 
 #define APPNAME "Unarc"
-const char version[] = "$VER: Unarc 0.0.3 (17.10.2026)";
+const char version[] = "$VER: Unarc 0.0.4 (18.10.2026)";
 
 /* From 0x100: Zune's MUI_Request runs the application's input loop and takes
  * return IDs 1..buttons+1 as its own answer (mui_request.c). */
