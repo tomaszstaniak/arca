@@ -1,0 +1,60 @@
+From f8fb659433e75d7fbabafe1a5640a7c08aa7c6d0 Mon Sep 17 00:00:00 2001
+From: tomaszstaniak <68373859+tomaszstaniak@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 19:39:43 +0200
+Subject: [PATCH] xad: recognize LhA directory methods with a filename
+
+LhAParseExt infers directories from absent filename fields. A -lhd-
+entry can instead carry a filename, or an empty level 1 basename followed
+by an Amiga comment. Those entries are reported as files; the latter
+also gains a trailing slash before its empty basename.
+
+Recognize -lhd- independently, as the level 0 parser already does.
+For an empty basename before a directory comment, retain the directory
+name without appending a slash. Guard the copy when no directory-name
+extension exists.
+
+Tested on mainline ABIv1 x86_64 under QEMU with GCC 10.5.0.
+Compared this isolated change and the unmodified parser over 18 generated
+level 1/2 archives; all probe exit codes were 0. Target metadata is
+correct and unrelated fixture output is unchanged.
+Repository: contrib (https://github.com/aros-development-team/contrib.git)
+Base: 6bbefa406c281909294c4c4e8743f7f892caa1cf
+Requires: none
+Scope: XAD LhA level 1 and 2 metadata decoding
+Upstream-Status: candidate (not submitted)
+Verification: mainline ABIv1 x86_64, GCC 10.5.0, QEMU; 18 metadata fixtures and unchanged controls. See docs/upstream-xad-lha.md.
+Removal: retire after the application pin includes the accepted upstream change
+
+---
+ workbench/libs/xad/portable/clients/LhA.c | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/workbench/libs/xad/portable/clients/LhA.c b/workbench/libs/xad/portable/clients/LhA.c
+index e99b94de..72214bce 100644
+--- a/workbench/libs/xad/portable/clients/LhA.c
++++ b/workbench/libs/xad/portable/clients/LhA.c
+@@ -300,9 +300,10 @@ struct xadMasterBase *xadMasterBase)
+         xadCopyMem(XADM comment, fi->xfi_Comment, commentsize-1);
+       else if(comment2)
+         xadCopyMem(XADM comment2, fi->xfi_Comment, commentsize-1);
+-      if(!filename && !filename2)
++      if(!filename && (!filename2 || (!filename2[0] && head[4] == 'h' && head[5] == 'd')))
+       {
+-        xadCopyMem(XADM dirname, fi->xfi_FileName, dirsize-1);
++        if(dirname)
++          xadCopyMem(XADM dirname, fi->xfi_FileName, dirsize-1);
+         fi->xfi_Flags |= XADFIF_DIRECTORY;
+       }
+       else
+@@ -335,6 +336,8 @@ struct xadMasterBase *xadMasterBase)
+       xadCopyMem(XADM head+2, LHAPI(fi)->NamePart, 5); /* 0 byte already there! */
+       fi->xfi_EntryInfo = (xadSTRPTR) LHAPI(fi)->NamePart;
+       LHAPI(fi)->Method = EndGetM32(head+2);
++      if(head[4] == 'h' && head[5] == 'd')
++        fi->xfi_Flags |= XADFIF_DIRECTORY;
+       if(!fi->xfi_FileName[0])
+       {
+         fi->xfi_FileName = xadGetDefaultName(XADM XAD_ARCHIVEINFO, ai, XAD_EXTENSION,
+-- 
+2.54.0 (Apple Git-157)
+

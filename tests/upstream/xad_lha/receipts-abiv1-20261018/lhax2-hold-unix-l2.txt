@@ -1,0 +1,2 @@
+ARCHIVE RAM:lhacheck/fixtures/unix-l2.lha error=0
+ENTRY file type=file prot=000081a4 comment=

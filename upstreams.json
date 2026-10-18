@@ -10,6 +10,13 @@
     "lha": {
       "url": "https://github.com/sodero/lha.git",
       "commit": "1e7c8f1fc1bd0f72610ca381e21bbda9325cd4f5"
+    },
+    "contrib-mainline": {
+      "url": "https://github.com/aros-development-team/contrib.git",
+      "commit": "6bbefa406c281909294c4c4e8743f7f892caa1cf",
+      "sparse": [
+        "workbench/libs/xad/"
+      ]
     }
   }
 }

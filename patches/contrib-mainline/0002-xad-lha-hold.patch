@@ -1,0 +1,43 @@
+From 2c6968627d2d7bd43bb633de42c5df804d271ae1 Mon Sep 17 00:00:00 2001
+From: tomaszstaniak <68373859+tomaszstaniak@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 19:39:43 +0200
+Subject: [PATCH] xad: read extended LhA attributes as an unsigned byte
+
+The Amiga protection byte in a level 1 or 2 LhA header is promoted
+through xadSTRPTR's signed char. With bit 7 (hold) set, prot becomes
+negative and the prot >= 0 check skips protection conversion entirely.
+Cast the byte to xadUINT8 before promotion, as the level 0 parser's
+xadUINT8 buffer already does.
+
+Tested on mainline ABIv1 x86_64 under QEMU with GCC 10.5.0.
+Compared this isolated change and the unmodified parser over 18 generated
+level 1/2 archives; all probe exit codes were 0. Target metadata is
+correct and unrelated fixture output is unchanged.
+Repository: contrib (https://github.com/aros-development-team/contrib.git)
+Base: 6bbefa406c281909294c4c4e8743f7f892caa1cf
+Requires: none
+Scope: XAD LhA level 1 and 2 metadata decoding
+Upstream-Status: candidate (not submitted)
+Verification: mainline ABIv1 x86_64, GCC 10.5.0, QEMU; 18 metadata fixtures and unchanged controls. See docs/upstream-xad-lha.md.
+Removal: retire after the application pin includes the accepted upstream change
+
+---
+ workbench/libs/xad/portable/clients/LhA.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/workbench/libs/xad/portable/clients/LhA.c b/workbench/libs/xad/portable/clients/LhA.c
+index e99b94de..04df4bdf 100644
+--- a/workbench/libs/xad/portable/clients/LhA.c
++++ b/workbench/libs/xad/portable/clients/LhA.c
+@@ -112,7 +112,7 @@ struct xadMasterBase *xadMasterBase)
+     if(head[20] >= 2) os = head[23];
+   }
+ 
+-  prot = head[19];
++  prot = (xadUINT8) head[19];
+ 
+   while(nextsize && !err)
+   {
+-- 
+2.54.0 (Apple Git-157)
+
