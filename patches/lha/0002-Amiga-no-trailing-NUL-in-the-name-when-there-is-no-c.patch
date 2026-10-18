@@ -1,0 +1,75 @@
+From 04aedefae545d5775f02a21158312448aee6d566 Mon Sep 17 00:00:00 2001
+From: tomaszstaniak <68373859+tomaszstaniak@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 13:50:21 +0200
+Subject: [PATCH 2/5] Amiga: no trailing NUL in the name when there is no
+ comment
+
+Headers of an Amiga build always appended the comment as
+"name\0comment", also when it was empty, so every name ended in a NUL
+and a directory entry got a name of one NUL byte instead of an empty one.
+Amiga LhA 2.15 writes the plain name when there is no comment. XAD took
+such directory entries for files (it sees a name) and extracted them as
+empty files.
+
+The comment and its NUL are now written only when there is a comment
+(levels 0, 1 and 2).
+
+Repository: lha (https://github.com/sodero/lha.git)
+Base: 1e7c8f1fc1bd0f72610ca381e21bbda9325cd4f5
+Requires: 0001-Amiga-no-UNIX-permission-headers-beside-the-protecti.patch
+Scope: Amiga builds (_AMIGA)
+Tested: AROS One 1.3, ABIv11 x86_64 (2026-10-18): a 1229-entry Amiga tree packed and read back identically by Unarc (XAD), and by C:lha except comments, which it does not set; Amiga LhA 2.15, LHa for UNIX and 7-Zip test it OK
+Upstream-Status: candidate (not submitted)
+Removal: when sodero/lha carries an equivalent change and the pin moves past it
+---
+ src/header.c | 20 ++++++++++++++------
+ 1 file changed, 14 insertions(+), 6 deletions(-)
+
+diff --git a/src/header.c b/src/header.c
+index 426d112..a78e997 100755
+--- a/src/header.c
++++ b/src/header.c
+@@ -1728,8 +1728,10 @@ write_header_level0(data, hdr, pathname)
+     /* write pathname (level 0 header contains the directory part) */
+     name_length = strlen(pathname);
+ #if _AMIGA
+-    /* Include file comment */
+-    name_length += strlen(pathname + name_length + 1) + 1;
++    /* Include file comment: "name\0comment", and the plain name when there
++       is none, as Amiga LhA writes it. */
++    if (pathname[name_length + 1])
++        name_length += strlen(pathname + name_length + 1) + 1;
+ #endif
+     if (generic_format)
+         limit = 255 - I_GENERIC_HEADER_SIZE + 2;
+@@ -1792,8 +1794,11 @@ write_header_level1(data, hdr, pathname)
+     }
+ 
+ #if _AMIGA
+-    /* Include file comment */
+-    name_length += strlen(basename + name_length + 1) + 1;
++    /* Include file comment: "name\0comment", and the plain name when there
++       is none, as Amiga LhA writes it. A drawer without a comment then has
++       the empty name that marks a directory entry, not a name of one NUL. */
++    if (basename[name_length + 1])
++        name_length += strlen(basename + name_length + 1) + 1;
+ #endif
+     setup_put(data);
+     memset(data, 0, LZHEADER_STORAGE);
+@@ -1893,8 +1898,11 @@ write_header_level2(data, hdr, pathname)
+     }
+ 
+ #if _AMIGA
+-    /* Include file comment */
+-    name_length += strlen(basename + name_length + 1) + 1;
++    /* Include file comment: "name\0comment", and the plain name when there
++       is none, as Amiga LhA writes it. A drawer without a comment then has
++       the empty name that marks a directory entry, not a name of one NUL. */
++    if (basename[name_length + 1])
++        name_length += strlen(basename + name_length + 1) + 1;
+ #endif
+     setup_put(data);
+     memset(data, 0, LZHEADER_STORAGE);
+-- 
+2.54.0 (Apple Git-157)
+

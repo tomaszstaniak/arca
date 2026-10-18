@@ -640,12 +640,14 @@ static int run_pack(IPTR *args)
         if (!strcasecmp(f, "zip")) o.fmt = UA_PACK_ZIP;
         else if (!strcasecmp(f, "tgz") || !strcasecmp(f, "tar.gz")) o.fmt = UA_PACK_TGZ;
         else if (!strcasecmp(f, "7z")) o.fmt = UA_PACK_7Z;
+        else if (!strcasecmp(f, "lha") || !strcasecmp(f, "lzh")) o.fmt = UA_PACK_LHA;
         else {
-            diag("unknown FORMAT \"%s\" (ZIP, TGZ, 7Z)\n", f);
+            diag("unknown FORMAT \"%s\" (ZIP, TGZ, 7Z, LHA)\n", f);
             return 20;
         }
     } else if (!ua_pack_format_from_name(archive, &o.fmt)) {
-        diag("Cannot tell the format from \"%s\": name it .zip, .tar.gz or .7z, or give FORMAT.\n",
+        diag("Cannot tell the format from \"%s\": name it .zip, .tar.gz, .7z or .lha, or give "
+             "FORMAT.\n",
              archive);
         return 20;
     }
@@ -686,7 +688,7 @@ static void help(void)
         "  unarc-cli <archive> [TO <drawer>]       extract next to the archive or into TO\n"
         "  unarc-cli <archive> LIST                show what is inside and where it would go\n"
         "  unarc-cli <archive> RECOVER             extract what a damaged archive still holds\n"
-        "  unarc-cli <new archive> PACK <files>... make a ZIP, tar.gz or 7z archive\n"
+        "  unarc-cli <new archive> PACK <files>... make a ZIP, tar.gz, 7z or LhA archive\n"
         "  unarc-cli FORMATS                       what each format supports\n\n"
         "Examples:\n"
         "  unarc-cli RAM:Game.lha\n"
@@ -727,8 +729,11 @@ static void formats(void)
         "  zip      names (UTF-8), dates, owner rwx as Unix permissions; LEVEL 0-9\n"
         "  tar.gz   names (UTF-8), dates, owner/group/other rwx; LEVEL 1-9\n"
         "  7z       names, dates; LEVEL 0-9\n"
-        "  Amiga comments and the h, s, p, a bits are not stored by any of them.\n"
-        "  Links are not followed and not stored.\n");
+        "  lha      names, dates, comments and all protection bits, as Amiga LhA\n"
+        "           writes them (header level 1); LEVEL 0 stores, any other packs\n"
+        "           (lh5). Needs unarc-lha next to this program.\n"
+        "  Amiga comments and the h, s, p, a bits are kept by lha only.\n"
+        "  Links are not followed and not stored; lha refuses a tree with links.\n");
 }
 
 static IPTR run_args[A_COUNT];

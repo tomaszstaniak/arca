@@ -46,7 +46,7 @@ enum { ID_OPEN = 0x100, ID_START_CLOSE, ID_DROP,
 
 static Object *app, *wstart, *wbrowse, *wprog, *wask, *wdetail;
 static Object *t_drop, *t_startnote, *b_open, *c_packfmt, *b_pack, *b_settings, *sl_level,
-              *t_level, *cb_separate, *t_where;
+              *t_level, *cb_separate, *t_where, *t_fmthint;
 static Object *wsettings, *c_sstart, *c_sopen, *cb_sopendir, *cb_sclose, *c_spackwhere,
               *s_spackdir, *p_spackdir, *c_sname, *c_sexwhere, *s_sexdir, *p_sexdir, *c_snewdir,
               *c_sexists, *b_ssave, *b_suse, *b_scancel;
@@ -111,8 +111,8 @@ static struct qitem {
 } q[QMAX];
 static int nq, qcur = -1, qstop;
 /* Preferences (Settings window; the start window remembers its own). */
-static int packfmt_pref;                  /* 0 ZIP, 1 tar.gz, 2 7z */
-static int pf_level[3] = { 2, 1, 1 };     /* slider position per pack format */
+static int packfmt_pref;                  /* index into pfmts (packing section) */
+static int pf_level[4] = { 1, 2, 1, 1 };  /* slider position per pack format */
 static int pf_separate;                   /* each item into its own archive */
 static int pf_start_open;                 /* at start the open requester, not the pack window */
 static int pf_open_after;                 /* open the result's drawer after a clean job */
@@ -487,10 +487,12 @@ static void prefs_load(void)
     if (GetVar(PREFS_NAME, buf, sizeof(buf), GVF_GLOBAL_ONLY) <= 0)
         return;
     onopen_browse = strstr(buf, "ONOPEN=BROWSE") != NULL;
-    packfmt_pref = strstr(buf, "PACK=TGZ") ? 1 : strstr(buf, "PACK=7Z") ? 2 : 0;
-    pf_level[0] = pref_int(buf, "LEVELZIP", 2, 3);
-    pf_level[1] = pref_int(buf, "LEVELTGZ", 1, 2);
+    packfmt_pref = strstr(buf, "PACK=ZIP") ? 1 : strstr(buf, "PACK=7Z") ? 2 :
+                   strstr(buf, "PACK=TGZ") ? 3 : 0;
+    pf_level[0] = pref_int(buf, "LEVELLHA", 1, 1);
+    pf_level[1] = pref_int(buf, "LEVELZIP", 2, 3);
     pf_level[2] = pref_int(buf, "LEVEL7Z", 1, 2);
+    pf_level[3] = pref_int(buf, "LEVELTGZ", 1, 2);
     pf_separate = pref_int(buf, "SEPARATE", 0, 1);
     pf_start_open = pref_int(buf, "STARTOPEN", 0, 1);
     pf_open_after = pref_int(buf, "OPENAFTER", 0, 1);
@@ -509,12 +511,13 @@ static void prefs_load(void)
 static void prefs_store(int keep)
 {
     char v[2 * UA_PATHMAX + 400];
-    snprintf(v, sizeof(v), "%s\nPACK=%s\nLEVELZIP=%d\nLEVELTGZ=%d\nLEVEL7Z=%d\nSEPARATE=%d\n"
-             "STARTOPEN=%d\nOPENAFTER=%d\nCLOSEAFTER=%d\nPACKWHERE=%d\nPACKDIR=%s\n",
-             onopen_browse ? "ONOPEN=BROWSE" : "ONOPEN=EXTRACT",
-             packfmt_pref == 1 ? "TGZ" : packfmt_pref == 2 ? "7Z" : "ZIP",
-             pf_level[0], pf_level[1], pf_level[2], pf_separate, pf_start_open, pf_open_after,
-             pf_close_after, pf_pack_where, pf_pack_dir);
+    static const char *const fmtkey[4] = { "LHA", "ZIP", "7Z", "TGZ" };
+    snprintf(v, sizeof(v), "%s\nPACK=%s\nLEVELLHA=%d\nLEVELZIP=%d\nLEVEL7Z=%d\nLEVELTGZ=%d\n"
+             "SEPARATE=%d\nSTARTOPEN=%d\nOPENAFTER=%d\nCLOSEAFTER=%d\nPACKWHERE=%d\n"
+             "PACKDIR=%s\n",
+             onopen_browse ? "ONOPEN=BROWSE" : "ONOPEN=EXTRACT", fmtkey[packfmt_pref & 3],
+             pf_level[0], pf_level[1], pf_level[2], pf_level[3], pf_separate, pf_start_open,
+             pf_open_after, pf_close_after, pf_pack_where, pf_pack_dir);
     snprintf(v + strlen(v), sizeof(v) - strlen(v),
              "NAMEDRAWER=%d\nEXWHERE=%d\nEXDIR=%s\nNEWDIR=%d\nEXISTS=%d\n", pf_name_drawer,
              pf_ex_where, pf_ex_dir, pf_ex_newdir, pf_ex_exists);
@@ -1627,37 +1630,50 @@ static void kreq_free(struct kreq *r)
     r->items = NULL;
 }
 
-static const char *pack_ext(int fmt)
-{
-    return fmt == 1 ? ".tar.gz" : fmt == 2 ? ".7z" : ".zip";
-}
-
-/* Compression levels per format, as the slider offers them. gzip has no
- * "store only"; 7z's is not offered (ZIP stores as well, and is read
- * everywhere). */
-static const char *const lvl_names[3][4] = {
-    { "Store only", "Fast", "Normal", "Best" },
-    { "Fast", "Normal", "Best", NULL },
-    { "Fast", "Normal", "Best", NULL },
+/* The formats in the order of the start window's button, with the levels
+ * its slider offers. gzip has no "store only"; 7z's is not offered (ZIP
+ * stores as well and is read everywhere). LhA: lh0 or lh5, as Amiga LhA's
+ * usual choice. */
+static const struct pfmt {
+    const char *name;
+    ua_packfmt fmt;
+    const char *ext;
+    int nlv;
+    const char *lv[4];
+    int val[4];
+    const char *hint;
+} pfmts[4] = {
+    { "LhA", UA_PACK_LHA, ".lha", 2, { "Store only", "Normal" }, { 0, -1 },
+      "Keeps Amiga comments and protection bits. Opens with LhA on any Amiga and with XAD." },
+    { "ZIP", UA_PACK_ZIP, ".zip", 4, { "Store only", "Fast", "Normal", "Best" }, { 0, 1, -1, 9 },
+      "Opens almost everywhere. Amiga comments and the h, s, p, a bits are not kept." },
+    { "7z", UA_PACK_7Z, ".7z", 3, { "Fast", "Normal", "Best" }, { 1, -1, 9 },
+      "The smallest archives; needs 7-Zip or Unarc to open. No Amiga comments." },
+    { "tar.gz", UA_PACK_TGZ, ".tar.gz", 3, { "Fast", "Normal", "Best" }, { 1, -1, 9 },
+      "For Unix systems. No Amiga comments." },
 };
-static const int lvl_values[3][4] = { { 0, 1, -1, 9 }, { 1, -1, 9, 0 }, { 1, -1, 9, 0 } };
+
+static const char *pack_ext(int f)
+{
+    return pfmts[f & 3].ext;
+}
 
 static int lvl_count(int f)
 {
-    return f == 0 ? 4 : 3;
+    return pfmts[f & 3].nlv;
 }
 
 static int cur_fmt(void)
 {
     IPTR v = 0;
     GetAttr(MUIA_Cycle_Active, c_packfmt, &v);
-    return v > 2 ? 0 : (int)v;
+    return v > 3 ? 0 : (int)v;
 }
 
 static void start_show_level(void)
 {
     int f = cur_fmt();
-    settext(t_level, "Compression: \33b%s", lvl_names[f][pf_level[f]]);
+    settext(t_level, "Compression: \33b%s", pfmts[f].lv[pf_level[f]]);
 }
 
 /* The start window follows the format: the drop text, the level slider's
@@ -1665,9 +1681,9 @@ static void start_show_level(void)
 static void start_format_changed(void)
 {
     int f = cur_fmt();
-    static const char *const fname[3] = { "ZIP", "tar.gz", "7z" };
     settext(t_drop, "\n\n\33bDrop files or drawers here to pack them as %s\33n\n"
-            "Drop an archive to extract it\n\n", fname[f]);
+            "Drop an archive to extract it\n\n", pfmts[f].name);
+    settext(t_fmthint, "%s", pfmts[f].hint);
     SetAttrs(sl_level, MUIA_NoNotify, TRUE, MUIA_Numeric_Max, lvl_count(f) - 1,
              MUIA_Numeric_Value, pf_level[f], TAG_DONE);
     start_show_level();
@@ -1860,8 +1876,8 @@ static void pack_start_one(struct kreq *r)
     j->ninputs = r->n;
     r->items = NULL;
     r->n = 0;
-    j->pack.fmt = f == 1 ? UA_PACK_TGZ : f == 2 ? UA_PACK_7Z : UA_PACK_ZIP;
-    j->pack.level = lvl_values[f][pf_level[f]];
+    j->pack.fmt = pfmts[f].fmt;
+    j->pack.level = pfmts[f].val[pf_level[f]];
     j->pack.replace = replace;
     if (uj_start(j) < 0) {
         uj_free(j);
@@ -2154,7 +2170,7 @@ static Object *button(const char *label)
 }
 
 static const char *onopen_labels[] = { "Extract next to the archive", "Show their contents", NULL };
-static const char *packfmt_labels[] = { "ZIP", "tar.gz", "7z", NULL };
+static const char *packfmt_labels[] = { "LhA", "ZIP", "7z", "tar.gz", NULL };
 static const char *reg_titles[] = { "General", "Packing", "Extracting", NULL };
 static const char *start_labels[] = { "The pack window", "A requester to open an archive", NULL };
 static const char *packwhere_labels[] = { "Next to the items", "Ask each time", "In this drawer:",
@@ -2296,6 +2312,7 @@ static int build(void)
                     Child, (IPTR)LLabel1("_Each item into its own archive"),
                     Child, (IPTR)HSpace(0),
                 End),
+                Child, (IPTR)(t_fmthint = TextObject, MUIA_Text_SetMin, FALSE, End),
                 Child, (IPTR)(t_where = TextObject, MUIA_Text_SetMin, FALSE, End),
                 Child, (IPTR)(t_startnote = TextObject,
                     MUIA_Text_PreParse, (IPTR)"\33c",

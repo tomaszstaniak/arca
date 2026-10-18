@@ -3,7 +3,13 @@
     "contrib": {
       "url": "https://github.com/aros-development-team/contrib.git",
       "commit": "be30bc6ad191303ca8753bd3f15e4c78b1278f57",
-      "sparse": ["workbench/libs/xad/"]
+      "sparse": [
+        "workbench/libs/xad/"
+      ]
+    },
+    "lha": {
+      "url": "https://github.com/sodero/lha.git",
+      "commit": "1e7c8f1fc1bd0f72610ca381e21bbda9325cd4f5"
     }
   }
 }

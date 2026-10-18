@@ -8,7 +8,9 @@ updated: 2026-10-15
 ## Sources
 
 - `upstreams.json` lists the repositories we patch, with the full pinned commit.
-  Today: `contrib` (AROS contrib, only `workbench/libs/xad` is checked out).
+  Today: `contrib` (AROS contrib, only `workbench/libs/xad` is checked out) and
+  `lha` (sodero/lha, LHa for UNIX with Amiga support, built as the helper
+  `unarc-lha`).
 - `scripts/fetch-deps.sh` puts a clean checkout of each in `upstream/<id>/`
   (ignored by Git). It refuses to touch a checkout that has local changes or sits
   at another revision.
@@ -22,14 +24,16 @@ updated: 2026-10-15
 
 `scripts/build-deps-abiv11.sh` copies `upstream/contrib/workbench/libs/xad` to
 `build/abiv11-x86_64/contrib-src/`, applies the series in order with `patch -p1`,
-and builds from that copy. The copy is regenerated on every build; do not edit it.
+and builds from that copy. `scripts/build-lha-abiv11.sh` does the same for
+`upstream/lha` in `build/abiv11-x86_64/lha-src/`. The copies are regenerated on
+every build; do not edit them.
 
 ## Making a new patch
 
 There is no `work/` tooling yet. By hand:
 
-1. Make a scratch copy outside the repository: `git clone upstream/contrib /tmp/contrib-work`,
-   apply the existing series there with `git am patches/contrib/*.patch` in series order.
+1. Make an editable copy in `work/<id>/` (ignored by Git): `git clone upstream/<id>
+   work/<id>`, and apply the existing series there with `git am` in series order.
 2. Change, build and test.
 3. `git format-patch -1` in the scratch copy, name the result with the next unused
    number, and add it to `series`.
@@ -46,3 +50,5 @@ target where it was not run.
 | Repository | Patch | Status |
 |---|---|---|
 | contrib | `0001-xad-LZX-store-the-pure-bit-as-FIBF_PURE.patch` | candidate, not submitted; tested on ABIv11 x86_64 only |
+| contrib | `0002-xad-LhA-directories-protection-bits-and-names.patch` | candidate, not submitted; tested on AROS One 1.3 (ABIv11 x86_64) only |
+| lha | `0001`-`0005` (no UNIX permission headers in Amiga archives; no NUL without a comment; `--list=FILE`; Ctrl-C between blocks; options not expanded as patterns) | candidate, not submitted; tested on AROS One 1.3 (ABIv11 x86_64) only |

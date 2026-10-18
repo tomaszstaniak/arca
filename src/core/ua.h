@@ -182,7 +182,7 @@ int ua_read_list(const char *archive, ua_format fmt, ua_op op, int recover,
 int ua_list_break(ua_list *l);
 
 /* pack.c: new archives */
-typedef enum { UA_PACK_ZIP, UA_PACK_TGZ, UA_PACK_7Z } ua_packfmt;
+typedef enum { UA_PACK_ZIP, UA_PACK_TGZ, UA_PACK_7Z, UA_PACK_LHA } ua_packfmt;
 typedef struct ua_pack_opts {
     ua_packfmt fmt;
     int level;                /* 0..9, or -1 for the format's default */
@@ -205,7 +205,7 @@ typedef struct ua_pack_report {
     char kept[UA_PATHMAX];
 } ua_pack_report;
 const char *ua_pack_format_name(ua_packfmt f);
-/* 1 and the format when the name ends in .zip, .tar.gz/.tgz or .7z. */
+/* 1 and the format when the name ends in .zip, .tar.gz/.tgz, .7z or .lha/.lzh. */
 int ua_pack_format_from_name(const char *archive, ua_packfmt *f);
 /* 0 when the archive was made (it may still report errors for some inputs),
  * -1 when it was not; nothing is left under the archive's name then. */

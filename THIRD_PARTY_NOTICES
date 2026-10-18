@@ -40,6 +40,20 @@ Limpet SDK 0.3.0 (src/third_party/limpet, unarc-cli only)
   Licence: MIT (licenses/LimpetSDK-LICENSE.txt). Unmodified.
   Used to tell whether output goes to a Limpet window.
 
+LHa for UNIX 1.14i (unarc-lha, a separate program; upstreams.json "lha")
+  sodero/lha, the Amiga version of LHa for UNIX with Autoconf (jca02266/lha):
+  Copyright (C) 1988-1992 Masaru Oki, 1991-1992 Haruyasu Yoshizaki,
+  1993-1995 Nobutaka Watazaki, 1995 Tsugio Okamoto, 2000-2005 Koji Arai and
+  later contributors; Amiga version by Ola Söder.
+  Licence: the terms of LHa for UNIX (Licences/LHa-for-UNIX-terms.txt, the
+  original in Licences/LHa-for-UNIX-lha.man). They allow no binary-only
+  distribution, ask that changes be documented, that the program not be called
+  LHa, ask for notice before distribution on non-Internet media, and restrict
+  commercial use. The source of unarc-lha with our changes is in
+  Source/unarc-lha-source.zip of the package. unarc-lha runs as its own process
+  and is not linked into Unarc.
+  Modified: yes, see patches/lha/.
+
 libarchive 3.9.0
   Copyright (c) 2003-2018 Tim Kientzle and the libarchive authors.
   Licence: BSD 2-Clause (licenses/libarchive-COPYING.txt). Some files carry the

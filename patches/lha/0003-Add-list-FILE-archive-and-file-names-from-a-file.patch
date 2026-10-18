@@ -1,0 +1,139 @@
+From 0d34468cf3c38697c789b389d6cace7a45f5c3cd Mon Sep 17 00:00:00 2001
+From: tomaszstaniak <68373859+tomaszstaniak@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 13:50:52 +0200
+Subject: [PATCH 3/5] Add --list=FILE: archive and file names from a file
+
+The first line names the archive, every further line one file or
+directory to add. A program that runs lha passes names this way without
+the command line, where AROS's Shell reads quotes and semicolons and
+EXPAND_WILDCARDS expands pattern characters: a file named "a#?b" or
+"x;y" could not be added by its name before.
+
+Repository: lha (https://github.com/sodero/lha.git)
+Base: 1e7c8f1fc1bd0f72610ca381e21bbda9325cd4f5
+Requires: 0001-Amiga-no-UNIX-permission-headers-beside-the-protecti.patch, 0002-Amiga-no-trailing-NUL-in-the-name-when-there-is-no-c.patch
+Scope: all builds
+Tested: AROS One 1.3, ABIv11 x86_64 (2026-10-18): a 1229-entry Amiga tree packed and read back identically by Unarc (XAD), and by C:lha except comments, which it does not set; Amiga LhA 2.15, LHa for UNIX and 7-Zip test it OK
+Upstream-Status: candidate (not submitted)
+Removal: when sodero/lha carries an equivalent change and the pin moves past it
+---
+ src/lharc.c | 69 +++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 69 insertions(+)
+
+diff --git a/src/lharc.c b/src/lharc.c
+index 5a4828d..dd60db7 100755
+--- a/src/lharc.c
++++ b/src/lharc.c
+@@ -231,6 +231,10 @@ commands:                           options:\n\
+ #include "getopt_long.h"
+ #endif
+ 
++static char **list_filev;           /* --list: the file names, or NULL */
++static int list_filec;
++static int read_list(const char *file);
++
+ /*
+   Parse LHA options
+ */
+@@ -245,6 +249,7 @@ parse_suboption(int argc, char **argv)
+         TRADITIONAL_BEHAVIOR,
+         IGNORE_MAC_FILES,
+         DEBUG_OPTION,
++        LIST_OPTION,
+     };
+ 
+     struct option long_options[] = {
+@@ -260,6 +265,7 @@ parse_suboption(int argc, char **argv)
+         {"ignore-mac-files", no_argument, 0, IGNORE_MAC_FILES},
+         {"timestamp-archive", no_argument, &timestamp_archive, 1},
+         {"debug", required_argument, 0, DEBUG_OPTION},
++        {"list", required_argument, 0, LIST_OPTION},
+         {0, 0, 0, 0}
+     };
+     int i;
+@@ -524,6 +530,11 @@ parse_suboption(int argc, char **argv)
+             }
+             break;
+ 
++        case LIST_OPTION:
++            if (read_list(optarg) < 0)
++                return -1;
++            break;
++
+         default:
+             error("unknown option `-%c'.", c);
+             return -1;
+@@ -552,12 +563,70 @@ parse_suboption(int argc, char **argv)
+     }
+ #endif
+ 
++    if (list_filev) {
++        if (argc) {
++            error("file names are given both in --list and on the command line");
++            return -1;
++        }
++        cmd_filec = list_filec;
++        cmd_filev = list_filev;
++        return 0;
++    }
++
+     cmd_filec = argc;
+     cmd_filev = argv;
+ 
+     return 0;
+ }
+ 
++/* --list=FILE: the archive name on the first line, then one file name per
++   line. A program that runs lha can pass any names this way: nothing goes
++   through the command line, where quotes, spaces and wildcard characters
++   would be read by the Shell and by EXPAND_WILDCARDS. */
++static int
++read_list(const char *file)
++{
++    FILE *fp = fopen(file, "r");
++    char buf[4096];
++    int cap = 64, first = 1;
++
++    if (!fp) {
++        error("cannot open the list \"%s\"", file);
++        return -1;
++    }
++    list_filev = (char **)xmalloc(sizeof(char *) * (cap + 1));
++    list_filec = 0;
++    while (fgets(buf, sizeof(buf), fp)) {
++        size_t n = strlen(buf);
++        if (n && buf[n - 1] == '\n')
++            buf[--n] = 0;
++        else if (n == sizeof(buf) - 1) {
++            error("a name in the list \"%s\" is too long", file);
++            fclose(fp);
++            return -1;
++        }
++        if (!n)
++            continue;
++        if (first) {
++            archive_name = xstrdup(buf);
++            first = 0;
++            continue;
++        }
++        if (list_filec >= cap) {
++            cap *= 2;
++            list_filev = (char **)xrealloc(list_filev, sizeof(char *) * (cap + 1));
++        }
++        list_filev[list_filec++] = xstrdup(buf);
++    }
++    fclose(fp);
++    list_filev[list_filec] = NULL;
++    if (first) {
++        error("the list \"%s\" names no archive", file);
++        return -1;
++    }
++    return 0;
++}
++
+ /*
+   Parse LHA command and options.
+ */
+-- 
+2.54.0 (Apple Git-157)
+

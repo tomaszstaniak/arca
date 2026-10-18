@@ -56,7 +56,10 @@ for k, v in json.load(open("upstreams.json"))["repositories"].items():
     print(k, v["url"], v["commit"], ",".join(v.get("sparse", [])))
 PY
   [ -f "patches/$id/series" ] || { echo "patches/$id/series missing" >&2; exit 1; }
-  IFS=, read -r -a paths <<< "$sparse"
+  # A repository without sparse paths is checked out whole (an empty array
+  # is "unbound" for bash 3.2 under set -u).
+  paths=()
+  [ -n "$sparse" ] && IFS=, read -r -a paths <<< "$sparse"
   case $id in contrib) mirror=contrib-xad ;; *) mirror=$id ;; esac
-  fetch "upstream/$id" "$url" "$rev" "$mirror" "${paths[@]}"
+  fetch "upstream/$id" "$url" "$rev" "$mirror" ${paths[@]+"${paths[@]}"}
 done

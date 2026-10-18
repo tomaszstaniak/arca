@@ -1,0 +1,5 @@
+0001-Amiga-no-UNIX-permission-headers-beside-the-protecti.patch
+0002-Amiga-no-trailing-NUL-in-the-name-when-there-is-no-c.patch
+0003-Add-list-FILE-archive-and-file-names-from-a-file.patch
+0004-Amiga-stop-on-Ctrl-C-while-compressing-without-a-par.patch
+0005-Amiga-do-not-expand-options-as-file-patterns.patch

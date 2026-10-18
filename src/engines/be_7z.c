@@ -28,6 +28,9 @@
 #include <dos/dosextens.h>
 #endif
 #include "../core/ua.h"
+#ifndef UA_7Z_HOST_TEST
+#include "../core/helper.h"
+#endif
 
 #define PROG "unarc-7z"
 #define PROTOCOL 3           /* experiments/7z-backend/PROTOCOL.md */
@@ -44,13 +47,7 @@ static char *read_line(child *c);
 /* ---------------------------------------------------------------- the program */
 
 struct child {
-    struct Process *proc;
-    struct Task *parent;
-    BYTE sig;                 /* signalled by the exit code below */
-    volatile int exited;
-    BPTR rd;                  /* our end of the output pipe */
-    struct MsgPort *port;
-    struct DosPacket *dp;     /* AllocDosObject(DOS_STDPKT) gives the packet itself */
+    ua_helper h;              /* the process and its output pipe (helper.c) */
     UBYTE *buf;
     LONG len, pos;
     int eof, cancelled;
@@ -148,28 +145,10 @@ int ua_7z_available(char *why, int whylen)
 
 static void find_prog_now(void)
 {
-    if (have_prog < 0) {
-        BPTR d = GetProgramDir(), l;
-        have_prog = 0;
-        if (d && NameFromLock(d, prog, sizeof(prog)) && AddPart(prog, PROG, sizeof(prog)) &&
-            (l = Lock(prog, SHARED_LOCK))) {
-            UnLock(l);
-            have_prog = 1;
-        }
-    }
+    if (have_prog < 0)
+        have_prog = ua_helper_find(PROG, prog, sizeof(prog));
 }
 
-
-/* Runs in the program's process when it ends, before DOS frees it. Only
- * this function's own return is left to run in our code after the signal;
- * child_end waits a tick before the caller may go on. */
-static void child_exit(IPTR rc, IPTR data)
-{
-    child *c = (child *)data;
-    (void)rc;
-    c->exited = 1;
-    Signal(c->parent, 1UL << c->sig);
-}
 
 static void hex_of(const char *s, char *out)
 {
@@ -181,31 +160,20 @@ static void hex_of(const char *s, char *out)
     *out = 0;
 }
 
-/* Ctrl-C to the program, if it still runs. child_exit sets exited before
- * DOS frees the process, so under Forbid the process is valid when unset. */
 static void poke(child *c)
 {
-    Forbid();
-    if (c->proc && !c->exited)
-        Signal(&c->proc->pr_Task, SIGBREAKF_CTRL_C);
-    Permit();
+    ua_helper_poke(&c->h);
 }
 
-/* Everything child_start allocates, except the pipes and the process. */
+/* Everything child_start allocates besides the process. */
 static void child_free(child *c)
 {
     if (c->idxfile[0])
         DeleteFile((STRPTR)c->idxfile);
     if (c->volfile[0])
         DeleteFile((STRPTR)c->volfile);
-    if (c->sig >= 0)
-        FreeSignal(c->sig);
-    if (c->dp)
-        FreeDosObject(DOS_STDPKT, c->dp);
-    DeleteMsgPort(c->port);
     free(c->buf);
     memset(c, 0, sizeof(*c));
-    c->sig = -1;
 }
 
 /* A password the program did not read stays in its pipe (PIPE: keeps a
@@ -254,19 +222,16 @@ static int child_start(child *c, const char *verb, const char *archive, const ch
                        char **vols, const char *password, char *err, int errlen)
 {
     static ULONG serial;
-    char out[64], pw[64], *args;
+    char pw[64], *args;
     size_t alen;
-    BPTR seg, wr, in, er, pwr = BNULL;
+    BPTR pwr = BNULL;
 
     memset(c, 0, sizeof(*c));
-    c->sig = -1;
     if (!find_prog()) {
         snprintf(err, errlen, "%s is not next to the program", PROG);
         return -1;
     }
     serial++;
-    snprintf(out, sizeof(out), "PIPE:unarc7z-%08lx-%lu", (unsigned long)(IPTR)FindTask(NULL),
-             (unsigned long)serial);
     snprintf(pw, sizeof(pw), "PIPE:unarc7zp-%08lx-%lu", (unsigned long)(IPTR)FindTask(NULL),
              (unsigned long)serial);
     if (vols && !write_vols(vols, c->volfile, sizeof(c->volfile))) {
@@ -278,11 +243,7 @@ static int child_start(child *c, const char *verb, const char *archive, const ch
            (which ? strlen(which) : 0) + 40;
     args = malloc(alen);
     c->buf = malloc(BUFSZ);
-    c->port = CreateMsgPort();
-    c->dp = AllocDosObject(DOS_STDPKT, NULL);
-    c->sig = AllocSignal(-1);
-    c->parent = FindTask(NULL);
-    if (!args || !c->buf || !c->port || !c->dp || c->sig < 0) {
+    if (!args || !c->buf) {
         snprintf(err, errlen, "out of memory");
         goto fail;
     }
@@ -302,44 +263,13 @@ static int child_start(child *c, const char *verb, const char *archive, const ch
             p += sprintf(p, " %s", which);
         strcpy(p, "\n");
     }
-    if (!(seg = LoadSeg((STRPTR)prog))) {
-        snprintf(err, errlen, "cannot load %s", PROG);
-        goto fail;
-    }
-    wr = Open((STRPTR)out, MODE_NEWFILE);
-    c->rd = wr ? Open((STRPTR)out, MODE_OLDFILE) : BNULL;
-    in = Open("NIL:", MODE_OLDFILE);
-    er = Open("NIL:", MODE_NEWFILE);
     /* The password pipe's writer is opened before the program starts: a read
      * from a pipe that has no writer yet ends at once with nothing. */
-    if (password)
-        pwr = Open((STRPTR)pw, MODE_NEWFILE);
-    if (!wr || !c->rd || !in || !er || (password && !pwr)) {
+    if (password && !(pwr = Open((STRPTR)pw, MODE_NEWFILE))) {
         snprintf(err, errlen, "cannot open a pipe (is PIPE: mounted?)");
-        UnLoadSeg(seg);
-        if (wr) Close(wr);
-        if (in) Close(in);
-        if (er) Close(er);
-        if (pwr) Close(pwr);
         goto fail;
     }
-    SetSignal(0, 1UL << c->sig);
-    c->proc = CreateNewProcTags(NP_Seglist, (IPTR)seg, NP_FreeSeglist, TRUE,
-                                NP_Name, (IPTR)PROG, NP_CommandName, (IPTR)PROG,
-                                NP_Cli, TRUE, NP_Arguments, (IPTR)args,
-                                NP_Input, (IPTR)in, NP_Output, (IPTR)wr, NP_Error, (IPTR)er,
-                                NP_CloseInput, TRUE, NP_CloseOutput, TRUE, NP_CloseError, TRUE,
-                                NP_StackSize, 262144,
-                                /* Our drawer must not stay locked by a helper. */
-                                NP_HomeDir, (IPTR)BNULL,
-                                NP_ExitCode, (IPTR)child_exit, NP_ExitData, (IPTR)c,
-                                TAG_END);
-    if (!c->proc) {
-        snprintf(err, errlen, "cannot start %s", PROG);
-        UnLoadSeg(seg);
-        Close(wr);
-        Close(in);
-        Close(er);
+    if (ua_helper_start(&c->h, prog, PROG, args, BNULL, 0, err, errlen) < 0) {
         if (pwr) {
             Close(pwr);
             drain_password(pw);
@@ -366,8 +296,6 @@ static int child_start(child *c, const char *verb, const char *archive, const ch
     return 0;
 fail:
     free(args);
-    if (c->rd)
-        Close(c->rd);
     child_free(c);
     return -1;
 }
@@ -376,21 +304,11 @@ fail:
  * which then ends its output with R 8. */
 static LONG child_read(child *c, void *buf, LONG len)
 {
-    struct FileHandle *fh = BADDR(c->rd);
-    c->dp->dp_Type = ACTION_READ;
-    c->dp->dp_Arg1 = fh->fh_Arg1;
-    c->dp->dp_Arg2 = (SIPTR)buf;
-    c->dp->dp_Arg3 = len;
-    SendPkt(c->dp, fh->fh_Type, c->port);
-    for (;;) {
-        ULONG got = Wait(1UL << c->port->mp_SigBit | SIGBREAKF_CTRL_C);
-        if ((got & SIGBREAKF_CTRL_C) && !c->cancelled) {
-            c->cancelled = 1;
-            poke(c);
-        }
-        if (GetMsg(c->port))
-            return (LONG)c->dp->dp_Res1;
-    }
+    LONG n;
+    c->h.cancelled = c->cancelled;     /* the records code may have cancelled */
+    n = ua_helper_read(&c->h, buf, len);
+    c->cancelled = c->h.cancelled;
+    return n;
 }
 
 /* Reads to the end, waits for the program to end and frees everything.
@@ -399,20 +317,14 @@ static LONG child_read(child *c, void *buf, LONG len)
 static int child_end(child *c)
 {
     int cancelled;
-    if (c->rd) {
-        /* Read to the end, whatever is left. Closing the reader early would
-         * leave the program waiting for ever on a full pipe: PIPE: holds a
-         * writer until someone reads. */
+    /* Our buffer first (its reads pass Ctrl-C on as before), then the rest
+     * and the end of the process in helper.c. */
+    c->pos = c->len = 0;
+    while (fill(c))
         c->pos = c->len = 0;
-        while (fill(c))
-            c->pos = c->len = 0;
-        Close(c->rd);
-    }
-    if (c->proc) {
-        while (!c->exited)
-            Wait(1UL << c->sig);
-        Delay(1);      /* let child_exit return out of our code */
-    }
+    c->h.cancelled = c->cancelled;
+    ua_helper_end(&c->h);
+    c->cancelled |= c->h.cancelled;
     if (c->pwpipe[0])
         drain_password(c->pwpipe);
     cancelled = c->cancelled;

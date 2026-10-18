@@ -4,7 +4,7 @@
  * a given output (be7z_fake.h). Covers the final R code after good entries,
  * Ctrl-C before the first header and in the middle of an entry's data, a
  * cancel from the file layer, changed archives and dates.
- *   cc -fsanitize=address,undefined -I tests/host/shim -o /tmp/zh tests/host/be7z_host.c && /tmp/zh */
+ *   cc -fsanitize=address,undefined -I tests/host/shim -I tests/host -o /tmp/zh tests/host/be7z_host.c && /tmp/zh */
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>

@@ -28,6 +28,7 @@ need bash, CMake, git and patch.
     scripts/fetch-deps.sh          # pinned sources from deps.lock into deps/
     scripts/build-deps-abiv11.sh   # static liblzma, libarchive, XAD into build/abiv11-x86_64/prefix
     scripts/build-abiv11.sh        # build/abiv11-x86_64/bin/unarc-cli and Unarc
+    scripts/build-lha-abiv11.sh    # build/abiv11-x86_64/bin/unarc-lha (LHa for UNIX + patches/lha)
 
 `fetch-deps.sh` puts unmodified dependencies (`deps.lock`) in `deps/` and the
 repositories we patch (`upstreams.json`) as clean checkouts in `upstream/`.
@@ -53,6 +54,13 @@ collect-aros itself can exit 0 with symbols left unresolved, which is also why
   from a `PIPE:` handle; the archive path goes as hex, the selection through a
   file in `T:`, the password through a second pipe. The program's protocol
   number is asked once per run; one of another release is not used.
+  Starting a helper and reading its output is `src/core/helper.c`, shared
+  with packing.
+- Packing (`pack.c`): ZIP, tar.gz and 7z with libarchive's writers; LhA with
+  the separate program `unarc-lha` (LHa for UNIX, `upstreams.json` "lha" with
+  `patches/lha/`), given its names in a list file in `T:` and run in the
+  items' drawer. Every format writes under a temporary name and gets its name
+  at the end; an archive it replaces is deleted only then.
 
 Engine choice (`registry.c`): RAR goes to 7-Zip first. Plain 7z and ZIP go to
 libarchive first, as it is 2-3 times faster with many small entries; before
