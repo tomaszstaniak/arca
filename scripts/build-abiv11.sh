@@ -57,4 +57,5 @@ ls -l "$B/bin/Unarc"
 "$CC" --sysroot="$SDK" -O2 -I"$P/include" -o "$B/bin/uatool" "$R/tests/probes/uatool.c" \
   "$R/src/core/volumes.c" "$R/src/core/bigfile.c" "$SDK/lib/libz.static.a"
 "$CC" --sysroot="$SDK" -O2 -o "$B/bin/zune-control" "$R/tests/probes/zune_control.c"
+"$CC" --sysroot="$SDK" -O2 -o "$B/bin/listbench" "$R/tests/probes/listbench.c"
 "$CC" --sysroot="$SDK" -O2 -o "$B/bin/fake7z" "$R/tests/probes/fake7z.c"
