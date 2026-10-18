@@ -1,2 +1,0 @@
-ARCHIVE RAM:lhacheck/fixtures/dir-l1.lha error=0
-ENTRY docs/ type=file prot=00000000 comment=folder comment

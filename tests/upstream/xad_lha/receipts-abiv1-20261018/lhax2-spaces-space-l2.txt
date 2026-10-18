@@ -1,2 +1,0 @@
-ARCHIVE RAM:lhacheck/fixtures/space-l2.lha error=0
-ENTRY space name type=file prot=00000000 comment=

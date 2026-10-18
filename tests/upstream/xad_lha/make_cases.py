@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 #!/usr/bin/env python3
 """Small stored LHA archives for XAD level-1/2 metadata regressions."""
 from pathlib import Path

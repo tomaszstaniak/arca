@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT */
 #include <stdio.h>
 #include <proto/xadmaster.h>
 #include "xad_static.h"

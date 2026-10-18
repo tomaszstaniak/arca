@@ -1,2 +1,0 @@
-ARCHIVE RAM:lhacheck/fixtures/unix-dos-l1.lha error=0
-ENTRY file type=file prot=00000015 comment=

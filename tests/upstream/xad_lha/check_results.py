@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 #!/usr/bin/env python3
 """Check each isolated XAD fix, and unchanged output outside its scope."""
 from pathlib import Path
