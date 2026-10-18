@@ -331,6 +331,15 @@ static void do_extract(uj_job *j)
 
     if (!j->have_plan && do_list(j, 0) < 0)
         return;
+    /* The user chose to go on without the password: the encrypted entries
+     * are left out, and counted for the result. */
+    if (j->skip_encrypted && !j->list.password) {
+        for (k = 0; k < j->list.n; k++)
+            if (j->list.v[k].encrypted && !j->list.v[k].excluded) {
+                j->list.v[k].excluded = 1;
+                j->skipped_encrypted++;
+            }
+    }
     /* Encrypted entries and no password: stop before anything is written;
      * the GUI asks and starts the job again. */
     if (!j->lent && ua_list_encrypted_wanted(&j->list) && !j->list.password) {

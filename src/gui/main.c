@@ -26,6 +26,7 @@
 #include <proto/layers.h>
 #include <clib/alib_protos.h>
 #include <mui/NList_mcc.h>
+#include <mui/Busy_mcc.h>
 #include "job.h"
 #include "zk_table.h"
 #include "../engines/xad_static.h"
@@ -35,18 +36,21 @@ const char version[] = "$VER: Unarc 0.0.3 (17.10.2026)";
 
 /* From 0x100: Zune's MUI_Request runs the application's input loop and takes
  * return IDs 1..buttons+1 as its own answer (mui_request.c). */
-enum { ID_OPEN = 0x100, ID_EXTRACT_ASK, ID_ONOPEN, ID_START_CLOSE, ID_DROP,
+enum { ID_OPEN = 0x100, ID_START_CLOSE, ID_DROP,
        ID_B_FIND, ID_B_SEL, ID_B_ACTIVE, ID_B_EXSEL, ID_B_EXALL, ID_B_INFO, ID_B_CLOSE,
        ID_B_RECOVER, ID_P_CANCEL, ID_P_OPENDIR, ID_P_DETAILS, ID_P_CLOSE, ID_P_RECOVER,
        ID_A_REPLACE, ID_A_KEEP, ID_A_SKIP, ID_A_CANCEL, ID_D_CLOSE,
-       ID_PACK_FILES, ID_PACK_DRAWER, ID_K_FMT, ID_K_GO, ID_K_CANCEL, ID_PACKFMT, ID_B_REPLAN,
-       ID_B_DRAGOUT, ID_Q_REMOVE, ID_Q_CANCELALL, ID_Q_ACTIVE };
+       ID_PACK_FILES, ID_PACKFMT, ID_LEVEL, ID_SEPARATE, ID_B_REPLAN,
+       ID_B_DRAGOUT, ID_Q_REMOVE, ID_Q_CANCELALL, ID_Q_ACTIVE,
+       ID_SETTINGS, ID_S_SAVE, ID_S_USE, ID_S_CANCEL, ID_S_WHERE };
 
 static Object *app, *wstart, *wbrowse, *wprog, *wask, *wdetail;
-static Object *t_drop, *t_startnote, *c_onopen, *b_open, *b_extract, *c_packfmt, *b_pack,
-              *b_packdir;
-static Object *wpack, *t_kitems, *t_knote, *s_kname, *c_kfmt, *c_klevel, *c_klevel3, *b_kgo,
-              *b_kcancel;
+static Object *t_drop, *t_startnote, *b_open, *c_packfmt, *b_pack, *b_settings, *sl_level,
+              *t_level, *cb_separate, *t_where;
+static Object *wsettings, *c_sstart, *c_sopen, *cb_sopendir, *cb_sclose, *c_spackwhere,
+              *s_spackdir, *p_spackdir, *c_sname, *c_sexwhere, *s_sexdir, *p_sexdir, *c_snewdir,
+              *c_sexists, *b_ssave, *b_suse, *b_scancel;
+static Object *g_busy;
 static Object *cb_newfolder;
 static Object *s_find, *lv, *lvview, *t_active, *t_bstatus, *s_to, *p_to, *b_exsel, *b_exall,
               *b_info, *b_bclose, *b_brecover;
@@ -84,6 +88,8 @@ static char r_archive[UA_PATHMAX];
 static char *r_detail;
 static char r_head[200];                  /* the last result's headline */
 static int r_ok;                          /* the last extraction did all it should */
+static int r_clean;                       /* the last result has nothing to report */
+static int skip_enc_next;                 /* the next extraction leaves out encrypted files */
 static int r_damaged;
 static int r_from_browser;
 static int onopen_browse;                 /* preference: double-click shows contents */
@@ -104,7 +110,20 @@ static struct qitem {
     char *detail;
 } q[QMAX];
 static int nq, qcur = -1, qstop;
-static int packfmt_pref;                  /* preference: 0 ZIP, 1 tar.gz, 2 7z */
+/* Preferences (Settings window; the start window remembers its own). */
+static int packfmt_pref;                  /* 0 ZIP, 1 tar.gz, 2 7z */
+static int pf_level[3] = { 2, 1, 1 };     /* slider position per pack format */
+static int pf_separate;                   /* each item into its own archive */
+static int pf_start_open;                 /* at start the open requester, not the pack window */
+static int pf_open_after;                 /* open the result's drawer after a clean job */
+static int pf_close_after;                /* close the result after a clean job */
+static int pf_pack_where;                 /* 0 next to the items, 1 ask, 2 pf_pack_dir */
+static char pf_pack_dir[UA_PATHMAX];
+static int pf_name_drawer = 1;            /* several items: named after their drawer */
+static int pf_ex_where;                   /* 0 next to the archive, 1 ask, 2 pf_ex_dir */
+static char pf_ex_dir[UA_PATHMAX];
+static int pf_ex_newdir = 1;              /* a new drawer when the archive needs one */
+static int pf_ex_exists;                  /* 0 ask, 1 skip, 2 keep both; never replace */
 
 /* ------------------------------------------------------------- helpers */
 
@@ -314,9 +333,14 @@ static const char *pw_of(const char *archive)
 
 /* A small window of its own, asked while no job runs. Zune's string gadget
  * holds ISO-8859-1 text; the handlers take UTF-8. */
-static int ask_password(const char *archive, int wrong)
+#define ID_PW_SKIP   0x7a03
+
+/* 1: a password was given; 2: go on without the encrypted files (offered only
+ * when can_skip, that is when other files can be extracted without it);
+ * 0: cancelled. */
+static int ask_password(const char *archive, int wrong, int can_skip)
 {
-    Object *w, *str, *ok, *cancel, *sleepers[3];
+    Object *w, *str, *ok, *cancel, *skip, *sleepers[3];
     ULONG sigs = 0, id = 0, other[8];
     int i, got = 0, nother = 0;
 
@@ -336,6 +360,7 @@ static int ask_password(const char *archive, int wrong)
                 MUIA_String_MaxLen, 250, MUIA_CycleChain, 1, End),
             Child, (IPTR)(HGroup,
                 Child, (IPTR)(ok = SimpleButton("_OK")),
+                Child, (IPTR)(skip = SimpleButton("_Skip encrypted files")),
                 Child, (IPTR)HSpace(0),
                 Child, (IPTR)(cancel = SimpleButton("_Cancel")),
             End),
@@ -344,6 +369,9 @@ static int ask_password(const char *archive, int wrong)
     if (!w)
         return 0;
     DoMethod(app, OM_ADDMEMBER, (IPTR)w);
+    SetAttrs(skip, MUIA_ShowMe, can_skip, TAG_DONE);
+    DoMethod(skip, MUIM_Notify, MUIA_Pressed, FALSE, (IPTR)app, 2, MUIM_Application_ReturnID,
+             ID_PW_SKIP);
     DoMethod(ok, MUIM_Notify, MUIA_Pressed, FALSE, (IPTR)app, 2, MUIM_Application_ReturnID, ID_PW_OK);
     DoMethod(str, MUIM_Notify, MUIA_String_Acknowledge, MUIV_EveryTime, (IPTR)app, 2,
              MUIM_Application_ReturnID, ID_PW_OK);
@@ -360,7 +388,8 @@ static int ask_password(const char *archive, int wrong)
      * say) are kept and given back to it afterwards. */
     for (;;) {
         id = DoMethod(app, MUIM_Application_NewInput, (IPTR)&sigs);
-        if (id == ID_PW_OK || id == ID_PW_CANCEL || id == (ULONG)MUIV_Application_ReturnID_Quit)
+        if (id == ID_PW_OK || id == ID_PW_CANCEL || id == ID_PW_SKIP ||
+            id == (ULONG)MUIV_Application_ReturnID_Quit)
             break;
         if (id) {
             if (nother < 8)
@@ -408,7 +437,9 @@ static int ask_password(const char *archive, int wrong)
         quitting = 1;
     for (i = 0; i < nother; i++)
         DoMethod(app, MUIM_Application_ReturnID, other[i]);
-    dbg("password asked: %s", got ? "given" : "not given");
+    dbg("password asked: %s", got ? "given" : id == ID_PW_SKIP ? "skip" : "not given");
+    if (!got && id == ID_PW_SKIP)
+        return 2;
     return got;
 }
 
@@ -416,22 +447,83 @@ static int ask_password(const char *archive, int wrong)
 
 #define PREFS_NAME "Unarc.prefs"
 
-static void prefs_load(void)
+/* One "KEY=value" per line in the variable ENV:Unarc.prefs. */
+static const char *pref_get(const char *buf, const char *key)
 {
-    char buf[64];
-    if (GetVar(PREFS_NAME, buf, sizeof(buf), GVF_GLOBAL_ONLY) > 0) {
-        onopen_browse = strstr(buf, "ONOPEN=BROWSE") != NULL;
-        packfmt_pref = strstr(buf, "PACK=TGZ") ? 1 : strstr(buf, "PACK=7Z") ? 2 : 0;
+    size_t kl = strlen(key);
+    const char *p = buf;
+    while (p && *p) {
+        if (!strncmp(p, key, kl) && p[kl] == '=')
+            return p + kl + 1;
+        p = strchr(p, '\n');
+        if (p)
+            p++;
     }
+    return NULL;
 }
 
-/* ENV: for now, ENVARC: so that it survives a reboot. */
+static int pref_int(const char *buf, const char *key, int def, int max)
+{
+    const char *v = pref_get(buf, key);
+    int n = v ? atoi(v) : def;
+    return n < 0 || n > max ? def : n;
+}
+
+static void pref_str(const char *buf, const char *key, char *out, size_t n)
+{
+    const char *v = pref_get(buf, key);
+    size_t l = 0;
+    out[0] = 0;
+    if (!v)
+        return;
+    while (v[l] && v[l] != '\n')
+        l++;
+    snprintf(out, n, "%.*s", (int)l, v);
+}
+
+static void prefs_load(void)
+{
+    char buf[2 * UA_PATHMAX + 400];
+    if (GetVar(PREFS_NAME, buf, sizeof(buf), GVF_GLOBAL_ONLY) <= 0)
+        return;
+    onopen_browse = strstr(buf, "ONOPEN=BROWSE") != NULL;
+    packfmt_pref = strstr(buf, "PACK=TGZ") ? 1 : strstr(buf, "PACK=7Z") ? 2 : 0;
+    pf_level[0] = pref_int(buf, "LEVELZIP", 2, 3);
+    pf_level[1] = pref_int(buf, "LEVELTGZ", 1, 2);
+    pf_level[2] = pref_int(buf, "LEVEL7Z", 1, 2);
+    pf_separate = pref_int(buf, "SEPARATE", 0, 1);
+    pf_start_open = pref_int(buf, "STARTOPEN", 0, 1);
+    pf_open_after = pref_int(buf, "OPENAFTER", 0, 1);
+    pf_close_after = pref_int(buf, "CLOSEAFTER", 0, 1);
+    pf_pack_where = pref_int(buf, "PACKWHERE", 0, 2);
+    pref_str(buf, "PACKDIR", pf_pack_dir, sizeof(pf_pack_dir));
+    pf_name_drawer = pref_int(buf, "NAMEDRAWER", 1, 1);
+    pf_ex_where = pref_int(buf, "EXWHERE", 0, 2);
+    pref_str(buf, "EXDIR", pf_ex_dir, sizeof(pf_ex_dir));
+    pf_ex_newdir = pref_int(buf, "NEWDIR", 1, 1);
+    pf_ex_exists = pref_int(buf, "EXISTS", 0, 2);
+}
+
+/* keep: also in ENVARC: so that it survives a reboot ("Save"); otherwise ENV:
+ * only, until the next reboot ("Use"). */
+static void prefs_store(int keep)
+{
+    char v[2 * UA_PATHMAX + 400];
+    snprintf(v, sizeof(v), "%s\nPACK=%s\nLEVELZIP=%d\nLEVELTGZ=%d\nLEVEL7Z=%d\nSEPARATE=%d\n"
+             "STARTOPEN=%d\nOPENAFTER=%d\nCLOSEAFTER=%d\nPACKWHERE=%d\nPACKDIR=%s\n",
+             onopen_browse ? "ONOPEN=BROWSE" : "ONOPEN=EXTRACT",
+             packfmt_pref == 1 ? "TGZ" : packfmt_pref == 2 ? "7Z" : "ZIP",
+             pf_level[0], pf_level[1], pf_level[2], pf_separate, pf_start_open, pf_open_after,
+             pf_close_after, pf_pack_where, pf_pack_dir);
+    snprintf(v + strlen(v), sizeof(v) - strlen(v),
+             "NAMEDRAWER=%d\nEXWHERE=%d\nEXDIR=%s\nNEWDIR=%d\nEXISTS=%d\n", pf_name_drawer,
+             pf_ex_where, pf_ex_dir, pf_ex_newdir, pf_ex_exists);
+    SetVar(PREFS_NAME, v, strlen(v), GVF_GLOBAL_ONLY | (keep ? GVF_SAVE_VAR : 0));
+}
+
 static void prefs_save(void)
 {
-    char v[64];
-    snprintf(v, sizeof(v), "%s\nPACK=%s\n", onopen_browse ? "ONOPEN=BROWSE" : "ONOPEN=EXTRACT",
-             packfmt_pref == 1 ? "TGZ" : packfmt_pref == 2 ? "7Z" : "ZIP");
-    SetVar(PREFS_NAME, v, strlen(v), GVF_GLOBAL_ONLY | GVF_SAVE_VAR);
+    prefs_store(1);
 }
 
 /* ------------------------------------------------------------- browser */
@@ -732,6 +824,10 @@ static void start_list(const char *archive);
 static void queue_next(void);
 static void queue_after(void);
 static void pack_done(uj_job *j);
+static void k_next(void);
+static void result_followups(void);
+static ULONG plain_wanted(const ua_list *l);
+static void open_folder(const char *path);
 static void b_replan(void);
 static void start_extract(const char *archive, const char *dest, int recover, int from_browser);
 
@@ -766,6 +862,7 @@ static void browse(const char *archive)
     /* Rows first: the display hook reads blist. */
     zk_table_clear(lv);
     b_reset();
+    SetAttrs(cb_newfolder, MUIA_NoNotify, TRUE, MUIA_Selected, pf_ex_newdir, TAG_DONE);
     snprintf(b_archive, sizeof(b_archive), "%s", archive);
     SetAttrs(wbrowse, MUIA_Window_Title, (IPTR)leafname(b_archive), TAG_DONE);
     SetAttrs(s_find, MUIA_NoNotify, TRUE, MUIA_String_Contents, (IPTR)"", TAG_DONE);
@@ -838,6 +935,15 @@ static void start_extract(const char *archive, const char *dest, int recover, in
     }
     snprintf(j->dest, sizeof(j->dest), "%s", dest);
     j->recover = recover;
+    j->skip_encrypted = skip_enc_next;
+    skip_enc_next = 0;
+    /* The settings for an extraction straight from a drop or a double-click;
+     * the browser has its own controls and asks as before. */
+    if (!from_browser) {
+        j->nowrap = !pf_ex_newdir;
+        j->conflict = pf_ex_exists == 1 ? UA_CONFLICT_SKIP :
+                      pf_ex_exists == 2 ? UA_CONFLICT_RENAME : UA_CONFLICT_ASK;
+    }
     if (pw_of(archive))
         snprintf(j->password, sizeof(j->password), "%s", pw);
     if (from_browser) {
@@ -877,6 +983,15 @@ static void extract_now(const char *archive)
     if (!dest[0]) {
         say("Cannot find the drawer of\n%s", archive);
         return;
+    }
+    if (pf_ex_where == 2 && pf_ex_dir[0])
+        snprintf(dest, sizeof(dest), "%s", pf_ex_dir);
+    if (pf_ex_where == 1) {
+        char other[UA_PATHMAX], title[300];
+        snprintf(title, sizeof(title), "Extract \"%s\" to", leafname(archive));
+        if (!ask_drawer(title, dest, other, sizeof(other)))
+            return;
+        snprintf(dest, sizeof(dest), "%s", other);
     }
     if (!writable(dest)) {
         char other[UA_PATHMAX];
@@ -1119,6 +1234,9 @@ static void show_ask(uj_msg *m)
     settext(t_askinfo, "%s\n%s", info, incoming);
     SetAttrs(cb_all, MUIA_Selected, FALSE, TAG_DONE);
     open_win(wask, 1);
+    /* Return answers Skip; Replace needs its key or a click. */
+    SetAttrs(wask, MUIA_Window_ActiveObject, (IPTR)b_askip, MUIA_Window_DefaultObject,
+             (IPTR)b_askip, TAG_DONE);
 }
 
 static void answer(LONG a)
@@ -1226,7 +1344,7 @@ static void list_done(uj_job *j)
     if (j->open_status == UA_OPEN_PASSWORD) {
         int wrong = j->list.pw_state == UA_PW_WRONG;
         uj_take_list(j, &blist, &bplan);
-        if (ask_password(b_archive, wrong)) {
+        if (ask_password(b_archive, wrong, 0) == 1) {
             pw_restart_list = 1;     /* on_done starts it again once this job is freed */
             settext(t_bstatus, "Reading the archive...");
         } else {
@@ -1346,6 +1464,13 @@ static void extract_done(uj_job *j)
         snprintf(head, sizeof(head), "Done");
         snprintf(body, sizeof(body), "%s (%s) in\n%s", fc, sz, r_root);
     }
+    if (j->skipped_encrypted)
+        snprintf(body + strlen(body), sizeof(body) - strlen(body),
+                 "\n%lu encrypted files were left out (no password).",
+                 (unsigned long)j->skipped_encrypted);
+    if (extracted_any && j->have_plan && j->plan.root_renamed)
+        snprintf(body + strlen(body), sizeof(body) - strlen(body),
+                 "\nA drawer of the archive's name was already there, so a new one was made.");
     if (r->overwritten)
         snprintf(body + strlen(body), sizeof(body) - strlen(body), "\n%lu files were replaced.",
                  (unsigned long)r->overwritten);
@@ -1358,6 +1483,8 @@ static void extract_done(uj_job *j)
     detail_text(j, head);
     snprintf(r_head, sizeof(r_head), "%s", head);
     r_ok = !strcmp(head, "Done") || !strcmp(head, "Done, with notes");
+    r_clean = !strcmp(head, "Done") && !j->skipped_encrypted &&
+              !(j->have_plan && j->plan.root_renamed);
     dbg("job extract done: %s | files=%lu dirs=%lu skipped=%lu renamed=%lu replaced=%lu "
         "errors=%lu bytes=%llu cancelled=%d failed=%d open=%d root=%s", head,
         (unsigned long)r->files, (unsigned long)r->dirs, (unsigned long)r->skipped,
@@ -1388,6 +1515,7 @@ static int jobs_done;
 
 static void on_done(uj_job *j)
 {
+    int pw_answer;
     dbg("done at %ld ticks; %lu batches, %lu progress messages", (long)uj_ticks_since(&j->started),
         (unsigned long)n_batches, (unsigned long)n_progress);
     n_batches = n_progress = 0;
@@ -1403,18 +1531,26 @@ static void on_done(uj_job *j)
         list_done(j);
     } else if (j->kind == UJ_PACK) {
         pack_done(j);
-        if (prog_closing) {
+        uj_free(j);
+        k_next();
+        if (prog_closing && !job) {
             open_win(wprog, 0);
             prog_closing = 0;
+        } else if (!job) {
+            result_followups();
         }
+        return;
     } else if (j->open_status == UA_OPEN_PASSWORD && !j->lent && !quitting &&
-               ask_password(j->archive, j->list.pw_state == UA_PW_WRONG)) {
-        /* Nothing was written; the same extraction again, with the password. */
+               (pw_answer = ask_password(j->archive, j->list.pw_state == UA_PW_WRONG,
+                                         j->list.n && plain_wanted(&j->list) > 0)) != 0) {
+        /* Nothing was written; the same extraction again, with the password
+         * or without the encrypted files. */
         char a[UA_PATHMAX], d[UA_PATHMAX];
         int rec = j->recover;
         snprintf(a, sizeof(a), "%s", j->archive);
         snprintf(d, sizeof(d), "%s", j->dest);
         uj_free(j);
+        skip_enc_next = pw_answer == 2;
         start_extract(a, d, rec, 0);
         if (!job && qcur >= 0)
             queue_after();
@@ -1427,6 +1563,8 @@ static void on_done(uj_job *j)
         if (prog_closing && !job) {
             open_win(wprog, 0);
             prog_closing = 0;
+        } else if (!job) {
+            result_followups();
         }
     }
     uj_free(j);
@@ -1467,15 +1605,26 @@ static void poll_jobs(void)
 
 /* ------------------------------------------------------------- packing */
 
-static char **k_items;         /* what the pack window offers to pack */
-static int k_n;
+/* Packing starts from a drop on the start window or from "Pack...", with the
+ * format and level set there; where the archive goes and how it is named
+ * come from the settings. With "each item into its own archive" every item
+ * is a request of its own; requests run one after another. */
+#define KMAX 64
+static struct kreq {
+    char **items;
+    int n;
+} kq[KMAX];
+static int nk, kcur;
+static int k_total, k_made, k_bad;     /* archives in this run, made, with problems */
+static char k_lines[1200];             /* one line per archive, for the summary */
+static char k_lastdir[UA_PATHMAX];
 
-static void k_clear(void)
+static void kreq_free(struct kreq *r)
 {
-    while (k_n)
-        free(k_items[--k_n]);
-    free(k_items);
-    k_items = NULL;
+    while (r->n)
+        free(r->items[--r->n]);
+    free(r->items);
+    r->items = NULL;
 }
 
 static const char *pack_ext(int fmt)
@@ -1483,52 +1632,278 @@ static const char *pack_ext(int fmt)
     return fmt == 1 ? ".tar.gz" : fmt == 2 ? ".7z" : ".zip";
 }
 
-/* Replace the extension of the name in the window with the format's. */
-static void k_fix_ext(void)
+/* Compression levels per format, as the slider offers them. gzip has no
+ * "store only"; 7z's is not offered (ZIP stores as well, and is read
+ * everywhere). */
+static const char *const lvl_names[3][4] = {
+    { "Store only", "Fast", "Normal", "Best" },
+    { "Fast", "Normal", "Best", NULL },
+    { "Fast", "Normal", "Best", NULL },
+};
+static const int lvl_values[3][4] = { { 0, 1, -1, 9 }, { 1, -1, 9, 0 }, { 1, -1, 9, 0 } };
+
+static int lvl_count(int f)
 {
-    STRPTR cur = NULL;
-    IPTR f = 0;
-    char name[UA_PATHMAX];
-    size_t n;
-    GetAttr(MUIA_String_Contents, s_kname, (IPTR *)&cur);
-    GetAttr(MUIA_Cycle_Active, c_kfmt, &f);
-    snprintf(name, sizeof(name), "%s", cur ? (char *)cur : "");
-    n = strlen(name);
-    if (n > 7 && !strcasecmp(name + n - 7, ".tar.gz"))
-        name[n - 7] = 0;
-    else if (n > 4 && (!strcasecmp(name + n - 4, ".zip") || !strcasecmp(name + n - 4, ".tgz")))
-        name[n - 4] = 0;
-    else if (n > 3 && !strcasecmp(name + n - 3, ".7z"))
-        name[n - 3] = 0;
-    strncat(name, pack_ext((int)f), sizeof(name) - strlen(name) - 1);
-    SetAttrs(s_kname, MUIA_String_Contents, (IPTR)name, TAG_DONE);
-    /* Settings the format has: gzip cannot store without compressing. */
-    SetAttrs(c_klevel, MUIA_ShowMe, f != 1, TAG_DONE);
-    SetAttrs(c_klevel3, MUIA_ShowMe, f == 1, TAG_DONE);
+    return f == 0 ? 4 : 3;
 }
 
-/* Show what would be packed and where; nothing happens before "Pack". The
- * items become the window's; archives among them are packed as files. */
-static void pack_intent(char **items, int n)
+static int cur_fmt(void)
 {
-    char name[UA_PATHMAX], list[400] = "";
-    int i, archives = 0;
-    if (job) {
+    IPTR v = 0;
+    GetAttr(MUIA_Cycle_Active, c_packfmt, &v);
+    return v > 2 ? 0 : (int)v;
+}
+
+static void start_show_level(void)
+{
+    int f = cur_fmt();
+    settext(t_level, "Compression: \33b%s", lvl_names[f][pf_level[f]]);
+}
+
+/* The start window follows the format: the drop text, the level slider's
+ * range and position. */
+static void start_format_changed(void)
+{
+    int f = cur_fmt();
+    static const char *const fname[3] = { "ZIP", "tar.gz", "7z" };
+    settext(t_drop, "\n\n\33bDrop files or drawers here to pack them as %s\33n\n"
+            "Drop an archive to extract it\n\n", fname[f]);
+    SetAttrs(sl_level, MUIA_NoNotify, TRUE, MUIA_Numeric_Max, lvl_count(f) - 1,
+             MUIA_Numeric_Value, pf_level[f], TAG_DONE);
+    start_show_level();
+}
+
+static void start_show_where(void)
+{
+    if (pf_pack_where == 2 && pf_pack_dir[0])
+        settext(t_where, "Archives are saved in %s.", pf_pack_dir);
+    else if (pf_pack_where == 1)
+        settext(t_where, "You choose where each archive is saved.");
+    else
+        settext(t_where, "Archives are saved next to the items.");
+}
+
+/* The name of a volume or assign ("Work" for "Work:"), or the last part. */
+static void item_name(const char *path, char *out, size_t n)
+{
+    const char *leaf = leafname(path);
+    if (*leaf) {
+        snprintf(out, n, "%s", leaf);
+        return;
+    }
+    {
+        const char *c = strchr(path, ':');
+        snprintf(out, n, "%.*s", c ? (int)(c - path) : (int)strlen(path), path);
+    }
+    if (!out[0])
+        snprintf(out, n, "Archive");
+}
+
+static int path_exists(const char *path)
+{
+    BPTR l = Lock((STRPTR)path, SHARED_LOCK);
+    if (l)
+        UnLock(l);
+    return l != BNULL;
+}
+
+/* "dir/base 2.ext", "dir/base 3.ext" ...: the first name that is free. */
+static int free_name(const char *dir, const char *base, const char *ext, char *out, size_t n)
+{
+    int i;
+    for (i = 2; i < 100; i++) {
+        char leaf[300];
+        snprintf(leaf, sizeof(leaf), "%s %d%s", base, i, ext);
+        snprintf(out, n, "%s", dir);
+        if (!AddPart((STRPTR)out, (STRPTR)leaf, n))
+            return 0;
+        if (!path_exists(out))
+            return 1;
+    }
+    return 0;
+}
+
+static int ask_save(const char *dir, const char *leaf, char *out, size_t n)
+{
+    struct FileRequester *fr;
+    int ok = 0;
+    fr = MUI_AllocAslRequestTags(ASL_FileRequest, ASLFR_TitleText, (IPTR)"Save the archive as",
+                                 ASLFR_DoSaveMode, TRUE, ASLFR_InitialDrawer, (IPTR)dir,
+                                 ASLFR_InitialFile, (IPTR)leaf, TAG_DONE);
+    if (!fr)
+        return 0;
+    if (MUI_AslRequestTags(fr, TAG_DONE) && fr->fr_File[0]) {
+        snprintf(out, n, "%s", fr->fr_Drawer);
+        ok = AddPart((STRPTR)out, fr->fr_File, n) != 0;
+    }
+    MUI_FreeAslRequest(fr);
+    return ok;
+}
+
+/* Where the archive for these items goes. 0 when the user cancelled; *replace
+ * set when an existing archive of that name may be replaced. */
+static int pack_target(char **items, int n, int fmt, char *out, size_t on, int *replace)
+{
+    char dir[UA_PATHMAX], base[256], leaf[300], parent[UA_PATHMAX];
+    const char *ext = pack_ext(fmt);
+    *replace = 0;
+    archive_drawer(items[0], parent, sizeof(parent));
+    if (n == 1)
+        item_name(items[0], base, sizeof(base));
+    else if (pf_name_drawer && parent[0])
+        item_name(parent, base, sizeof(base));
+    else
+        snprintf(base, sizeof(base), "Archive");
+    snprintf(leaf, sizeof(leaf), "%s%s", base, ext);
+    if (pf_pack_where == 2 && pf_pack_dir[0])
+        snprintf(dir, sizeof(dir), "%s", pf_pack_dir);
+    else
+        snprintf(dir, sizeof(dir), "%s", parent[0] ? parent : "RAM:");
+    if (pf_pack_where == 1 || !writable(dir)) {
+        if (pf_pack_where != 1)
+            say("\"%s\" cannot be written.\nChoose where to save the archive.", dir);
+        if (!ask_save(writable(dir) ? dir : "RAM:", leaf, out, on))
+            return 0;
+    } else {
+        snprintf(out, on, "%s", dir);
+        if (!AddPart((STRPTR)out, (STRPTR)leaf, on))
+            return 0;
+    }
+    if (path_exists(out)) {
+        char alt[UA_PATHMAX], adir[UA_PATHMAX], abase[256], label[400];
+        const char *fp = (const char *)FilePart((STRPTR)out);
+        size_t bl = strlen(fp), el = strlen(ext);
+        snprintf(adir, sizeof(adir), "%.*s", (int)(fp - out), out);
+        /* "Work:Demo/" shown as "Work:Demo" (the name is joined back with AddPart). */
+        if (strlen(adir) > 1 && adir[strlen(adir) - 1] == '/')
+            adir[strlen(adir) - 1] = 0;
+        snprintf(abase, sizeof(abase), "%.*s", (int)(bl > el && !strcasecmp(fp + bl - el, ext) ?
+                                                      bl - el : bl), fp);
+        if (!free_name(adir, abase, ext, alt, sizeof(alt))) {
+            say("\"%s\" exists, and no free name was found next to it.", out);
+            return 0;
+        }
+        if (is_dir(out)) {
+            if (MUI_Request(app, wstart, 0, APPNAME, "*_Save as new name|_Cancel",
+                            "\"%s\" is a drawer.\nSave the archive as \"%s\"?", out,
+                            leafname(alt)) != 1)
+                return 0;
+            snprintf(out, on, "%s", alt);
+            return 1;
+        }
+        /* A new name is the first button; replacing needs its own key or a
+         * click. The old archive stays until the new one is complete. */
+        /* "*": the active button, which Return presses (mui_request.c). */
+        snprintf(label, sizeof(label), "*_Save as \"%s\"|_Replace|_Cancel", leafname(alt));
+        switch (MUI_Request(app, wstart, 0, APPNAME, label,
+                            "\"%s\" already exists in %s.\nThe old archive is removed only "
+                            "after the new one is complete.", leafname(out), adir)) {
+        case 1:
+            snprintf(out, on, "%s", alt);
+            break;
+        case 2:
+            *replace = 1;
+            break;
+        default:
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void pack_start_one(struct kreq *r);
+
+/* Start the next waiting request; after the last of several, the summary. */
+static void k_next(void)
+{
+    while (!job && kcur < nk) {
+        struct kreq *r = &kq[kcur++];
+        pack_start_one(r);
+        kreq_free(r);
+    }
+    if (!job && kcur >= nk) {
+        nk = kcur = 0;
+        if (k_total > 1) {
+            /* Two lines like any result; one line per archive in Details. */
+            settext(t_ptitle, "\33b%d archives made", k_made);
+            if (k_bad)
+                settext(t_presult, "%d with problems: see Details.\nThe others are in %s.", k_bad,
+                        k_lastdir[0] ? k_lastdir : "their drawers");
+            else
+                settext(t_presult, "Each item in its own archive, in\n%s", k_lastdir);
+            free(r_detail);
+            r_detail = strdup(k_lines);
+            SetAttrs(wprog, MUIA_Window_Title, (IPTR)APPNAME, TAG_DONE);
+            snprintf(r_root, sizeof(r_root), "%s", k_lastdir);
+            SetAttrs(b_popen, MUIA_ShowMe, TRUE, MUIA_Disabled, !k_made, TAG_DONE);
+            r_clean = k_made && !k_bad;
+        }
+    }
+}
+
+static void pack_start_one(struct kreq *r)
+{
+    char name[UA_PATHMAX];
+    uj_job *j;
+    int replace, f = cur_fmt();
+
+    if (!pack_target(r->items, r->n, f, name, sizeof(name), &replace)) {
+        k_total--;
+        return;
+    }
+    j = uj_new(UJ_PACK, name, jport);
+    if (!j) {
+        say("Not enough memory.");
+        return;
+    }
+    j->inputs = r->items;
+    j->ninputs = r->n;
+    r->items = NULL;
+    r->n = 0;
+    j->pack.fmt = f == 1 ? UA_PACK_TGZ : f == 2 ? UA_PACK_7Z : UA_PACK_ZIP;
+    j->pack.level = lvl_values[f][pf_level[f]];
+    j->pack.replace = replace;
+    if (uj_start(j) < 0) {
+        uj_free(j);
+        say("Could not start packing (not enough memory).");
+        return;
+    }
+    job = j;
+    dbg("job pack start %s fmt=%d level=%d items=%d", name, (int)j->pack.fmt, j->pack.level,
+        j->ninputs);
+    snprintf(r_archive, sizeof(r_archive), "%s", name);
+    r_from_browser = 0;
+    prog_closing = 0;
+    prog_reset(r_archive, "");
+    if (k_total > 1)
+        settext(t_ptitle, "Packing \33b%s\33n (%d of %d)", leafname(r_archive), kcur, k_total);
+    else
+        settext(t_ptitle, "Packing \33b%s", leafname(r_archive));
+    settext(t_pto, "Into: %s", r_archive);
+    /* No total is known before the end (nothing is scanned first): activity,
+     * files and bytes instead of a percentage. */
+    SetAttrs(g_gauge, MUIA_ShowMe, FALSE, TAG_DONE);
+    if (g_busy)
+        SetAttrs(g_busy, MUIA_ShowMe, TRUE, TAG_DONE);
+}
+
+/* Pack what was dropped or chosen. Names that do not exist are dropped
+ * first (they would make an empty archive). The items become the requests'. */
+static void pack_now(char **items, int n)
+{
+    int i;
+    if (job || nk) {
         say("Unarc is busy with another job. Wait for it to finish, or cancel it.");
         for (i = 0; i < n; i++)
             free(items[i]);
         free(items);
         return;
     }
-    /* Names that do not exist are not packed (and would make an empty
-     * archive): say which, and go on with the rest. */
     {
         char missing[300] = "";
         int kept = 0, gone = 0;
         for (i = 0; i < n; i++) {
-            BPTR l = Lock((STRPTR)items[i], SHARED_LOCK);
-            if (l) {
-                UnLock(l);
+            if (path_exists(items[i])) {
                 items[kept++] = items[i];
                 continue;
             }
@@ -1549,92 +1924,30 @@ static void pack_intent(char **items, int n)
             return;
         }
     }
-    k_clear();
-    k_items = items;
-    k_n = n;
-    for (i = 0; i < n; i++) {
-        if (is_archive(items[i]))
-            archives++;
-        if (i < 4)
-            snprintf(list + strlen(list), sizeof(list) - strlen(list), "%s%s", i ? ", " : "",
-                     leafname(items[i]));
-    }
-    if (n > 4)
-        snprintf(list + strlen(list), sizeof(list) - strlen(list), " and %d more", n - 4);
-    settext(t_kitems, "Pack %d item%s: %s", n, n == 1 ? "" : "s", list);
-    settext(t_knote, "%s", archives ? "Archives among them are packed as they are, as files." : "");
-    SetAttrs(t_knote, MUIA_ShowMe, archives != 0, TAG_DONE);
-    /* Next to the first item, named after it (or "Archive" for several). */
-    archive_drawer(items[0], name, sizeof(name));
-    if (!name[0] || !writable(name))
-        snprintf(name, sizeof(name), "RAM:");
-    AddPart(name, n == 1 ? (STRPTR)leafname(items[0]) : (STRPTR)"Archive", sizeof(name));
-    SetAttrs(c_kfmt, MUIA_NoNotify, TRUE, MUIA_Cycle_Active, packfmt_pref, TAG_DONE);
-    SetAttrs(s_kname, MUIA_String_Contents, (IPTR)name, TAG_DONE);
-    k_fix_ext();
-    open_win(wpack, 1);
-}
-
-static void pack_go(void)
-{
-    STRPTR cur = NULL;
-    IPTR f = 0, lv = 0;
-    char name[UA_PATHMAX];
-    uj_job *j;
-    BPTR x;
-    int replace = 0;
-    static const int levels[] = { -1, 1, 9, 0 };
-
-    if (job) {
-        say("Unarc is busy with another job. Wait for it to finish, or cancel it.");
-        return;
-    }
-    GetAttr(MUIA_String_Contents, s_kname, (IPTR *)&cur);
-    GetAttr(MUIA_Cycle_Active, c_kfmt, &f);
-    GetAttr(MUIA_Cycle_Active, f == 1 ? c_klevel3 : c_klevel, &lv);
-    snprintf(name, sizeof(name), "%s", cur ? (char *)cur : "");
-    if (!name[0] || !k_n)
-        return;
-    if ((x = Lock(name, SHARED_LOCK))) {
-        UnLock(x);
-        if (is_dir(name)) {
-            say("\"%s\" is a drawer. Give the archive a file name.", name);
-            return;
+    nk = kcur = 0;
+    k_made = k_bad = 0;
+    k_lines[0] = 0;
+    k_lastdir[0] = 0;
+    if (pf_separate && n > 1) {
+        for (i = 0; i < n; i++) {
+            if (nk < KMAX && (kq[nk].items = malloc(sizeof(char *)))) {
+                kq[nk].items[0] = items[i];
+                kq[nk].n = 1;
+                nk++;
+            } else {
+                free(items[i]);
+            }
         }
-        if (MUI_Request(app, wpack, 0, APPNAME, "_Replace|_Cancel",
-                        "\"%s\" already exists.\nReplace it with the new archive?", name) != 1)
-            return;
-        replace = 1;
+        free(items);
+        if (n > KMAX)
+            say("Only %d archives are made in one go; %d items were left out.", KMAX, n - KMAX);
+    } else {
+        kq[0].items = items;
+        kq[0].n = n;
+        nk = 1;
     }
-    j = uj_new(UJ_PACK, name, jport);
-    if (!j) {
-        say("Not enough memory.");
-        return;
-    }
-    j->inputs = k_items;
-    j->ninputs = k_n;
-    k_items = NULL;
-    k_n = 0;
-    j->pack.fmt = f == 1 ? UA_PACK_TGZ : f == 2 ? UA_PACK_7Z : UA_PACK_ZIP;
-    j->pack.level = levels[lv < 4 ? lv : 0];
-    if (f == 1 && j->pack.level == 0)
-        j->pack.level = 1;
-    j->pack.replace = replace;
-    if (uj_start(j) < 0) {
-        uj_free(j);
-        say("Could not start packing (not enough memory).");
-        return;
-    }
-    job = j;
-    dbg("job pack start %s fmt=%d level=%d items=%d", name, (int)j->pack.fmt, j->pack.level,
-        j->ninputs);
-    open_win(wpack, 0);
-    snprintf(r_archive, sizeof(r_archive), "%s", name);
-    r_from_browser = 0;
-    prog_closing = 0;
-    prog_reset(r_archive, "");
-    settext(t_ptitle, "Packing \33b%s", leafname(r_archive));
-    settext(t_pto, "Into: %s", r_archive);
+    k_total = nk;
+    k_next();
 }
 
 static void pack_done(uj_job *j)
@@ -1690,36 +2003,65 @@ static void pack_done(uj_job *j)
     SetAttrs(b_pdetails, MUIA_ShowMe, TRUE, TAG_DONE);
     SetAttrs(b_popen, MUIA_ShowMe, TRUE, MUIA_Disabled, j->extract_rc < 0 || !r_root[0], TAG_DONE);
     SetAttrs(b_precover, MUIA_ShowMe, FALSE, TAG_DONE);
+    if (g_busy)
+        SetAttrs(g_busy, MUIA_ShowMe, FALSE, TAG_DONE);
+    snprintf(r_head, sizeof(r_head), "%s", head);
+    r_clean = j->extract_rc == 0 && !r->errors && !r->skipped && !r->kept[0];
+    if (j->extract_rc == 0)
+        k_made++;
+    if (j->extract_rc < 0 || r->errors || r->kept[0])
+        k_bad++;
+    if (j->extract_rc == 0)
+        snprintf(k_lastdir, sizeof(k_lastdir), "%s", r_root);
+    if (k_total > 1)
+        snprintf(k_lines + strlen(k_lines), sizeof(k_lines) - strlen(k_lines), "%s%s: %s",
+                 k_lines[0] ? "\n" : "", leafname(j->archive), head);
+    /* Cancel stops the whole run, not only this archive. */
+    if (r->cancelled)
+        while (kcur < nk)
+            kreq_free(&kq[kcur++]);
 }
 
 /* Requesters: the way to pack without dragging anything. */
-static void pack_pick(int drawers)
+static void pack_pick(void)
 {
     struct FileRequester *fr;
     char **items = NULL;
     int n = 0;
+    /* One requester for files and drawers: the files chosen in a drawer, or
+     * with none chosen, the drawer itself. */
     fr = MUI_AllocAslRequestTags(ASL_FileRequest,
-                                 ASLFR_TitleText, (IPTR)(drawers ? "Pack drawer" : "Pack files"),
-                                 ASLFR_DoMultiSelect, !drawers, ASLFR_DrawersOnly, drawers,
-                                 TAG_DONE);
+                                 ASLFR_TitleText,
+                                 (IPTR)"Pack: choose files, or OK in a drawer to pack all of it",
+                                 ASLFR_DoMultiSelect, TRUE, TAG_DONE);
     if (!fr)
         return;
     if (MUI_AslRequestTags(fr, TAG_DONE)) {
-        LONG i, cnt = drawers ? 1 : (fr->fr_NumArgs ? fr->fr_NumArgs : (fr->fr_File[0] ? 1 : 0));
+        LONG i, cnt = fr->fr_NumArgs ? fr->fr_NumArgs : (fr->fr_File[0] ? 1 : 0);
         items = calloc(cnt ? cnt : 1, sizeof(char *));
+        if (items && !cnt && fr->fr_Drawer[0]) {
+            /* The drawer itself, by its full name. */
+            char p[UA_PATHMAX];
+            BPTR l = Lock(fr->fr_Drawer, SHARED_LOCK);
+            if (l && NameFromLock(l, p, sizeof(p)))
+                items[n++] = strdup(p);
+            else
+                items[n++] = strdup((char *)fr->fr_Drawer);
+            if (l)
+                UnLock(l);
+        }
         for (i = 0; items && i < cnt; i++) {
             char p[UA_PATHMAX];
             snprintf(p, sizeof(p), "%s", fr->fr_Drawer);
-            if (!drawers)
-                AddPart(p, fr->fr_NumArgs ? (STRPTR)fr->fr_ArgList[i].wa_Name : fr->fr_File,
-                        sizeof(p));
+            AddPart((STRPTR)p, fr->fr_NumArgs ? (STRPTR)fr->fr_ArgList[i].wa_Name : fr->fr_File,
+                    sizeof(p));
             if (p[0] && (items[n] = strdup(p)))
                 n++;
         }
     }
     MUI_FreeAslRequest(fr);
     if (n)
-        pack_intent(items, n);
+        pack_now(items, n);
     else
         free(items);
 }
@@ -1794,7 +2136,7 @@ static void handle_drop(void)
                 dropped[i] = NULL;
             }
         if (n)
-            pack_intent(items, n);
+            pack_now(items, n);
         else
             free(items);
     }
@@ -1811,10 +2153,17 @@ static Object *button(const char *label)
     return o;
 }
 
-static const char *onopen_labels[] = { "Extract", "Show contents", NULL };
+static const char *onopen_labels[] = { "Extract next to the archive", "Show their contents", NULL };
 static const char *packfmt_labels[] = { "ZIP", "tar.gz", "7z", NULL };
-static const char *level_labels[] = { "Normal", "Fast", "Best", "None (store only)", NULL };
-static const char *level3_labels[] = { "Normal", "Fast", "Best", NULL };
+static const char *reg_titles[] = { "General", "Packing", "Extracting", NULL };
+static const char *start_labels[] = { "The pack window", "A requester to open an archive", NULL };
+static const char *packwhere_labels[] = { "Next to the items", "Ask each time", "In this drawer:",
+                                          NULL };
+static const char *name_labels[] = { "After the drawer they are in", "Archive", NULL };
+static const char *exwhere_labels[] = { "Next to the archive", "Ask each time", "In this drawer:",
+                                        NULL };
+static const char *newdir_labels[] = { "When the archive needs one", "Never", NULL };
+static const char *exists_labels[] = { "Ask", "Skip the file", "Keep both", NULL };
 
 /* ------------------------------------------------------------- queue */
 
@@ -1872,6 +2221,7 @@ static void table_selected_all(void *ctx)
 
 static int build(void)
 {
+    Object *busy_child;
     static const struct zk_table_cfg tcfg = {
         /* NList sizes a column to its widest text: the name column may take
          * at most 70 % so that size and date stay in view. */
@@ -1886,6 +2236,11 @@ static int build(void)
     lvview = zk_table_new(&tcfg, &lv, NULL);
     if (!lvview)
         return 0;
+    /* Busy.mcc for work of unknown length; a program without it only misses
+     * the moving bar. */
+    g_busy = MUI_NewObject(MUIC_Busy, MUIA_Busy_Speed, MUIV_Busy_Speed_User, MUIA_ShowMe, FALSE,
+                           TAG_DONE);
+    busy_child = g_busy ? g_busy : RectangleObject, MUIA_ShowMe, FALSE, End;
     qdisplay_hook.h_Entry = (HOOKFUNC)AROS_ASMSYMNAME(qdisplay_func);
     drop_hook.h_Entry = (HOOKFUNC)AROS_ASMSYMNAME(drop_func);
 
@@ -1899,35 +2254,59 @@ static int build(void)
             MUIA_Window_ID, MAKE_ID('U','A','S','T'),
             MUIA_Window_AppWindow, TRUE,
             WindowContents, (IPTR)(VGroup,
+                Child, (IPTR)(HGroup,
+                    Child, (IPTR)LLabel1("Pack as"),
+                    Child, (IPTR)HSpace(0),
+                    Child, (IPTR)(c_packfmt = CycleObject,
+                        MUIA_Cycle_Entries, (IPTR)packfmt_labels,
+                        MUIA_ControlChar, 'f',
+                        MUIA_CycleChain, 1,
+                        /* Wide enough for every format: the window does not
+                         * change size when the format does. */
+                        MUIA_FixWidthTxt, (IPTR)"MMtar.gzMM",
+                    End),
+                End),
                 Child, (IPTR)(t_drop = TextObject,
                     TextFrame,
                     MUIA_Background, MUII_TextBack,
                     MUIA_Text_PreParse, (IPTR)"\33c",
-                    MUIA_Text_Contents, (IPTR)"\nDrop an archive here to extract it,\nor files and drawers to pack them.\n\n",
+                    /* Sized for the longest text it shows; it can grow. */
+                    MUIA_Text_Contents, (IPTR)"\n\n\33bDrop files or drawers here to pack them as "
+                        "tar.gz\33n\nDrop an archive to extract it\n\n",
+                    MUIA_Text_SetVMax, FALSE,
                 End),
+                Child, (IPTR)(VGroup,
+                    GroupFrame,
+                    Child, (IPTR)(t_level = TextObject, MUIA_Text_SetMin, FALSE, End),
+                    Child, (IPTR)(HGroup,
+                        Child, (IPTR)Label1("Faster"),
+                        Child, (IPTR)(sl_level = SliderObject,
+                            MUIA_Numeric_Min, 0,
+                            MUIA_Numeric_Max, 3,
+                            /* The level's name is shown above, not a number. */
+                            MUIA_Numeric_Format, (IPTR)" ",
+                            MUIA_CycleChain, 1,
+                        End),
+                        Child, (IPTR)Label1("Smaller"),
+                    End),
+                End),
+                Child, (IPTR)(HGroup,
+                    Child, (IPTR)(cb_separate = MUI_MakeObject(MUIO_Checkmark,
+                                                              (IPTR)"_Each item into its own archive")),
+                    Child, (IPTR)LLabel1("_Each item into its own archive"),
+                    Child, (IPTR)HSpace(0),
+                End),
+                Child, (IPTR)(t_where = TextObject, MUIA_Text_SetMin, FALSE, End),
                 Child, (IPTR)(t_startnote = TextObject,
                     MUIA_Text_PreParse, (IPTR)"\33c",
                     MUIA_Text_Contents, (IPTR)"",
+                    MUIA_Text_SetMin, FALSE,
                 End),
                 Child, (IPTR)(HGroup,
                     Child, (IPTR)(b_open = button("_Open archive...")),
-                    Child, (IPTR)(b_extract = button("_Extract archive...")),
-                End),
-                Child, (IPTR)(HGroup,
-                    Child, (IPTR)Label1("Pack as"),
-                    Child, (IPTR)(c_packfmt = CycleObject,
-                        MUIA_Cycle_Entries, (IPTR)packfmt_labels,
-                        MUIA_CycleChain, 1,
-                    End),
-                    Child, (IPTR)(b_pack = button("_Pack files...")),
-                    Child, (IPTR)(b_packdir = button("Pack _drawer...")),
-                End),
-                Child, (IPTR)(HGroup,
-                    Child, (IPTR)Label1("Double-clicked archives:"),
-                    Child, (IPTR)(c_onopen = CycleObject,
-                        MUIA_Cycle_Entries, (IPTR)onopen_labels,
-                        MUIA_CycleChain, 1,
-                    End),
+                    Child, (IPTR)(b_pack = button("_Pack...")),
+                    Child, (IPTR)HSpace(0),
+                    Child, (IPTR)(b_settings = button("Se_ttings...")),
                 End),
             End),
         End),
@@ -2009,6 +2388,7 @@ static int build(void)
                     MUIA_Gauge_Max, 100,
                     MUIA_FixHeightTxt, (IPTR)"0",
                 End),
+                Child, (IPTR)busy_child,
                 Child, (IPTR)(t_pcount = TextObject, MUIA_Text_SetMin, FALSE, End),
                 Child, (IPTR)(t_presult = TextObject, MUIA_Text_SetMin, FALSE, End),
                 Child, (IPTR)(lq = ListviewObject,
@@ -2055,60 +2435,107 @@ static int build(void)
                     Child, (IPTR)HSpace(0),
                 End),
                 Child, (IPTR)(HGroup,
-                    Child, (IPTR)(b_arep = button("_Replace")),
-                    Child, (IPTR)(b_akeep = button("_Keep both")),
-                    Child, (IPTR)(b_askip = button("_Skip")),
+                    Child, (IPTR)(b_acancel = button("S_top")),
                     Child, (IPTR)HSpace(0),
-                    Child, (IPTR)(b_acancel = button("_Cancel")),
+                    Child, (IPTR)(b_akeep = button("_Keep both")),
+                    Child, (IPTR)(b_arep = button("_Replace")),
+                    Child, (IPTR)(b_askip = button("_Skip")),
                 End),
             End),
         End),
-        SubWindow, (IPTR)(wpack = WindowObject,
-            MUIA_Window_Title, (IPTR)"Pack",
-            MUIA_Window_ID, MAKE_ID('U','A','P','K'),
-            MUIA_Window_Width, MUIV_Window_Width_Screen(40),
+        SubWindow, (IPTR)(wsettings = WindowObject,
+            MUIA_Window_Title, (IPTR)"Unarc settings",
+            MUIA_Window_ID, MAKE_ID('U','A','S','E'),
             WindowContents, (IPTR)(VGroup,
-                Child, (IPTR)(t_kitems = TextObject, MUIA_Text_SetMin, FALSE, End),
-                Child, (IPTR)(t_knote = TextObject, MUIA_Text_SetMin, FALSE, End),
-                Child, (IPTR)(ColGroup(2),
-                    Child, (IPTR)Label2("_Archive"),
-                    Child, (IPTR)(PopaslObject,
-                        MUIA_Popstring_String, (IPTR)(s_kname = StringObject,
-                            StringFrame,
-                            MUIA_String_MaxLen, UA_PATHMAX,
-                            MUIA_ControlChar, 'a',
-                            MUIA_CycleChain, 1,
+                Child, (IPTR)(RegisterGroup(reg_titles),
+                    MUIA_CycleChain, 1,
+                    Child, (IPTR)(VGroup,
+                        Child, (IPTR)(ColGroup(2),
+                            Child, (IPTR)Label1("At start, show"),
+                            Child, (IPTR)(c_sstart = CycleObject,
+                                MUIA_Cycle_Entries, (IPTR)start_labels, MUIA_CycleChain, 1, End),
+                            Child, (IPTR)Label1("Double-clicked archives"),
+                            Child, (IPTR)(c_sopen = CycleObject,
+                                MUIA_Cycle_Entries, (IPTR)onopen_labels, MUIA_CycleChain, 1, End),
                         End),
-                        MUIA_Popstring_Button, (IPTR)PopButton(MUII_PopFile),
-                        MUIA_Popasl_Type, ASL_FileRequest,
-                        ASLFR_DoSaveMode, TRUE,
-                        ASLFR_TitleText, (IPTR)"Archive name",
+                        Child, (IPTR)(VGroup,
+                            GroupFrameT("When a job ends"),
+                            Child, (IPTR)(HGroup,
+                                Child, (IPTR)(cb_sopendir = MUI_MakeObject(MUIO_Checkmark,
+                                    (IPTR)"_Open the drawer with the result")),
+                                Child, (IPTR)LLabel1("_Open the drawer with the result"),
+                                Child, (IPTR)HSpace(0),
+                            End),
+                            Child, (IPTR)(HGroup,
+                                Child, (IPTR)(cb_sclose = MUI_MakeObject(MUIO_Checkmark,
+                                    (IPTR)"_Close the result when there is nothing to report")),
+                                Child, (IPTR)LLabel1("_Close the result when there is nothing to report"),
+                                Child, (IPTR)HSpace(0),
+                            End),
+                            Child, (IPTR)(TextObject,
+                                MUIA_Text_Contents, (IPTR)"Both only after a job without problems; "
+                                    "warnings and errors always stay open.",
+                                MUIA_Text_SetMin, FALSE,
+                            End),
+                        End),
+                        Child, (IPTR)VSpace(0),
                     End),
-                    Child, (IPTR)Label1("_Format"),
-                    Child, (IPTR)(c_kfmt = CycleObject,
-                        MUIA_Cycle_Entries, (IPTR)packfmt_labels,
-                        MUIA_ControlChar, 'f',
-                        MUIA_CycleChain, 1,
+                    Child, (IPTR)(VGroup,
+                        Child, (IPTR)(ColGroup(2),
+                            Child, (IPTR)Label1("Save archives"),
+                            Child, (IPTR)(c_spackwhere = CycleObject,
+                                MUIA_Cycle_Entries, (IPTR)packwhere_labels, MUIA_CycleChain, 1, End),
+                            Child, (IPTR)HSpace(0),
+                            Child, (IPTR)(p_spackdir = PopaslObject,
+                                MUIA_Popstring_String, (IPTR)(s_spackdir = StringObject,
+                                    StringFrame, MUIA_String_MaxLen, UA_PATHMAX, MUIA_CycleChain, 1,
+                                End),
+                                MUIA_Popstring_Button, (IPTR)PopButton(MUII_PopDrawer),
+                                MUIA_Popasl_Type, ASL_FileRequest,
+                                ASLFR_DrawersOnly, TRUE,
+                                ASLFR_TitleText, (IPTR)"Save archives in",
+                            End),
+                            Child, (IPTR)Label1("Name of several items"),
+                            Child, (IPTR)(c_sname = CycleObject,
+                                MUIA_Cycle_Entries, (IPTR)name_labels, MUIA_CycleChain, 1, End),
+                        End),
+                        Child, (IPTR)VSpace(0),
                     End),
-                    Child, (IPTR)Label1("_Compression"),
-                    Child, (IPTR)(HGroup,
-                        Child, (IPTR)(c_klevel = CycleObject,
-                            MUIA_Cycle_Entries, (IPTR)level_labels,
-                            MUIA_ControlChar, 'c',
-                            MUIA_CycleChain, 1,
+                    Child, (IPTR)(VGroup,
+                        Child, (IPTR)(ColGroup(2),
+                            Child, (IPTR)Label1("Extract to"),
+                            Child, (IPTR)(c_sexwhere = CycleObject,
+                                MUIA_Cycle_Entries, (IPTR)exwhere_labels, MUIA_CycleChain, 1, End),
+                            Child, (IPTR)HSpace(0),
+                            Child, (IPTR)(p_sexdir = PopaslObject,
+                                MUIA_Popstring_String, (IPTR)(s_sexdir = StringObject,
+                                    StringFrame, MUIA_String_MaxLen, UA_PATHMAX, MUIA_CycleChain, 1,
+                                End),
+                                MUIA_Popstring_Button, (IPTR)PopButton(MUII_PopDrawer),
+                                MUIA_Popasl_Type, ASL_FileRequest,
+                                ASLFR_DrawersOnly, TRUE,
+                                ASLFR_TitleText, (IPTR)"Extract to",
+                            End),
+                            Child, (IPTR)Label1("New drawer"),
+                            Child, (IPTR)(c_snewdir = CycleObject,
+                                MUIA_Cycle_Entries, (IPTR)newdir_labels, MUIA_CycleChain, 1, End),
+                            Child, (IPTR)Label1("When a file exists"),
+                            Child, (IPTR)(c_sexists = CycleObject,
+                                MUIA_Cycle_Entries, (IPTR)exists_labels, MUIA_CycleChain, 1, End),
                         End),
-                        /* gzip has no "store only": a shorter list for tar.gz. */
-                        Child, (IPTR)(c_klevel3 = CycleObject,
-                            MUIA_Cycle_Entries, (IPTR)level3_labels,
-                            MUIA_CycleChain, 1,
-                            MUIA_ShowMe, FALSE,
+                        Child, (IPTR)(TextObject,
+                            MUIA_Text_Contents, (IPTR)"Files on disk are never replaced without "
+                                "asking.",
+                            MUIA_Text_SetMin, FALSE,
                         End),
+                        Child, (IPTR)VSpace(0),
                     End),
                 End),
                 Child, (IPTR)(HGroup,
-                    Child, (IPTR)(b_kgo = button("_Pack")),
+                    Child, (IPTR)(b_ssave = button("_Save")),
+                    Child, (IPTR)(b_suse = button("_Use")),
                     Child, (IPTR)HSpace(0),
-                    Child, (IPTR)(b_kcancel = button("Ca_ncel")),
+                    Child, (IPTR)(b_scancel = button("_Cancel")),
                 End),
             End),
         End),
@@ -2135,7 +2562,8 @@ static int build(void)
 static void notify(void)
 {
     struct { Object *o; ULONG id; } press[] = {
-        { b_open, ID_OPEN }, { b_extract, ID_EXTRACT_ASK },
+        { b_open, ID_OPEN }, { b_pack, ID_PACK_FILES }, { b_settings, ID_SETTINGS },
+        { b_ssave, ID_S_SAVE }, { b_suse, ID_S_USE }, { b_scancel, ID_S_CANCEL },
         { b_exsel, ID_B_EXSEL }, { b_exall, ID_B_EXALL }, { b_info, ID_B_INFO },
         { b_bclose, ID_B_CLOSE }, { b_brecover, ID_B_RECOVER },
         { b_pcancel, ID_P_CANCEL }, { b_popen, ID_P_OPENDIR }, { b_pdetails, ID_P_DETAILS },
@@ -2163,13 +2591,11 @@ static void notify(void)
              MUIM_Application_ReturnID, ID_Q_CANCELALL);
     DoMethod(lq, MUIM_Notify, MUIA_List_Active, MUIV_EveryTime, (IPTR)app, 2,
              MUIM_Application_ReturnID, ID_Q_ACTIVE);
-    DoMethod(c_onopen, MUIM_Notify, MUIA_Cycle_Active, MUIV_EveryTime, (IPTR)app, 2,
-             MUIM_Application_ReturnID, ID_ONOPEN);
     DoMethod(cb_newfolder, MUIM_Notify, MUIA_Selected, MUIV_EveryTime, (IPTR)app, 2,
              MUIM_Application_ReturnID, ID_B_REPLAN);
     DoMethod(s_to, MUIM_Notify, MUIA_String_Acknowledge, MUIV_EveryTime, (IPTR)app, 2,
              MUIM_Application_ReturnID, ID_B_REPLAN);
-    SetAttrs(cb_newfolder, MUIA_Selected, TRUE, MUIA_CycleChain, 1, TAG_DONE);
+    SetAttrs(cb_newfolder, MUIA_Selected, pf_ex_newdir, MUIA_CycleChain, 1, TAG_DONE);
     DoMethod(s_find, MUIM_Notify, MUIA_String_Contents, MUIV_EveryTime, (IPTR)app, 2,
              MUIM_Application_ReturnID, ID_B_FIND);
     DoMethod(lv, MUIM_Notify, MUIA_NList_SelectChange, TRUE, (IPTR)app, 2,
@@ -2178,23 +2604,100 @@ static void notify(void)
              MUIM_Application_ReturnID, ID_B_ACTIVE);
     DoMethod(wstart, MUIM_Notify, MUIA_AppMessage, MUIV_EveryTime, (IPTR)wstart, 3,
              MUIM_CallHook, (IPTR)&drop_hook, MUIV_TriggerValue);
-    SetAttrs(c_onopen, MUIA_NoNotify, TRUE, MUIA_Cycle_Active, onopen_browse, TAG_DONE);
-    {
-        struct { Object *o; ULONG id; } more[] = {
-            { b_pack, ID_PACK_FILES }, { b_packdir, ID_PACK_DRAWER },
-            { b_kgo, ID_K_GO }, { b_kcancel, ID_K_CANCEL },
-        };
-        for (i = 0; i < sizeof(more) / sizeof(more[0]); i++)
-            DoMethod(more[i].o, MUIM_Notify, MUIA_Pressed, FALSE, (IPTR)app, 2,
-                     MUIM_Application_ReturnID, more[i].id);
-    }
-    DoMethod(c_kfmt, MUIM_Notify, MUIA_Cycle_Active, MUIV_EveryTime, (IPTR)app, 2,
-             MUIM_Application_ReturnID, ID_K_FMT);
     DoMethod(c_packfmt, MUIM_Notify, MUIA_Cycle_Active, MUIV_EveryTime, (IPTR)app, 2,
              MUIM_Application_ReturnID, ID_PACKFMT);
-    DoMethod(wpack, MUIM_Notify, MUIA_Window_CloseRequest, TRUE, (IPTR)app, 2,
-             MUIM_Application_ReturnID, ID_K_CANCEL);
+    DoMethod(sl_level, MUIM_Notify, MUIA_Numeric_Value, MUIV_EveryTime, (IPTR)app, 2,
+             MUIM_Application_ReturnID, ID_LEVEL);
+    DoMethod(cb_separate, MUIM_Notify, MUIA_Selected, MUIV_EveryTime, (IPTR)app, 2,
+             MUIM_Application_ReturnID, ID_SEPARATE);
+    DoMethod(c_spackwhere, MUIM_Notify, MUIA_Cycle_Active, MUIV_EveryTime, (IPTR)app, 2,
+             MUIM_Application_ReturnID, ID_S_WHERE);
+    DoMethod(c_sexwhere, MUIM_Notify, MUIA_Cycle_Active, MUIV_EveryTime, (IPTR)app, 2,
+             MUIM_Application_ReturnID, ID_S_WHERE);
+    DoMethod(wsettings, MUIM_Notify, MUIA_Window_CloseRequest, TRUE, (IPTR)app, 2,
+             MUIM_Application_ReturnID, ID_S_CANCEL);
     SetAttrs(c_packfmt, MUIA_NoNotify, TRUE, MUIA_Cycle_Active, packfmt_pref, TAG_DONE);
+    SetAttrs(cb_separate, MUIA_NoNotify, TRUE, MUIA_Selected, pf_separate, MUIA_CycleChain, 1,
+             TAG_DONE);
+    start_format_changed();
+    start_show_where();
+}
+
+/* ------------------------------------------------------------- settings */
+
+static void settings_where_changed(void)
+{
+    IPTR p = 0, e = 0;
+    GetAttr(MUIA_Cycle_Active, c_spackwhere, &p);
+    GetAttr(MUIA_Cycle_Active, c_sexwhere, &e);
+    SetAttrs(p_spackdir, MUIA_Disabled, p != 2, TAG_DONE);
+    SetAttrs(p_sexdir, MUIA_Disabled, e != 2, TAG_DONE);
+}
+
+static void settings_show(void)
+{
+    SetAttrs(c_sstart, MUIA_Cycle_Active, pf_start_open, TAG_DONE);
+    SetAttrs(c_sopen, MUIA_Cycle_Active, onopen_browse, TAG_DONE);
+    SetAttrs(cb_sopendir, MUIA_Selected, pf_open_after, TAG_DONE);
+    SetAttrs(cb_sclose, MUIA_Selected, pf_close_after, TAG_DONE);
+    SetAttrs(c_spackwhere, MUIA_NoNotify, TRUE, MUIA_Cycle_Active, pf_pack_where, TAG_DONE);
+    SetAttrs(s_spackdir, MUIA_String_Contents, (IPTR)pf_pack_dir, TAG_DONE);
+    SetAttrs(c_sname, MUIA_Cycle_Active, pf_name_drawer ? 0 : 1, TAG_DONE);
+    SetAttrs(c_sexwhere, MUIA_NoNotify, TRUE, MUIA_Cycle_Active, pf_ex_where, TAG_DONE);
+    SetAttrs(s_sexdir, MUIA_String_Contents, (IPTR)pf_ex_dir, TAG_DONE);
+    SetAttrs(c_snewdir, MUIA_Cycle_Active, pf_ex_newdir ? 0 : 1, TAG_DONE);
+    SetAttrs(c_sexists, MUIA_Cycle_Active, pf_ex_exists, TAG_DONE);
+    settings_where_changed();
+    open_win(wsettings, 1);
+}
+
+static int cycle_of(Object *o)
+{
+    IPTR v = 0;
+    GetAttr(MUIA_Cycle_Active, o, &v);
+    return (int)v;
+}
+
+/* keep: "Save" (survives a reboot) rather than "Use". */
+static void settings_take(int keep)
+{
+    STRPTR s = NULL;
+    IPTR v = 0;
+    pf_start_open = cycle_of(c_sstart);
+    onopen_browse = cycle_of(c_sopen) == 1;
+    GetAttr(MUIA_Selected, cb_sopendir, &v);
+    pf_open_after = v != 0;
+    GetAttr(MUIA_Selected, cb_sclose, &v);
+    pf_close_after = v != 0;
+    pf_pack_where = cycle_of(c_spackwhere);
+    GetAttr(MUIA_String_Contents, s_spackdir, (IPTR *)&s);
+    snprintf(pf_pack_dir, sizeof(pf_pack_dir), "%s", s ? (char *)s : "");
+    pf_name_drawer = cycle_of(c_sname) == 0;
+    pf_ex_where = cycle_of(c_sexwhere);
+    GetAttr(MUIA_String_Contents, s_sexdir, (IPTR *)&s);
+    snprintf(pf_ex_dir, sizeof(pf_ex_dir), "%s", s ? (char *)s : "");
+    pf_ex_newdir = cycle_of(c_snewdir) == 0;
+    pf_ex_exists = cycle_of(c_sexists);
+    /* "In this drawer" with no drawer named means next to the items. */
+    if (pf_pack_where == 2 && !pf_pack_dir[0])
+        pf_pack_where = 0;
+    if (pf_ex_where == 2 && !pf_ex_dir[0])
+        pf_ex_where = 0;
+    prefs_store(keep);
+    start_show_where();
+    open_win(wsettings, 0);
+}
+
+/* After a result: what the settings ask for, only when there is nothing to
+ * report. Never for warnings or errors, and not in the middle of a queue. */
+static void result_followups(void)
+{
+    if (!r_clean || job || nk || nq > 1)
+        return;
+    if (pf_open_after && r_root[0])
+        open_folder(r_root);
+    if (pf_close_after)
+        open_win(wprog, 0);
 }
 
 static void show_details(void)
@@ -2232,11 +2735,30 @@ static void b_replan(void)
 
 /* Encrypted entries among those about to be extracted: a password first.
  * 0 when the user gave none (nothing is started). */
+/* Entries about to be written that need no password. */
+static ULONG plain_wanted(const ua_list *l)
+{
+    ULONG i, n = 0;
+    for (i = 0; i < l->n; i++)
+        if (!l->v[i].encrypted && !l->v[i].excluded && !l->v[i].skip && l->v[i].target &&
+            l->v[i].type != UA_ET_DIR)
+            n++;
+    return n;
+}
+
 static int b_password_ready(void)
 {
+    int a;
+    ULONG k;
     if (!ua_list_encrypted_wanted(&blist) || pw_of(b_archive))
         return 1;
-    return ask_password(b_archive, 0);
+    a = ask_password(b_archive, 0, plain_wanted(&blist) > 0);
+    if (a != 2)
+        return a;
+    for (k = 0; k < blist.n; k++)
+        if (blist.v[k].encrypted)
+            blist.v[k].excluded = 1;
+    return 1;
 }
 
 /* Browser: extract the selection or everything, to the folder in "To". */
@@ -2338,7 +2860,8 @@ static void b_drag_extract(void)
 
 static void quit_check(int *quit)
 {
-    if (!job && !is_open(wstart) && !is_open(wbrowse) && !is_open(wprog) && !is_open(wpack))
+    if (!job && !nk && !is_open(wstart) && !is_open(wbrowse) && !is_open(wprog) &&
+        !is_open(wsettings))
         *quit = 1;
 }
 
@@ -2447,6 +2970,11 @@ static int gui_main(int argc, char **argv)
 
     if (nargs == 0) {
         open_win(wstart, 1);
+        if (pf_start_open) {
+            char p[UA_PATHMAX];
+            if (ask_archive("Open archive", p, sizeof(p)))
+                browse(p);
+        }
     } else {
         int browse_it = mode == 1 || (mode == 0 && onopen_browse);
         if (nargs > 1 && browse_it)
@@ -2495,21 +3023,6 @@ static int gui_main(int argc, char **argv)
             char p[UA_PATHMAX];
             if (ask_archive("Open archive", p, sizeof(p)))
                 browse(p);
-        } break;
-        case ID_EXTRACT_ASK: {
-            char p[UA_PATHMAX];
-            if (ask_archive("Extract archive", p, sizeof(p))) {
-                if (is_archive(p))
-                    extract_now(p);
-                else
-                    say("\"%s\" is not an archive Unarc can read.", p);
-            }
-        } break;
-        case ID_ONOPEN: {
-            IPTR v = 0;
-            GetAttr(MUIA_Cycle_Active, c_onopen, &v);
-            onopen_browse = v == 1;
-            prefs_save();
         } break;
         case ID_START_CLOSE:
             open_win(wstart, 0);
@@ -2599,17 +3112,33 @@ static int gui_main(int argc, char **argv)
         case ID_A_SKIP:    answer(UA_CONFLICT_SKIP); break;
         case ID_A_CANCEL:  cancel_job(); break;
         case ID_D_CLOSE:   open_win(wdetail, 0); break;
-        case ID_PACK_FILES:  pack_pick(0); break;
-        case ID_PACK_DRAWER: pack_pick(1); break;
-        case ID_K_FMT:       k_fix_ext(); break;
-        case ID_K_GO:        pack_go(); break;
-        case ID_K_CANCEL:    open_win(wpack, 0); k_clear(); break;
-        case ID_PACKFMT: {
+        case ID_PACK_FILES:  pack_pick(); break;
+        case ID_PACKFMT:
+            packfmt_pref = cur_fmt();
+            start_format_changed();
+            prefs_save();
+            break;
+        case ID_LEVEL: {
             IPTR v = 0;
-            GetAttr(MUIA_Cycle_Active, c_packfmt, &v);
-            packfmt_pref = (int)v;
+            int f = cur_fmt();
+            GetAttr(MUIA_Numeric_Value, sl_level, &v);
+            if ((int)v < lvl_count(f) && (int)v != pf_level[f]) {
+                pf_level[f] = (int)v;
+                start_show_level();
+                prefs_save();
+            }
+        } break;
+        case ID_SEPARATE: {
+            IPTR v = 0;
+            GetAttr(MUIA_Selected, cb_separate, &v);
+            pf_separate = v != 0;
             prefs_save();
         } break;
+        case ID_SETTINGS:    settings_show(); break;
+        case ID_S_WHERE:     settings_where_changed(); break;
+        case ID_S_SAVE:      settings_take(1); break;
+        case ID_S_USE:       settings_take(0); break;
+        case ID_S_CANCEL:    open_win(wsettings, 0); break;
         default: break;
         }
         if (quitting) {
@@ -2661,7 +3190,8 @@ static int gui_main(int argc, char **argv)
     for (i = 0; i < nq; i++)
         free(q[i].detail);
     drops_clear();
-    k_clear();
+    while (kcur < nk)
+        kreq_free(&kq[kcur++]);
     for (i = 0; i < nargs; i++)
         free(args[i]);
     xad_static_close();

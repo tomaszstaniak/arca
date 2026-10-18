@@ -76,6 +76,8 @@ typedef struct uj_job {
     ua_volumes vols;             /* the archive's volume set, if any (the worker's) */
     char planname[UA_PATHMAX];   /* names the new folder: the set's name or the archive */
     char password[512];          /* UTF-8, "" for none; cleared by uj_free, never logged */
+    int skip_encrypted;          /* leave out encrypted entries (no password given) */
+    ULONG skipped_encrypted;     /* how many were left out */
 
     /* Results */
     int open_status;             /* UA_OPEN_* */
