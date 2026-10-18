@@ -29,7 +29,14 @@ each with a comment. Listing and extracting it:
 - with the patch, on the 2026.09 base and on AROS One 1.3: Tool came out
   "-p-rwed"; script, read-only and the comments were unchanged.
 LhA archives with the same flags were extracted identically before and
-after. Not built or run for mainline (ABIv1).
+after. Mainline (ABIv1) verification added below.
+
+Verified again on mainline ABIv1 x86_64 (2026-10-18): contrib
+d482c0907fe312bcebef38d3c94ea4818f9f7a30, GCC 10.5.0, mainline SDK,
+QEMU pool v1-1. Two static-XAD metadata probes returned 0. The LZX Tool
+changed from protection 0x10 to 0x20; all other entries, comments and
+LHA level 0/1 controls were unchanged. No system library was replaced.
+This checks metadata decoding, not the complete Unarc program on v1.
 
 Repository: contrib (https://github.com/aros-development-team/contrib)
 Base: be30bc6ad191303ca8753bd3f15e4c78b1278f57
