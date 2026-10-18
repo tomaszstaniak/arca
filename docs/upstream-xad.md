@@ -4,7 +4,7 @@ Submission target: mainline contrib. The application does not depend on acceptan
 
 ## LZX pure flag
 
-Submitted: https://github.com/aros-development-team/contrib/pull/77
+Merged 2026-10-18: https://github.com/aros-development-team/contrib/pull/77
 Branch commit: 655518fc (based on current contrib d482c090).
 
 `patches/contrib/0001-xad-LZX-store-the-pure-bit-as-FIBF_PURE.patch` changes the decoded Amiga pure flag from bit 4 (archive) to bit 5 (pure).

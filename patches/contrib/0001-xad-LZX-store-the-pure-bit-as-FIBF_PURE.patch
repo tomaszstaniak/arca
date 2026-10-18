@@ -42,7 +42,7 @@ Repository: contrib (https://github.com/aros-development-team/contrib)
 Base: be30bc6ad191303ca8753bd3f15e4c78b1278f57
 Requires: none
 Scope: all platforms that build xad; the define is not platform-specific
-Upstream-Status: submitted (https://github.com/aros-development-team/contrib/pull/77)
+Upstream-Status: accepted (https://github.com/aros-development-team/contrib/pull/77; merged 2026-10-18)
 Removal: drop when the pinned contrib base contains the fix
 ---
  workbench/libs/xad/portable/clients/LZX.c | 2 +-
