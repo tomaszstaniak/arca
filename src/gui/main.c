@@ -26,7 +26,6 @@
 #include <proto/layers.h>
 #include <clib/alib_protos.h>
 #include <mui/NList_mcc.h>
-#include <mui/Busy_mcc.h>
 #include "job.h"
 #include "zk_table.h"
 #include "../engines/xad_static.h"
@@ -50,7 +49,6 @@ static Object *t_drop, *t_startnote, *b_open, *c_packfmt, *b_pack, *b_settings, 
 static Object *wsettings, *c_sstart, *c_sopen, *cb_sopendir, *cb_sclose, *c_spackwhere,
               *s_spackdir, *p_spackdir, *c_sname, *c_sexwhere, *s_sexdir, *p_sexdir, *c_snewdir,
               *c_sexists, *b_ssave, *b_suse, *b_scancel;
-static Object *g_busy;
 static Object *cb_newfolder;
 static Object *s_find, *lv, *lvview, *t_active, *t_bstatus, *s_to, *p_to, *b_exsel, *b_exall,
               *b_info, *b_bclose, *b_brecover;
@@ -1258,9 +1256,55 @@ static void answer(LONG a)
 
 static ULONG n_progress, n_batches;
 
+/* Packing: the share of the input found while preparing, by bytes (by
+ * files when every file is empty). Below 100 until the archive is made: the
+ * result replaces the gauge then. Files that grew are packed only as far as
+ * their size then, but a count can still pass the total. */
+static ULONG pack_pct(const uj_msg *m)
+{
+    UQUAD pct;
+    if (m->total_bytes)
+        pct = m->total_bytes >= ((UQUAD)1 << 56) ? m->bytes / (m->total_bytes / 100)
+                                                 : m->bytes * 100 / m->total_bytes;
+    else if (m->total_files)
+        pct = (UQUAD)m->files * 100 / m->total_files;
+    else
+        pct = 0;
+    return pct > 99 ? 99 : (ULONG)pct;
+}
+
+static void on_pack_progress(uj_msg *m)
+{
+    char done[32], total[32];
+    if (m->phase == UA_PACK_PH_PREPARING) {
+        settext(t_pname, "Preparing... %lu file%s found", (unsigned long)m->total_files,
+                m->total_files == 1 ? "" : "s");
+        SetAttrs(g_gauge, MUIA_Gauge_Current, 0, MUIA_Gauge_InfoText, (IPTR)"", TAG_DONE);
+        sizestr(m->total_bytes, total, sizeof(total));
+        settext(t_pcount, "%s", total);
+        return;
+    }
+    if (m->phase == UA_PACK_PH_FINISHING)
+        settext(t_pname, "Finishing...");
+    else if (m->name[0])
+        settext(t_pname, "%s", m->name);
+    sizestr(m->bytes, done, sizeof(done));
+    sizestr(m->total_bytes, total, sizeof(total));
+    /* The percentage in the line below, not in the gauge: the gauge draws
+     * its text in the shine pen, which on a light background shows only
+     * over the filled part. */
+    SetAttrs(g_gauge, MUIA_Gauge_Current, pack_pct(m), MUIA_Gauge_InfoText, (IPTR)"", TAG_DONE);
+    settext(t_pcount, "%lu %%: %s of %s, %lu of %lu files", (unsigned long)pack_pct(m), done,
+            total, (unsigned long)m->files, (unsigned long)m->total_files);
+}
+
 static void on_progress(uj_msg *m)
 {
     uj_job *j = m->job;
+    if (j->kind == UJ_PACK) {
+        on_pack_progress(m);
+        return;
+    }
     if (m->reading) {
         if (j->kind == UJ_LIST)
             settext(t_bstatus, "Reading the archive... %lu entries", (unsigned long)m->listed);
@@ -1901,11 +1945,7 @@ static void pack_start_one(struct kreq *r)
     else
         settext(t_ptitle, "Packing \33b%s", leafname(r_archive));
     settext(t_pto, "Into: %s", r_archive);
-    /* No total is known before the end (nothing is scanned first): activity,
-     * files and bytes instead of a percentage. */
-    SetAttrs(g_gauge, MUIA_ShowMe, FALSE, TAG_DONE);
-    if (g_busy)
-        SetAttrs(g_busy, MUIA_ShowMe, TRUE, TAG_DONE);
+    settext(t_pname, "Preparing...");
 }
 
 /* Pack what was dropped or chosen. Names that do not exist are dropped
@@ -2024,8 +2064,6 @@ static void pack_done(uj_job *j)
     SetAttrs(b_pdetails, MUIA_ShowMe, TRUE, TAG_DONE);
     SetAttrs(b_popen, MUIA_ShowMe, TRUE, MUIA_Disabled, j->extract_rc < 0 || !r_root[0], TAG_DONE);
     SetAttrs(b_precover, MUIA_ShowMe, FALSE, TAG_DONE);
-    if (g_busy)
-        SetAttrs(g_busy, MUIA_ShowMe, FALSE, TAG_DONE);
     snprintf(r_head, sizeof(r_head), "%s", head);
     r_clean = j->extract_rc == 0 && !r->errors && !r->skipped && !r->kept[0];
     if (j->extract_rc == 0)
@@ -2242,7 +2280,6 @@ static void table_selected_all(void *ctx)
 
 static int build(void)
 {
-    Object *busy_child;
     static const struct zk_table_cfg tcfg = {
         /* NList sizes a column to its widest text: the name column may take
          * at most 70 % so that size and date stay in view. */
@@ -2257,13 +2294,6 @@ static int build(void)
     lvview = zk_table_new(&tcfg, &lv, NULL);
     if (!lvview)
         return 0;
-    /* Busy.mcc for work of unknown length; a program without it only misses
-     * the moving bar. It has no frame of its own: give it the gauge's frame
-     * and height, so it sits where the gauge was and looks like a bar. */
-    g_busy = MUI_NewObject(MUIC_Busy, MUIA_Busy_Speed, MUIV_Busy_Speed_User, MUIA_ShowMe, FALSE,
-                           MUIA_Frame, MUIV_Frame_Gauge, MUIA_FixHeightTxt, (IPTR)"0",
-                           TAG_DONE);
-    busy_child = g_busy ? g_busy : RectangleObject, MUIA_ShowMe, FALSE, End;
     qdisplay_hook.h_Entry = (HOOKFUNC)AROS_ASMSYMNAME(qdisplay_func);
     drop_hook.h_Entry = (HOOKFUNC)AROS_ASMSYMNAME(drop_func);
 
@@ -2412,7 +2442,6 @@ static int build(void)
                     MUIA_Gauge_Max, 100,
                     MUIA_FixHeightTxt, (IPTR)"0",
                 End),
-                Child, (IPTR)busy_child,
                 Child, (IPTR)(t_pcount = TextObject, MUIA_Text_SetMin, FALSE, End),
                 Child, (IPTR)(t_presult = TextObject, MUIA_Text_SetMin, FALSE, End),
                 Child, (IPTR)(lq = ListviewObject,

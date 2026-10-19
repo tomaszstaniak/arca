@@ -45,6 +45,11 @@ typedef struct pk {
     UBYTE *buf;
     BPTR anc[MAXDEPTH + 1];   /* the drawers on the current path, for cycles */
     int nanc;
+    /* LhA: the file the helper is compressing, from its indicator */
+    UQUAD lsize;              /* its size */
+    int lmarks;               /* the number of marks for all of it */
+    int lstarted;             /* its start was reported */
+    char lname[256];          /* its name, for the progress */
 } pk;
 
 static void msg(pk *p, const char *fmt, ...)
@@ -139,8 +144,72 @@ static mode_t prot_to_mode(ULONG p, int dir)
 
 /* ---- walking the inputs ---- */
 
-static int add_tree(pk *p, BPTR dir, const char *name, const char *apath, int depth,
-                    LONG seen_type);
+/* Preparing walks every input once and keeps what it finds: the list is then
+ * packed as found, and the sizes give the progress its total. Each item
+ * keeps only its own name and its depth; packing opens the drawers again one
+ * at a time, relative to each other, as the walk did. */
+typedef struct pent {
+    char *name;               /* relative to the drawer above; "" for a volume */
+    char *apath;              /* the name in the archive */
+    int depth;                /* 0 for an input */
+    int input;                /* which input it belongs to */
+    int isdir;
+    ULONG prot;
+    struct DateStamp date;
+    UQUAD size;
+} pent;
+
+typedef struct plist {
+    pent *e;
+    ULONG n, cap;
+} plist;
+
+static void plist_free(plist *l)
+{
+    ULONG i;
+    for (i = 0; i < l->n; i++) {
+        free(l->e[i].name);
+        free(l->e[i].apath);
+    }
+    free(l->e);
+    memset(l, 0, sizeof(*l));
+}
+
+static int plist_add(pk *p, plist *l, const char *name, const char *apath, int depth, int input,
+                     const struct FileInfoBlock *fib)
+{
+    pent *e;
+    if (l->n == l->cap) {
+        ULONG cap = l->cap ? l->cap * 2 : 256;
+        pent *ne = realloc(l->e, cap * sizeof(*ne));
+        if (!ne)
+            return -1;
+        l->e = ne;
+        l->cap = cap;
+    }
+    e = &l->e[l->n];
+    e->name = strdup(name);
+    e->apath = strdup(apath);
+    if (!e->name || !e->apath) {
+        free(e->name);
+        free(e->apath);
+        return -1;
+    }
+    e->depth = depth;
+    e->input = input;
+    e->isdir = fib->fib_DirEntryType > 0;
+    e->prot = fib->fib_Protection;
+    e->date = fib->fib_Date;
+    e->size = e->isdir ? 0 : UA_FIB_SIZE(fib);
+    l->n++;
+    if (!e->isdir) {
+        p->r->total_files++;
+        p->r->total_bytes += e->size;
+    }
+    if (p->o->phase)
+        p->o->phase(p->o->ui_ctx, UA_PACK_PH_PREPARING, p->r->total_files, p->r->total_bytes);
+    return 0;
+}
 
 /* Test aid: the variable UnarcTestFailDir makes reading a drawer fail, so the
  * error paths can be shown on a working volume: "name" fails at its start,
@@ -158,127 +227,38 @@ static int test_fail_at(const char *name)
     return slash ? atoi(slash) : 0;
 }
 
-static int add_entry_header(pk *p, const char *apath, const struct FileInfoBlock *fib, int isdir)
-{
-    struct archive_entry *e = archive_entry_new();
-    char u[UA_PATHMAX * 2];
-    int rc;
-    if (!e)
-        return -1;
-    latin1_to_utf8(apath, u, sizeof(u));
-    if (isdir)
-        strncat(u, "/", sizeof(u) - strlen(u) - 1);
-    archive_entry_set_pathname_utf8(e, u);
-    archive_entry_set_filetype(e, isdir ? AE_IFDIR : AE_IFREG);
-    archive_entry_set_perm(e, prot_to_mode(fib->fib_Protection, isdir));
-    archive_entry_set_mtime(e, to_unix(&fib->fib_Date), 0);
-    if (!isdir)
-        archive_entry_set_size(e, (la_int64_t)UA_FIB_SIZE(fib));
-    rc = archive_write_header(p->a, e);
-    archive_entry_free(e);
-    if (rc < ARCHIVE_WARN) {
-        msg(p, "error: %s: %s", apath, archive_error_string(p->a));
-        return -1;
-    }
-    return 0;
-}
-
-/* One file, relative to dir. Returns -1 when the whole job must stop. */
-static int add_file(pk *p, BPTR dir, const char *name, const char *apath,
-                    const struct FileInfoBlock *fib)
-{
-    BPTR old = CurrentDir(dir), fh = Open((STRPTR)name, MODE_OLDFILE);
-    UQUAD done = 0, want = UA_FIB_SIZE(fib);
-    LONG n;
-    CurrentDir(old);
-    if (!fh) {
-        char why[100];
-        Fault(IoErr(), NULL, why, sizeof(why));
-        msg(p, "error: cannot read \"%s\": %s; not packed", apath, why);
-        p->r->errors++;
-        return 0;
-    }
-    if (add_entry_header(p, apath, fib, 0) < 0) {
-        Close(fh);
-        p->r->failed = 1;
-        snprintf(p->r->why, sizeof(p->r->why), "the archive could not be written");
-        return -1;
-    }
-    if (p->o->progress)
-        p->o->progress(p->o->ui_ctx, apath, p->r->bytes_in);
-    while ((n = Read(fh, p->buf, 65536)) > 0) {
-        LONG take = n;
-        /* The header promised fib_Size bytes; a file that grew since is
-         * stored as far as that and reported. */
-        if (done + (UQUAD)take > want)
-            take = (LONG)(want - done);
-        if (take > 0 && archive_write_data(p->a, p->buf, take) != take) {
-            Close(fh);
-            p->r->failed = 1;
-            if (p->write_failed) {
-                Fault(p->write_err, NULL, p->r->why, sizeof(p->r->why));
-            } else {
-                snprintf(p->r->why, sizeof(p->r->why), "%s", archive_error_string(p->a));
-            }
-            return -1;
-        }
-        done += take;
-        p->r->bytes_in += take;
-        if (p->o->tick && p->r->bytes_in - p->ticked >= 65536) {
-            p->ticked = p->r->bytes_in;
-            p->o->tick(p->o->ui_ctx, apath, p->r->bytes_in);
-        }
-        if (check_cancel(p)) {
-            Close(fh);
-            return -1;
-        }
-        if ((UQUAD)n > (UQUAD)take)
-            break;
-    }
-    if (n < 0) {
-        char why[100];
-        Fault(IoErr(), NULL, why, sizeof(why));
-        msg(p, "error: reading \"%s\" failed: %s; the archive holds %llu of %llu bytes of it",
-            apath, why, (unsigned long long)done, (unsigned long long)want);
-        p->r->errors++;
-    } else {
-        struct FileInfoBlock *now = AllocDosObject(DOS_FIB, NULL);
-        int changed = done != want;
-        if (now && ExamineFH(fh, now))
-            changed |= UA_FIB_SIZE(now) != UA_FIB_SIZE(fib) ||
-                       CompareDates(&now->fib_Date, &fib->fib_Date) != 0;
-        FreeDosObject(DOS_FIB, now);
-        if (changed) {
-            msg(p, "error: \"%s\" changed while it was being packed; the archive's copy "
-                "may be inconsistent", apath);
-            p->r->changed++;
-            p->r->errors++;
-        }
-    }
-    Close(fh);
-    p->r->files++;
-    return 0;
-}
-
 static int same_as_output(pk *p, BPTR l)
 {
     return (p->outlock && SameLock(l, p->outlock) == LOCK_SAME) ||
            (p->oldlock && SameLock(l, p->oldlock) == LOCK_SAME);
 }
 
+static int nomem(pk *p)
+{
+    p->r->failed = 1;
+    snprintf(p->r->why, sizeof(p->r->why), "not enough memory");
+    return -1;
+}
+
 /* seen_type: the entry type ExNext reported in the parent drawer, or 0 for an
  * input the user named. It matters because Lock follows soft links: after
  * Lock and Examine a link looks like its target, and a link to a parent
  * drawer would pack the tree again and again. Links found inside drawers are
- * therefore skipped by what the parent says they are; an input the user
- * named is taken as what it points to. */
-static int add_tree(pk *p, BPTR dir, const char *name, const char *apath, int depth,
-                    LONG seen_type)
+ * therefore skipped by what the parent says they are (for LhA, which would
+ * follow them, they stop the job); an input the user named is taken as what
+ * it points to. Returns -1 when the whole job must stop. */
+static int scan_tree(pk *p, plist *pl, BPTR dir, const char *name, const char *apath, int depth,
+                     int input, LONG seen_type, int lha)
 {
     BPTR old, l;
     struct FileInfoBlock *fib;
     int rc = 0, k;
     if (seen_type == ST_SOFTLINK || seen_type == ST_LINKDIR || seen_type == ST_LINKFILE) {
+        if (lha) {
+            snprintf(p->r->why, sizeof(p->r->why), "\"%s\" is a link; LhA would follow it, "
+                     "so pack with another format or without it", apath);
+            return -1;
+        }
         msg(p, "skipped (link, not followed): %s", apath);
         p->r->skipped++;
         return 0;
@@ -324,16 +304,19 @@ static int add_tree(pk *p, BPTR dir, const char *name, const char *apath, int de
         msg(p, "skipped (drawer inside itself): %s", apath);
         p->r->skipped++;
     } else if (fib->fib_DirEntryType > 0) {
-        if (depth >= MAXDEPTH) {
+        if (depth >= MAXDEPTH && lha) {
+            /* The helper would pack it all the same. */
+            snprintf(p->r->why, sizeof(p->r->why), "\"%s\" is nested more than %d levels deep",
+                     apath, MAXDEPTH);
+            rc = -1;
+        } else if (depth >= MAXDEPTH) {
             msg(p, "error: \"%s\" is nested more than %d levels deep; not packed", apath,
                 MAXDEPTH);
             p->r->errors++;
-        } else if (add_entry_header(p, apath, fib, 1) < 0) {
-            p->r->failed = 1;
-            rc = -1;
+        } else if (plist_add(p, pl, name, apath, depth, input, fib) < 0) {
+            rc = nomem(p);
         } else {
             struct FileInfoBlock *c = AllocDosObject(DOS_FIB, NULL);
-            p->r->dirs++;
             p->anc[p->nanc++] = l;
             int fail_at = test_fail_at(name);
             if (fail_at == 0)
@@ -348,11 +331,8 @@ static int add_tree(pk *p, BPTR dir, const char *name, const char *apath, int de
                 /* On the heap: one path per level on the stack would overrun the
                  * worker's stack long before MAXDEPTH (ABIv11 has no check). */
                 char *sub = malloc(UA_PATHMAX);
-                if (!sub) {
-                    p->r->failed = 1;
-                    snprintf(p->r->why, sizeof(p->r->why), "not enough memory");
-                    rc = -1;
-                }
+                if (!sub)
+                    rc = nomem(p);
                 int seen = 0;
                 while (rc == 0 && (seen != fail_at || (SetIoErr(ERROR_SEEK_ERROR), 0)) &&
                        ExNext(l, c)) {
@@ -362,7 +342,8 @@ static int add_tree(pk *p, BPTR dir, const char *name, const char *apath, int de
                         p->r->errors++;
                         continue;
                     }
-                    rc = add_tree(p, l, c->fib_FileName, sub, depth + 1, c->fib_DirEntryType);
+                    rc = scan_tree(p, pl, l, c->fib_FileName, sub, depth + 1, input,
+                                   c->fib_DirEntryType, lha);
                     if (check_cancel(p))
                         rc = -1;
                 }
@@ -380,11 +361,210 @@ static int add_tree(pk *p, BPTR dir, const char *name, const char *apath, int de
             p->nanc--;
             FreeDosObject(DOS_FIB, c);
         }
-    } else {
-        rc = add_file(p, dir, name, apath, fib);
+    } else if (plist_add(p, pl, name, apath, depth, input, fib) < 0) {
+        rc = nomem(p);
     }
     FreeDosObject(DOS_FIB, fib);
     UnLock(l);
+    return rc;
+}
+
+static int add_entry_header(pk *p, const pent *e)
+{
+    struct archive_entry *ae = archive_entry_new();
+    char u[UA_PATHMAX * 2];
+    int rc;
+    if (!ae)
+        return -1;
+    latin1_to_utf8(e->apath, u, sizeof(u));
+    if (e->isdir)
+        strncat(u, "/", sizeof(u) - strlen(u) - 1);
+    archive_entry_set_pathname_utf8(ae, u);
+    archive_entry_set_filetype(ae, e->isdir ? AE_IFDIR : AE_IFREG);
+    archive_entry_set_perm(ae, prot_to_mode(e->prot, e->isdir));
+    archive_entry_set_mtime(ae, to_unix(&e->date), 0);
+    if (!e->isdir)
+        archive_entry_set_size(ae, (la_int64_t)e->size);
+    rc = archive_write_header(p->a, ae);
+    archive_entry_free(ae);
+    if (rc < ARCHIVE_WARN) {
+        msg(p, "error: %s: %s", e->apath, archive_error_string(p->a));
+        return -1;
+    }
+    return 0;
+}
+
+/* One file, relative to dir, as preparing found it. Returns -1 when the
+ * whole job must stop. */
+static int add_file(pk *p, BPTR dir, const pent *e)
+{
+    BPTR old = CurrentDir(dir), fh = Open((STRPTR)e->name, MODE_OLDFILE);
+    UQUAD done = 0, want = e->size;
+    LONG n;
+    CurrentDir(old);
+    if (!fh) {
+        char why[100];
+        Fault(IoErr(), NULL, why, sizeof(why));
+        msg(p, "error: cannot read \"%s\": %s; not packed", e->apath, why);
+        p->r->errors++;
+        return 0;
+    }
+    if (add_entry_header(p, e) < 0) {
+        Close(fh);
+        p->r->failed = 1;
+        snprintf(p->r->why, sizeof(p->r->why), "the archive could not be written");
+        return -1;
+    }
+    if (p->o->progress)
+        p->o->progress(p->o->ui_ctx, e->apath, p->r->bytes_in);
+    while ((n = Read(fh, p->buf, 65536)) > 0) {
+        LONG take = n;
+        /* The header promised the size found while preparing; a file that
+         * grew since is stored as far as that and reported. */
+        if (done + (UQUAD)take > want)
+            take = (LONG)(want - done);
+        if (take > 0 && archive_write_data(p->a, p->buf, take) != take) {
+            Close(fh);
+            p->r->failed = 1;
+            if (p->write_failed) {
+                Fault(p->write_err, NULL, p->r->why, sizeof(p->r->why));
+            } else {
+                snprintf(p->r->why, sizeof(p->r->why), "%s", archive_error_string(p->a));
+            }
+            return -1;
+        }
+        done += take;
+        p->r->bytes_in += take;
+        if (p->o->tick && p->r->bytes_in - p->ticked >= 65536) {
+            p->ticked = p->r->bytes_in;
+            p->o->tick(p->o->ui_ctx, e->apath, p->r->bytes_in);
+        }
+        if (check_cancel(p)) {
+            Close(fh);
+            return -1;
+        }
+        if ((UQUAD)n > (UQUAD)take)
+            break;
+    }
+    if (n < 0) {
+        char why[100];
+        Fault(IoErr(), NULL, why, sizeof(why));
+        msg(p, "error: reading \"%s\" failed: %s; the archive holds %llu of %llu bytes of it",
+            e->apath, why, (unsigned long long)done, (unsigned long long)want);
+        p->r->errors++;
+    } else {
+        struct FileInfoBlock *now = AllocDosObject(DOS_FIB, NULL);
+        int changed = done != want;
+        if (now && ExamineFH(fh, now))
+            changed |= UA_FIB_SIZE(now) != want || CompareDates(&now->fib_Date, &e->date) != 0;
+        FreeDosObject(DOS_FIB, now);
+        if (changed) {
+            msg(p, "error: \"%s\" changed while it was being packed; the archive's copy "
+                "may be inconsistent", e->apath);
+            p->r->changed++;
+            p->r->errors++;
+        }
+    }
+    Close(fh);
+    p->r->files++;
+    return 0;
+}
+
+/* Packs the list. base[i]: the drawer input i is named in. The drawers on
+ * the current path stay locked; a drawer that cannot be opened again takes
+ * its contents with it, reported once. */
+static int pack_list(pk *p, plist *pl, BPTR *base)
+{
+    BPTR stack[MAXDEPTH + 1];
+    int nstack = 0, rc = 0;
+    ULONG i;
+    if (p->o->phase)
+        p->o->phase(p->o->ui_ctx, UA_PACK_PH_PACKING, p->r->total_files, p->r->total_bytes);
+    for (i = 0; i < pl->n && rc == 0; i++) {
+        pent *e = &pl->e[i];
+        BPTR parent;
+        while (nstack > e->depth)
+            if (stack[--nstack])
+                UnLock(stack[nstack]);
+        parent = e->depth ? stack[e->depth - 1] : base[e->input];
+        if (!parent)
+            continue;
+        if (e->isdir) {
+            BPTR old, l;
+            if (add_entry_header(p, e) < 0) {
+                p->r->failed = 1;
+                rc = -1;
+                break;
+            }
+            p->r->dirs++;
+            old = CurrentDir(parent);
+            l = Lock((STRPTR)e->name, SHARED_LOCK);
+            CurrentDir(old);
+            if (!l) {
+                char why[100];
+                Fault(IoErr(), NULL, why, sizeof(why));
+                msg(p, "error: cannot open the drawer \"%s\": %s; its contents are not packed",
+                    e->apath, why);
+                p->r->errors++;
+            }
+            stack[nstack++] = l;
+        } else {
+            rc = add_file(p, parent, e);
+        }
+        if (rc == 0 && check_cancel(p))
+            rc = -1;
+    }
+    while (nstack > 0)
+        if (stack[--nstack])
+            UnLock(stack[nstack]);
+    return rc;
+}
+
+/* Preparing: walks every input into pl. base[i] gets the drawer input i is
+ * named in (for a volume or an assign, its own lock, with the name ""), to be
+ * unlocked by the caller; inputs that cannot be opened are reported and get
+ * none. */
+static int scan_inputs(pk *p, plist *pl, char **inputs, int ninputs, BPTR *base, int lha)
+{
+    int i, rc = 0;
+    if (p->o->phase)
+        p->o->phase(p->o->ui_ctx, UA_PACK_PH_PREPARING, 0, 0);
+    for (i = 0; i < ninputs && rc == 0; i++) {
+        BPTR l = Lock((STRPTR)inputs[i], SHARED_LOCK), parent;
+        const char *nm = (const char *)FilePart((STRPTR)inputs[i]);
+        if (!l) {
+            char why[100];
+            Fault(IoErr(), NULL, why, sizeof(why));
+            msg(p, "error: cannot open \"%s\": %s; not packed", inputs[i], why);
+            p->r->errors++;
+            continue;
+        }
+        parent = ParentDir(l);
+        if (!*nm || !parent) {
+            /* A volume or an assign: its contents, under its name. */
+            struct FileInfoBlock *fib = AllocDosObject(DOS_FIB, NULL);
+            if (fib && Examine(l, fib)) {
+                char top[110];
+                snprintf(top, sizeof(top), "%s", fib->fib_FileName);
+                base[i] = l;
+                l = BNULL;
+                rc = scan_tree(p, pl, base[i], "", top, 0, i, 0, lha);
+            } else {
+                msg(p, "error: cannot examine \"%s\"; not packed", inputs[i]);
+                p->r->errors++;
+            }
+            FreeDosObject(DOS_FIB, fib);
+            if (parent)
+                UnLock(parent);
+        } else {
+            base[i] = parent;
+            rc = scan_tree(p, pl, parent, nm, nm, 0, i, 0, lha);
+        }
+        if (l)
+            UnLock(l);
+        if (rc == 0 && check_cancel(p))
+            rc = -1;
+    }
     return rc;
 }
 
@@ -602,47 +782,6 @@ void ua_lha_init(void)
     lha_have = ua_helper_find(LHA_PROG, lha_prog, sizeof(lha_prog));
 }
 
-/* LHa for UNIX follows links (lstat follows AmigaDOS soft links), and a
- * link to a drawer above it would never end. So the inputs are walked first
- * and a link refuses LhA packing; the other formats store links as nothing.
- * dir is the drawer lock, depth its depth below the input. */
-static int lha_scan(pk *p, BPTR dir, const char *apath, int depth)
-{
-    struct FileInfoBlock *fib = AllocDosObject(DOS_FIB, NULL);
-    int rc = 0;
-    if (!fib)
-        return -1;
-    if (depth > MAXDEPTH) {
-        snprintf(p->r->why, sizeof(p->r->why), "\"%s\" is nested more than %d levels deep",
-                 apath, MAXDEPTH);
-        FreeDosObject(DOS_FIB, fib);
-        return -1;
-    }
-    if (Examine(dir, fib)) {
-        while (rc == 0 && ExNext(dir, fib)) {
-            char sub[UA_PATHMAX];
-            snprintf(sub, sizeof(sub), "%s/%s", apath, fib->fib_FileName);
-            if (fib->fib_DirEntryType == ST_SOFTLINK || fib->fib_DirEntryType == ST_LINKDIR ||
-                fib->fib_DirEntryType == ST_LINKFILE) {
-                snprintf(p->r->why, sizeof(p->r->why), "\"%s\" is a link; LhA would follow it, "
-                         "so pack with another format or without it", sub);
-                rc = -1;
-            } else if (fib->fib_DirEntryType > 0) {
-                BPTR old = CurrentDir(dir), sl = Lock(fib->fib_FileName, SHARED_LOCK);
-                CurrentDir(old);
-                if (sl) {
-                    rc = lha_scan(p, sl, sub, depth + 1);
-                    UnLock(sl);
-                }
-            }
-            if (check_cancel(p))
-                rc = -1;
-        }
-    }
-    FreeDosObject(DOS_FIB, fib);
-    return rc;
-}
-
 /* 1 when the drawer d is the drawer top or below it. */
 static int lha_inside(BPTR d, BPTR top)
 {
@@ -660,11 +799,72 @@ static int lha_inside(BPTR d, BPTR top)
     return in;
 }
 
+/* The helper's running indicator (LHa's quiet mode 0, not on a terminal):
+ * for each file a line "name\t- Frozen :  ...." with one dot for each part
+ * of the file, then "name\t- Frozen :  " followed by an "o" as each part is
+ * done, then the line of the finished file. Returns the text after " :  "
+ * when line is one of the first two, else NULL. */
+static const char *lha_marks(const char *line)
+{
+    const char *t = strstr(line, "\t- "), *m = t ? strstr(t, " :  ") : NULL;
+    return m ? m + 4 : NULL;
+}
+
+static UQUAD lha_size(BPTR dir, const char *name)
+{
+    BPTR old = CurrentDir(dir), l = Lock((STRPTR)name, SHARED_LOCK);
+    UQUAD size = 0;
+    CurrentDir(old);
+    if (l) {
+        struct FileInfoBlock *fib = AllocDosObject(DOS_FIB, NULL);
+        if (fib && Examine(l, fib))
+            size = UA_FIB_SIZE(fib);
+        FreeDosObject(DOS_FIB, fib);
+        UnLock(l);
+    }
+    return size;
+}
+
+/* The part of the current line the helper has written so far: the marks of
+ * the file being compressed, as input bytes for the progress. */
+static void lha_partial(pk *p, const char *line)
+{
+    const char *m = lha_marks(line);
+    UQUAD part;
+    int o = 0;
+    if (!m || !p->lmarks || !p->o->tick)
+        return;
+    for (; *m == 'o'; m++)
+        o++;
+    if (o > p->lmarks)
+        o = p->lmarks;
+    part = p->lsize / (UQUAD)p->lmarks * (UQUAD)o;
+    if (p->r->bytes_in + part >= p->ticked + 65536) {
+        p->ticked = p->r->bytes_in + part;
+        p->o->tick(p->o->ui_ctx, p->lname, p->ticked);
+    }
+}
+
 /* A line of the helper's output: "name\t- Frozen(42%)" when a file or
- * drawer is done, "LHa: Warning: ..." or "LHa: Error: ...". */
+ * drawer is done, "LHa: Warning: ..." or "LHa: Error: ...", or one of the
+ * indicator's. */
 static void lha_line(pk *p, BPTR dir, char *line)
 {
     char *tab = strchr(line, '\t');
+    const char *m = lha_marks(line);
+    if (m) {
+        if (*m == '.') {
+            /* A file starts: its size and how many marks it gets. */
+            p->lmarks = (int)strspn(m, ".");
+            *strstr(line, "\t- ") = 0;
+            p->lsize = lha_size(dir, line);
+            p->lstarted = 1;
+            snprintf(p->lname, sizeof(p->lname), "%s", line);
+            if (p->o->progress)
+                p->o->progress(p->o->ui_ctx, line, p->r->bytes_in);
+        }
+        return;
+    }
     if (!strncmp(line, "LHa: ", 5)) {
         msg(p, "%s", line + 5);
         if (!strncmp(line + 5, "Warning", 7) || !strncmp(line + 5, "Error", 5))
@@ -680,19 +880,15 @@ static void lha_line(pk *p, BPTR dir, char *line)
         p->r->dirs++;
     } else {
         /* The size, for the byte count the front ends show. */
-        BPTR old = CurrentDir(dir), l = Lock((STRPTR)line, SHARED_LOCK);
-        CurrentDir(old);
-        if (l) {
-            struct FileInfoBlock *fib = AllocDosObject(DOS_FIB, NULL);
-            if (fib && Examine(l, fib))
-                p->r->bytes_in += UA_FIB_SIZE(fib);
-            FreeDosObject(DOS_FIB, fib);
-            UnLock(l);
-        }
+        p->r->bytes_in += p->lstarted ? p->lsize : lha_size(dir, line);
+        p->ticked = p->r->bytes_in;
         p->r->files++;
     }
-    if (p->o->progress)
+    /* Empty files and drawers have no indicator: reported when done. */
+    if (p->o->progress && !p->lstarted)
         p->o->progress(p->o->ui_ctx, line, p->r->bytes_in);
+    p->lmarks = 0;
+    p->lstarted = 0;
 }
 
 /* One run of the helper: the items in names[0..n-1], all in drawer dir. */
@@ -723,9 +919,9 @@ static int lha_run(pk *p, const char *prog, BPTR dir, char **names, int n, const
         return -1;
     }
     /* a: add (a new archive here), 1: header level 1 as Amiga LhA writes,
-     * q1: no running indicator, only a line per name; z: store only. */
-    snprintf(args, sizeof(args), "a1q1%s --list=%s\n", p->o->level == 0 ? "z" : "", list);
-    if (ua_helper_start(&h, prog, LHA_PROG, args, dir, 1, err, errlen) < 0) {
+     * q0: the running indicator, for the progress; z: store only. */
+    snprintf(args, sizeof(args), "a1q0%s --list=%s\n", p->o->level == 0 ? "z" : "", list);
+    if (ua_helper_start_polled(&h, prog, LHA_PROG, args, dir, 1, err, errlen) < 0) {
         DeleteFile((STRPTR)list);
         return -1;
     }
@@ -740,6 +936,10 @@ static int lha_run(pk *p, const char *prog, BPTR dir, char **names, int n, const
             } else if (ll < sizeof(line) - 1) {
                 line[ll++] = (char)buf[k];
             }
+        }
+        if (ll) {
+            line[ll] = 0;
+            lha_partial(p, line);
         }
         if (!h.cancelled && p->o->cancel_after && p->r->bytes_in >= p->o->cancel_after) {
             h.cancelled = 1;
@@ -771,6 +971,7 @@ static int lha_pack(pk *p, char **inputs, int ninputs, char *err, int errlen)
     char arcpath[UA_PATHMAX];
     const char *prog = lha_prog;
     char **names = NULL, *taken = NULL;
+    plist pl = { NULL, 0, 0 };
     int i, rc = 0;
 
     if (lha_have < 0)
@@ -793,6 +994,8 @@ static int lha_pack(pk *p, char **inputs, int ninputs, char *err, int errlen)
     }
     names = calloc(ninputs ? ninputs : 1, sizeof(char *));
     taken = calloc(ninputs ? ninputs : 1, 1);
+    if (p->o->phase)
+        p->o->phase(p->o->ui_ctx, UA_PACK_PH_PREPARING, 0, 0);
     if (!names || !taken) {
         free(names);
         free(taken);
@@ -818,16 +1021,18 @@ static int lha_pack(pk *p, char **inputs, int ninputs, char *err, int errlen)
             snprintf(err, errlen, "\"%s\" is one of the files to pack; choose another name",
                      inputs[i]);
             rc = -1;
-        } else if (fib && Examine(l, fib) && fib->fib_DirEntryType > 0) {
-            if (lha_inside(p->outdir, l)) {
-                snprintf(err, errlen, "the archive would be inside \"%s\", which is being "
-                         "packed; save it somewhere else", inputs[i]);
-                rc = -1;
-            } else if (lha_scan(p, l, nm, 0) < 0) {
-                snprintf(err, errlen, "%s", p->r->why[0] ? p->r->why : "stopped");
-                p->r->why[0] = 0;
-                rc = -1;
-            }
+        } else if (fib && Examine(l, fib) && fib->fib_DirEntryType > 0 &&
+                   lha_inside(p->outdir, l)) {
+            snprintf(err, errlen, "the archive would be inside \"%s\", which is being "
+                     "packed; save it somewhere else", inputs[i]);
+            rc = -1;
+        } else if (scan_tree(p, &pl, parent, nm, nm, 0, i, 0, 1) < 0) {
+            /* LHa for UNIX follows links (lstat follows AmigaDOS soft links),
+             * and a link to a drawer above it would never end: a link
+             * refuses LhA packing. The other formats store links as nothing. */
+            snprintf(err, errlen, "%s", p->r->why[0] ? p->r->why : "stopped");
+            p->r->why[0] = 0;
+            rc = -1;
         }
         if (fib)
             FreeDosObject(DOS_FIB, fib);
@@ -836,8 +1041,12 @@ static int lha_pack(pk *p, char **inputs, int ninputs, char *err, int errlen)
         if (l)
             UnLock(l);
     }
+    /* The helper walks the drawers itself; the list gives the totals. */
+    plist_free(&pl);
     if (rc == 0 && check_cancel(p))
         rc = -1;
+    if (rc == 0 && p->o->phase)
+        p->o->phase(p->o->ui_ctx, UA_PACK_PH_PACKING, p->r->total_files, p->r->total_bytes);
     /* One run per drawer of items, in the order given. A name with a line
      * break cannot go in the list. */
     for (i = 0; i < ninputs && rc == 0; i++) {
@@ -872,6 +1081,9 @@ static int lha_pack(pk *p, char **inputs, int ninputs, char *err, int errlen)
     }
     free(names);
     free(taken);
+    plist_free(&pl);
+    if (rc == 0 && p->o->phase)
+        p->o->phase(p->o->ui_ctx, UA_PACK_PH_FINISHING, p->r->files, p->r->bytes_in);
     if (rc == 0 && !p->r->files && !p->r->dirs) {
         p->r->failed = 1;
         snprintf(p->r->why, sizeof(p->r->why), "nothing could be packed");
@@ -905,6 +1117,8 @@ int ua_pack(const char *archive, char **inputs, int ninputs, ua_pack_opts *o,
             ua_pack_report *r, char *err, int errlen)
 {
     pk p;
+    plist pl = { NULL, 0, 0 };
+    BPTR *base = NULL;
     char drawer[UA_PATHMAX], leaf[256];
     const char *fp;
     int i, rc = 0, exists;
@@ -1011,38 +1225,14 @@ int ua_pack(const char *archive, char **inputs, int ninputs, ua_pack_opts *o,
             goto out;
         }
     }
-    for (i = 0; i < ninputs && rc == 0; i++) {
-        BPTR l = Lock((STRPTR)inputs[i], SHARED_LOCK), parent;
-        const char *nm = (const char *)FilePart((STRPTR)inputs[i]);
-        if (!l) {
-            char why[100];
-            Fault(IoErr(), NULL, why, sizeof(why));
-            msg(&p, "error: cannot open \"%s\": %s; not packed", inputs[i], why);
-            r->errors++;
-            continue;
-        }
-        parent = ParentDir(l);
-        if (!*nm || !parent) {
-            /* A volume or an assign: its contents, under its name. */
-            struct FileInfoBlock *fib = AllocDosObject(DOS_FIB, NULL);
-            if (fib && Examine(l, fib)) {
-                char top[110];
-                snprintf(top, sizeof(top), "%s", fib->fib_FileName);
-                rc = add_tree(&p, l, "", top, 0, 0);
-            } else {
-                msg(&p, "error: cannot examine \"%s\"; not packed", inputs[i]);
-                r->errors++;
-            }
-            FreeDosObject(DOS_FIB, fib);
-        } else {
-            rc = add_tree(&p, parent, nm, nm, 0, 0);
-        }
-        if (parent)
-            UnLock(parent);
-        UnLock(l);
-        if (rc == 0 && check_cancel(&p))
-            rc = -1;
+    base = calloc(ninputs ? ninputs : 1, sizeof(BPTR));
+    if (!base) {
+        rc = nomem(&p);
+        goto out;
     }
+    rc = scan_inputs(&p, &pl, inputs, ninputs, base, 0);
+    if (rc == 0)
+        rc = pack_list(&p, &pl, base);
     /* Nothing found to pack (names that do not exist, say): no archive,
      * rather than an empty one reported as made. An empty drawer still
      * counts, as a drawer. */
@@ -1051,6 +1241,9 @@ int ua_pack(const char *archive, char **inputs, int ninputs, ua_pack_opts *o,
         snprintf(r->why, sizeof(r->why), "nothing could be packed");
         rc = -1;
     }
+    /* 7z compresses most of the data only now. */
+    if (rc == 0 && o->phase)
+        o->phase(o->ui_ctx, UA_PACK_PH_FINISHING, r->files, r->bytes_in);
     if (rc == 0 && archive_write_close(p.a) != ARCHIVE_OK) {
         r->failed = 1;
         if (p.write_failed)
@@ -1074,6 +1267,11 @@ out:
     if (p.a)
         archive_write_free(p.a);
     scratch_close(&p);
+    for (i = 0; base && i < ninputs; i++)
+        if (base[i])
+            UnLock(base[i]);
+    free(base);
+    plist_free(&pl);
     if (p.outlock)
         UnLock(p.outlock);
     if (p.oldlock)

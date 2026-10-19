@@ -32,6 +32,8 @@ button at the top (LhA, ZIP, 7z or tar.gz) and the compression with the
 slider, then drop files or drawers on the window: they are packed at once,
 next to where they are. "Each item into its own archive" makes one archive
 per dropped item. An archive dropped on the window is extracted instead.
+Packing first counts what was dropped ("Preparing..."), then shows how much
+of it is packed; Cancel works in both steps and leaves no archive.
 
 "Pack..." does the same through a file requester: choose files, or press OK
 in a drawer with no file chosen to pack the whole drawer. "Open archive..."

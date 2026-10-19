@@ -63,8 +63,8 @@ static void helper_free(ua_helper *h)
     h->rd = BNULL;
 }
 
-int ua_helper_start(ua_helper *h, const char *path, const char *name, const char *args,
-                    BPTR curdir, int err_to_out, char *err, int errlen)
+static int start(ua_helper *h, const char *path, const char *name, const char *args,
+                 BPTR curdir, int err_to_out, int poll, char *err, int errlen)
 {
     static ULONG serial;
     char out[64];
@@ -73,8 +73,12 @@ int ua_helper_start(ua_helper *h, const char *path, const char *name, const char
     memset(h, 0, sizeof(*h));
     h->sig = -1;
     serial++;
-    snprintf(out, sizeof(out), "PIPE:unarch-%08lx-%lu", (unsigned long)(IPTR)FindTask(NULL),
-             (unsigned long)serial);
+    snprintf(out, sizeof(out), "%s:unarch-%08lx-%lu", poll ? "T" : "PIPE",
+             (unsigned long)(IPTR)FindTask(NULL), (unsigned long)serial);
+    if (poll) {
+        h->poll = 1;
+        snprintf(h->outname, sizeof(h->outname), "%s", out);
+    }
     h->port = CreateMsgPort();
     h->dp = AllocDosObject(DOS_STDPKT, NULL);
     h->sig = AllocSignal(-1);
@@ -89,14 +93,20 @@ int ua_helper_start(ua_helper *h, const char *path, const char *name, const char
         helper_free(h);
         return -1;
     }
-    wr = Open((STRPTR)out, MODE_NEWFILE);
+    /* A file: both ends shared, the writer's made first. */
+    wr = Open((STRPTR)out, poll ? MODE_READWRITE : MODE_NEWFILE);
+    if (wr && poll)
+        SetFileSize(wr, 0, OFFSET_BEGINNING);
     h->rd = wr ? Open((STRPTR)out, MODE_OLDFILE) : BNULL;
     in = Open("NIL:", MODE_OLDFILE);
     er = err_to_out ? BNULL : Open("NIL:", MODE_NEWFILE);
     if (curdir)
         cd = DupLock(curdir);
     if (!wr || !h->rd || !in || (!err_to_out && !er) || (curdir && !cd)) {
-        snprintf(err, errlen, "cannot open a pipe (is PIPE: mounted?)");
+        snprintf(err, errlen, poll ? "cannot write the helper's output to T:"
+                                   : "cannot open a pipe (is PIPE: mounted?)");
+        if (poll)
+            DeleteFile((STRPTR)out);
         UnLoadSeg(seg);
         if (wr) Close(wr);
         if (h->rd) Close(h->rd);
@@ -124,6 +134,8 @@ int ua_helper_start(ua_helper *h, const char *path, const char *name, const char
                                 TAG_END);
     if (!h->proc) {
         snprintf(err, errlen, "cannot start %s", name);
+        if (poll)
+            DeleteFile((STRPTR)out);
         UnLoadSeg(seg);
         Close(wr);
         Close(h->rd);
@@ -136,9 +148,49 @@ int ua_helper_start(ua_helper *h, const char *path, const char *name, const char
     return 0;
 }
 
+int ua_helper_start(ua_helper *h, const char *path, const char *name, const char *args,
+                    BPTR curdir, int err_to_out, char *err, int errlen)
+{
+    return start(h, path, name, args, curdir, err_to_out, 0, err, errlen);
+}
+
+int ua_helper_start_polled(ua_helper *h, const char *path, const char *name, const char *args,
+                           BPTR curdir, int err_to_out, char *err, int errlen)
+{
+    return start(h, path, name, args, curdir, err_to_out, 1, err, errlen);
+}
+
+/* The file grows while the program writes; 0 from Read only means "not
+ * yet" until the program has ended. */
+static LONG read_polled(ua_helper *h, void *buf, LONG len)
+{
+    for (;;) {
+        int ended = h->exited;
+        LONG n = Read(h->rd, buf, len);
+        if (n != 0)
+            return n;
+        if (ended) {
+            /* DOS closes the program's output after its exit code ran:
+             * anything still buffered in that handle arrives then. */
+            if (h->drained)
+                return 0;
+            h->drained = 1;
+            Delay(5);
+            continue;
+        }
+        if ((SetSignal(0, SIGBREAKF_CTRL_C) & SIGBREAKF_CTRL_C) && !h->cancelled) {
+            h->cancelled = 1;
+            ua_helper_poke(h);
+        }
+        Delay(2);
+    }
+}
+
 LONG ua_helper_read(ua_helper *h, void *buf, LONG len)
 {
     struct FileHandle *fh = BADDR(h->rd);
+    if (h->poll)
+        return read_polled(h, buf, len);
     h->dp->dp_Type = ACTION_READ;
     h->dp->dp_Arg1 = fh->fh_Arg1;
     h->dp->dp_Arg2 = (SIPTR)buf;
@@ -168,12 +220,18 @@ LONG ua_helper_end(ua_helper *h)
         Close(h->rd);
         h->rd = BNULL;
     }
+    if (h->poll && h->proc) {
+        while (!h->exited)
+            Wait(1UL << h->sig);
+    }
     if (h->proc) {
         while (!h->exited)
             Wait(1UL << h->sig);
         Delay(1);      /* let helper_exit return out of our code */
     }
     rc = h->rc;
+    if (h->poll)
+        DeleteFile((STRPTR)h->outname);
     helper_free(h);
     return rc;
 }

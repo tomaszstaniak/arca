@@ -61,6 +61,13 @@ collect-aros itself can exit 0 with symbols left unresolved, which is also why
   `patches/lha/`), given its names in a list file in `T:` and run in the
   items' drawer. Every format writes under a temporary name and gets its name
   at the end; an archive it replaces is deleted only then.
+  Packing first walks every input once ("Preparing"): the list it builds,
+  with each file's size, is what libarchive packs, and its total is the
+  100 % of the progress, counted in input bytes the engine has taken. LhA's
+  helper walks the drawers itself, so for LhA the list gives the totals and
+  the link check only; its progress inside a file comes from LHa's running
+  indicator (`q0`), read from a file in `T:` as it grows, because PIPE:
+  answers a read only once it can fill the whole buffer.
 
 Engine choice (`registry.c`): RAR goes to 7-Zip first. Plain 7z and ZIP go to
 libarchive first, as it is 2-3 times faster with many small entries; before

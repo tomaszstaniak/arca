@@ -380,40 +380,50 @@ static void do_extract(uj_job *j)
     progress(j, NULL, j->rep.bytes, j->rep.files, 1);
 }
 
-static void pk_progress(void *ctx, const char *name, UQUAD done)
+static void pk_send(uj_job *j, const char *name, UQUAD done, int force)
 {
-    uj_job *j = ctx;
     collect(j, 0);
-    if (j->progress_out || uj_ticks_since(&j->last_tick) < UJ_TICKS)
+    /* A new stage is always shown: wait for the GUI to take the last message. */
+    while (force && j->progress_out)
+        collect(j, 1);
+    if (j->progress_out || (!force && uj_ticks_since(&j->last_tick) < UJ_TICKS))
         return;
     DateStamp(&j->last_tick);
+    j->progress.phase = j->pack_phase;
     j->progress.bytes = done;
     j->progress.files = j->prep.files;
-    snprintf(j->progress.name, sizeof(j->progress.name), "%s", name);
+    j->progress.total_files = j->prep.total_files;
+    j->progress.total_bytes = j->prep.total_bytes;
+    if (name)
+        snprintf(j->progress.name, sizeof(j->progress.name), "%s", name);
     j->progress_out = 1;
     send(j, &j->progress, UJM_PROGRESS);
 }
 
+static void pk_progress(void *ctx, const char *name, UQUAD done)
+{
+    pk_send(ctx, name, done, 0);
+}
+
+static void pk_phase(void *ctx, int phase, ULONG files, UQUAD bytes)
+{
+    uj_job *j = ctx;
+    int changed = phase != j->pack_phase;
+    (void)files;
+    (void)bytes;
+    j->pack_phase = phase;
+    if (phase == UA_PACK_PH_PREPARING)
+        j->progress.name[0] = 0;
+    if (phase == UA_PACK_PH_PACKING)
+        snprintf(j->progress.name, sizeof(j->progress.name), "Packing...");
+    pk_send(j, NULL, phase == UA_PACK_PH_PREPARING ? 0 : j->prep.bytes_in, changed);
+}
+
 static void do_pack(uj_job *j)
 {
-    int i;
-    struct FileInfoBlock *fib = AllocDosObject(DOS_FIB, NULL);
-    /* The total for the gauge: the size of plain files given directly; a
-     * drawer's size is not known without walking it, so then there is none. */
-    j->total = 0;
-    j->total_known = 1;
-    for (i = 0; i < j->ninputs && fib; i++) {
-        BPTR l = Lock((STRPTR)j->inputs[i], SHARED_LOCK);
-        if (l && Examine(l, fib) && fib->fib_DirEntryType < 0)
-            j->total += UA_FIB_SIZE(fib);
-        else
-            j->total_known = 0;
-        if (l)
-            UnLock(l);
-    }
-    FreeDosObject(DOS_FIB, fib);
     j->pack.progress = pk_progress;
     j->pack.tick = pk_progress;
+    j->pack.phase = pk_phase;
     j->pack.message = on_message;
     j->pack.ui_ctx = j;
     j->extract_rc = ua_pack(j->archive, j->inputs, j->ninputs, &j->pack, &j->prep, j->err,

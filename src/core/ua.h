@@ -188,16 +188,25 @@ typedef struct ua_pack_opts {
     int level;                /* 0..9, or -1 for the format's default */
     int replace;              /* an existing archive of that name may be replaced */
     /* Front end hooks; may be NULL. progress: a file starts; tick: about
-     * every 64 KB of input. done = input bytes so far. */
+     * every 64 KB of input. done = input bytes so far. phase: the job enters
+     * a stage (UA_PACK_PH_*); while preparing, it is called for every item
+     * found with the counts so far, and when packing starts with the totals
+     * in the report (total_files, total_bytes). */
     void (*progress)(void *ctx, const char *name, UQUAD done);
     void (*tick)(void *ctx, const char *name, UQUAD done);
+    void (*phase)(void *ctx, int phase, ULONG files, UQUAD bytes);
     void (*message)(void *ctx, const char *fmt, ...);
     void *ui_ctx;
     UQUAD cancel_after;       /* test aid */
 } ua_pack_opts;
+enum { UA_PACK_PH_PREPARING = 1, UA_PACK_PH_PACKING, UA_PACK_PH_FINISHING };
 typedef struct ua_pack_report {
     ULONG files, dirs, skipped, changed, errors;
     UQUAD bytes_in, bytes_out;
+    /* Found while preparing: the files to pack and their size then. Files
+     * that change afterwards are packed as far as that size. */
+    ULONG total_files;
+    UQUAD total_bytes;
     int cancelled, failed, replaced;
     char why[160];
     /* The old archive could not be deleted after the new one took its name

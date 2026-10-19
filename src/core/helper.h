@@ -19,6 +19,9 @@ typedef struct ua_helper {
     struct MsgPort *port;
     struct DosPacket *dp;
     int cancelled;            /* Ctrl-C was passed on */
+    int poll;                 /* output through a file, read as it grows */
+    int drained;              /* polled: read once more after the end */
+    char outname[64];         /* that file, deleted at the end */
 } ua_helper;
 
 /* PROGDIR:name, if that file is there: 1 and its full path in path. */
@@ -30,6 +33,12 @@ int ua_helper_find(const char *name, char *path, size_t n);
  * otherwise to NIL:. Input is NIL:. 0, or -1 with the reason in err. */
 int ua_helper_start(ua_helper *h, const char *path, const char *name, const char *args,
                     BPTR curdir, int err_to_out, char *err, int errlen);
+/* The same, with the output going to a file in T: that reads return as it
+ * grows. PIPE: answers a read only when it can fill the whole buffer, so
+ * output written a few bytes at a time (a running indicator) would arrive
+ * only in large pieces. */
+int ua_helper_start_polled(ua_helper *h, const char *path, const char *name, const char *args,
+                           BPTR curdir, int err_to_out, char *err, int errlen);
 
 /* One read of the output (0 at its end). Ctrl-C to us while waiting is
  * passed on to the program once, and sets h->cancelled. */
