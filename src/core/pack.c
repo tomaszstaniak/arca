@@ -78,7 +78,13 @@ static int check_cancel(pk *p)
 static la_ssize_t w_write(struct archive *a, void *ctx, const void *buf, size_t n)
 {
     pk *p = ctx;
-    LONG w = Write(p->out, (APTR)buf, (LONG)n);
+    LONG w;
+    /* Also while the writer closes the archive: 7z writes most of it then. */
+    if (check_cancel(p)) {
+        archive_set_error(a, EINTR, "cancelled");
+        return -1;
+    }
+    w = Write(p->out, (APTR)buf, (LONG)n);
     if (w != (LONG)n) {
         p->write_failed = 1;
         p->write_err = IoErr();
@@ -231,6 +237,17 @@ static int same_as_output(pk *p, BPTR l)
 {
     return (p->outlock && SameLock(l, p->outlock) == LOCK_SAME) ||
            (p->oldlock && SameLock(l, p->oldlock) == LOCK_SAME);
+}
+
+/* The writer is about to close the archive. Test aid: UnarcTestCancelAtFinish
+ * sends Ctrl-C to ourselves now, as a user's Cancel during "Finishing". */
+static void finishing(pk *p)
+{
+    char v[4];
+    if (p->o->phase)
+        p->o->phase(p->o->ui_ctx, UA_PACK_PH_FINISHING, p->r->files, p->r->bytes_in);
+    if (GetVar("UnarcTestCancelAtFinish", v, sizeof(v), 0) > 0)
+        Signal(FindTask(NULL), SIGBREAKF_CTRL_C);
 }
 
 static int nomem(pk *p)
@@ -411,6 +428,8 @@ static int add_file(pk *p, BPTR dir, const pent *e)
     }
     if (add_entry_header(p, e) < 0) {
         Close(fh);
+        if (p->cancel)
+            return -1;
         p->r->failed = 1;
         snprintf(p->r->why, sizeof(p->r->why), "the archive could not be written");
         return -1;
@@ -425,6 +444,8 @@ static int add_file(pk *p, BPTR dir, const pent *e)
             take = (LONG)(want - done);
         if (take > 0 && archive_write_data(p->a, p->buf, take) != take) {
             Close(fh);
+            if (p->cancel)
+                return -1;
             p->r->failed = 1;
             if (p->write_failed) {
                 Fault(p->write_err, NULL, p->r->why, sizeof(p->r->why));
@@ -470,44 +491,56 @@ static int add_file(pk *p, BPTR dir, const pent *e)
     return 0;
 }
 
+/* Test aid: the variable UnarcTestGoneDir names a drawer that packing
+ * cannot open again, as if it were deleted after preparing. */
+static int test_gone(const char *name)
+{
+    char v[108];
+    return GetVar("UnarcTestGoneDir", v, sizeof(v), 0) > 0 && strcmp(v, name) == 0;
+}
+
 /* Packs the list. base[i]: the drawer input i is named in. The drawers on
- * the current path stay locked; a drawer that cannot be opened again takes
- * its contents with it, reported once. */
+ * the current path stay locked, one per depth. A drawer that cannot be
+ * opened again (gone since preparing) takes everything below it with it,
+ * reported once: the entries after it are skipped while they are deeper. */
 static int pack_list(pk *p, plist *pl, BPTR *base)
 {
     BPTR stack[MAXDEPTH + 1];
-    int nstack = 0, rc = 0;
+    int nstack = 0, rc = 0, skip = -1;
     ULONG i;
     if (p->o->phase)
         p->o->phase(p->o->ui_ctx, UA_PACK_PH_PACKING, p->r->total_files, p->r->total_bytes);
     for (i = 0; i < pl->n && rc == 0; i++) {
         pent *e = &pl->e[i];
         BPTR parent;
-        while (nstack > e->depth)
-            if (stack[--nstack])
-                UnLock(stack[nstack]);
-        parent = e->depth ? stack[e->depth - 1] : base[e->input];
-        if (!parent)
+        if (skip >= 0 && e->depth > skip)
             continue;
+        skip = -1;
+        while (nstack > e->depth)
+            UnLock(stack[--nstack]);
+        parent = e->depth ? stack[e->depth - 1] : base[e->input];
         if (e->isdir) {
             BPTR old, l;
-            if (add_entry_header(p, e) < 0) {
-                p->r->failed = 1;
-                rc = -1;
-                break;
-            }
-            p->r->dirs++;
             old = CurrentDir(parent);
-            l = Lock((STRPTR)e->name, SHARED_LOCK);
+            l = test_gone(e->name) ? (SetIoErr(ERROR_OBJECT_NOT_FOUND), BNULL)
+                                   : Lock((STRPTR)e->name, SHARED_LOCK);
             CurrentDir(old);
-            if (!l) {
+            if (l) {
+                stack[nstack++] = l;
+                if (add_entry_header(p, e) < 0) {
+                    p->r->failed = !p->cancel;
+                    rc = -1;
+                    break;
+                }
+                p->r->dirs++;
+            } else {
                 char why[100];
                 Fault(IoErr(), NULL, why, sizeof(why));
                 msg(p, "error: cannot open the drawer \"%s\": %s; its contents are not packed",
                     e->apath, why);
                 p->r->errors++;
+                skip = e->depth;
             }
-            stack[nstack++] = l;
         } else {
             rc = add_file(p, parent, e);
         }
@@ -515,8 +548,7 @@ static int pack_list(pk *p, plist *pl, BPTR *base)
             rc = -1;
     }
     while (nstack > 0)
-        if (stack[--nstack])
-            UnLock(stack[nstack]);
+        UnLock(stack[--nstack]);
     return rc;
 }
 
@@ -1082,8 +1114,8 @@ static int lha_pack(pk *p, char **inputs, int ninputs, char *err, int errlen)
     free(names);
     free(taken);
     plist_free(&pl);
-    if (rc == 0 && p->o->phase)
-        p->o->phase(p->o->ui_ctx, UA_PACK_PH_FINISHING, p->r->files, p->r->bytes_in);
+    if (rc == 0)
+        finishing(p);
     if (rc == 0 && !p->r->files && !p->r->dirs) {
         p->r->failed = 1;
         snprintf(p->r->why, sizeof(p->r->why), "nothing could be packed");
@@ -1164,6 +1196,10 @@ int ua_pack(const char *archive, char **inputs, int ninputs, ua_pack_opts *o,
         rc = lha_pack(&p, inputs, ninputs, err, errlen);
         if (p.oldlock)
             UnLock(p.oldlock);
+        if (rc == 0 && check_cancel(&p)) {
+            rc = -1;
+            r->cancelled = 1;
+        }
         old = CurrentDir(p.outdir);
         rc = finish(&p, drawer, leaf, exists, rc, 1, err, errlen);
         CurrentDir(old);
@@ -1242,10 +1278,10 @@ int ua_pack(const char *archive, char **inputs, int ninputs, ua_pack_opts *o,
         rc = -1;
     }
     /* 7z compresses most of the data only now. */
-    if (rc == 0 && o->phase)
-        o->phase(o->ui_ctx, UA_PACK_PH_FINISHING, r->files, r->bytes_in);
+    if (rc == 0)
+        finishing(&p);
     if (rc == 0 && archive_write_close(p.a) != ARCHIVE_OK) {
-        r->failed = 1;
+        r->failed = !p.cancel;
         if (p.write_failed)
             Fault(p.write_err, NULL, r->why, sizeof(r->why));
         else
@@ -1280,6 +1316,11 @@ out:
         r->failed = 1;
         snprintf(r->why, sizeof(r->why), "the archive could not be closed");
         rc = -1;
+    }
+    /* The last moment a Cancel can still keep the old archive. */
+    if (rc == 0 && check_cancel(&p)) {
+        rc = -1;
+        r->cancelled = 1;
     }
     old = CurrentDir(p.outdir);
     rc = finish(&p, drawer, leaf, exists, rc, p.out != BNULL, err, errlen);

@@ -59,7 +59,7 @@ static void stat_point(IPTR on, const char *what)
     fflush(stdout);
 }
 
-const char version[] = "$VER: unarc-cli 0.0.4 (18.10.2026)";
+const char version[] = "$VER: unarc-cli 0.0.4 (21.10.2026)";
 
 /* Whether each stream goes to a Limpet window. Asked once: the query is a
  * DOS packet, which CON: and file handlers refuse at once. */

@@ -20,7 +20,7 @@ typedef struct ua_helper {
     struct DosPacket *dp;
     int cancelled;            /* Ctrl-C was passed on */
     int poll;                 /* output through a file, read as it grows */
-    int drained;              /* polled: read once more after the end */
+    BPTR wr;                  /* polled: the program's output, closed by us */
     char outname[64];         /* that file, deleted at the end */
 } ua_helper;
 

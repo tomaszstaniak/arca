@@ -31,7 +31,7 @@
 #include "../engines/xad_static.h"
 
 #define APPNAME "Unarc"
-const char version[] = "$VER: Unarc 0.0.4 (18.10.2026)";
+const char version[] = "$VER: Unarc 0.0.4 (21.10.2026)";
 
 /* From 0x100: Zune's MUI_Request runs the application's input loop and takes
  * return IDs 1..buttons+1 as its own answer (mui_request.c). */
@@ -1294,8 +1294,9 @@ static void on_pack_progress(uj_msg *m)
      * its text in the shine pen, which on a light background shows only
      * over the filled part. */
     SetAttrs(g_gauge, MUIA_Gauge_Current, pack_pct(m), MUIA_Gauge_InfoText, (IPTR)"", TAG_DONE);
-    settext(t_pcount, "%lu %%: %s of %s, %lu of %lu files", (unsigned long)pack_pct(m), done,
-            total, (unsigned long)m->files, (unsigned long)m->total_files);
+    settext(t_pcount, "%lu %%: %s of %s, %lu of %lu files completed",
+            (unsigned long)pack_pct(m), done, total, (unsigned long)m->files,
+            (unsigned long)m->total_files);
 }
 
 static void on_progress(uj_msg *m)
@@ -1321,15 +1322,19 @@ static void on_progress(uj_msg *m)
         settext(t_pname, "%s", m->name);
     if (j->total_known && j->total) {
         ULONG pct = (ULONG)(m->bytes * 100 / j->total);
+        if (pct > 100)
+            pct = 100;
         sizestr(j->total, total, sizeof(total));
-        SetAttrs(g_gauge, MUIA_ShowMe, TRUE, MUIA_Gauge_Current, pct > 100 ? 100 : pct,
-                 MUIA_Gauge_InfoText, (IPTR)"%ld %%", TAG_DONE);
-        settext(t_pcount, "%s of %s, %lu files", done, total, (unsigned long)m->files);
+        /* The percentage below the gauge, as when packing (on_pack_progress). */
+        SetAttrs(g_gauge, MUIA_ShowMe, TRUE, MUIA_Gauge_Current, pct,
+                 MUIA_Gauge_InfoText, (IPTR)"", TAG_DONE);
+        settext(t_pcount, "%lu %%: %s of %s, %lu files completed", (unsigned long)pct, done,
+                total, (unsigned long)m->files);
     } else {
         /* Total size unknown (a stream that learns sizes as it goes): no
          * percentage rather than an invented one. */
         SetAttrs(g_gauge, MUIA_ShowMe, FALSE, TAG_DONE);
-        settext(t_pcount, "%s, %lu files", done, (unsigned long)m->files);
+        settext(t_pcount, "%s, %lu files completed", done, (unsigned long)m->files);
     }
 }
 
@@ -1454,8 +1459,8 @@ static void extract_done(uj_job *j)
     extracted_any = r->files || r->dirs;
     if (j->open_status == UA_OPEN_DAMAGED) {
         snprintf(head, sizeof(head), "The archive is damaged");
-        snprintf(body, sizeof(body), "Nothing was written.\n\"Recover...\" extracts what can still "
-                 "be read, into a new folder.");
+        snprintf(body, sizeof(body), "Nothing was written.\n\"Recover...\" extracts what can still be read,\n"
+                 "into a new folder.");
     } else if (j->open_status == UA_OPEN_CANCELLED) {
         snprintf(head, sizeof(head), "Cancelled");
         snprintf(body, sizeof(body), "Stopped while reading the archive. Nothing was written.");
@@ -1491,8 +1496,8 @@ static void extract_done(uj_job *j)
                  "progress was removed.", fc, sz, r_root);
     } else if (r->failed) {
         snprintf(head, sizeof(head), "Stopped: %s", r->why);
-        snprintf(body, sizeof(body), "%s (%s) were extracted to\n%s\nbefore it stopped; "
-                 "nothing that was there before was lost.", fc, sz, r_root);
+        snprintf(body, sizeof(body), "%s (%s) were extracted to\n%s\nbefore it stopped. "
+                 "Nothing that was there before\nwas lost.", fc, sz, r_root);
     } else if (r->errors) {
         snprintf(head, sizeof(head), "Partly done");
         snprintf(body, sizeof(body), "%s (%s) in\n%s\n%lu could not be written: see "
@@ -1505,7 +1510,7 @@ static void extract_done(uj_job *j)
                  (unsigned long)(r->renamed + j->plan.collisions),
                  j->plan.unsafe ? ", unsafe paths refused" : "",
                  j->plan.encrypted ? ", encrypted files not extracted" : "",
-                 j->recover ? ".\nRecovered from a damaged archive: check the files before "
+                 j->recover ? ".\nRecovered from a damaged archive: check the files\nbefore "
                  "relying on them" : "");
     } else {
         snprintf(head, sizeof(head), "Done");
@@ -1522,7 +1527,7 @@ static void extract_done(uj_job *j)
         snprintf(head, sizeof(head), "Done, with notes");
     if (extracted_any && j->have_plan && j->plan.root_renamed)
         snprintf(body + strlen(body), sizeof(body) - strlen(body),
-                 "\nA drawer of the archive's name was already there, so a new one was made.");
+                 "\nA drawer of the archive's name was already there,\nso a new one was made.");
     if (r->overwritten)
         snprintf(body + strlen(body), sizeof(body) - strlen(body), "\n%lu files were replaced.",
                  (unsigned long)r->overwritten);
@@ -2021,24 +2026,24 @@ static void pack_done(uj_job *j)
     archive_drawer(j->archive, r_root, sizeof(r_root));
     if (j->extract_rc < 0 && r->cancelled) {
         snprintf(head, sizeof(head), "Cancelled");
-        snprintf(body, sizeof(body), "No archive was made%s.", r->replaced ? "" :
-                 "; an archive that was there before is unchanged");
+        snprintf(body, sizeof(body), "No archive was created.%s", r->replaced ? "" :
+                 "\nAn archive that was there before is unchanged.");
     } else if (j->extract_rc < 0) {
-        snprintf(head, sizeof(head), "Not made: %s", r->why[0] ? r->why : j->err);
-        snprintf(body, sizeof(body), "No archive was made; an archive that was there before "
-                 "is unchanged.");
+        snprintf(head, sizeof(head), "Not created: %s", r->why[0] ? r->why : j->err);
+        snprintf(body, sizeof(body), "No archive was created.\nAn archive that was there "
+                 "before is unchanged.");
     } else if (r->errors) {
-        snprintf(head, sizeof(head), "Made, with errors");
-        snprintf(body, sizeof(body), "%s\n%s (%s) packed into %s; %lu could not be packed as "
+        snprintf(head, sizeof(head), "Archive created, with errors");
+        snprintf(body, sizeof(body), "%s\n%s (%s) packed into %s.\n%lu could not be packed as "
                  "they were: see Details.", j->archive, fc, sz, out, (unsigned long)r->errors);
     } else if (r->skipped || r->kept[0]) {
-        snprintf(head, sizeof(head), "Made, with notes");
+        snprintf(head, sizeof(head), "Archive created, with notes");
         snprintf(body, sizeof(body), "%s\n%s (%s) packed into %s.", j->archive, fc, sz, out);
         if (r->skipped)
             snprintf(body + strlen(body), sizeof(body) - strlen(body),
                      "\n%lu links were not followed.", (unsigned long)r->skipped);
     } else {
-        snprintf(head, sizeof(head), "Made");
+        snprintf(head, sizeof(head), "Archive created");
         snprintf(body, sizeof(body), "%s\n%s (%s) packed into %s.", j->archive, fc, sz, out);
     }
     if (j->extract_rc == 0 && r->kept[0])

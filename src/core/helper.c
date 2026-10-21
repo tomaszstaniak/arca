@@ -68,6 +68,7 @@ static int start(ua_helper *h, const char *path, const char *name, const char *a
 {
     static ULONG serial;
     char out[64];
+    char tv[4];
     BPTR seg, wr, in, er, cd = BNULL;
 
     memset(h, 0, sizeof(*h));
@@ -93,10 +94,13 @@ static int start(ua_helper *h, const char *path, const char *name, const char *a
         helper_free(h);
         return -1;
     }
-    /* A file: both ends shared, the writer's made first. */
+    /* A file: both ends shared, the writer's made first (and emptied, in
+     * case one of that name was left behind). */
     wr = Open((STRPTR)out, poll ? MODE_READWRITE : MODE_NEWFILE);
-    if (wr && poll)
-        SetFileSize(wr, 0, OFFSET_BEGINNING);
+    if (wr && poll && SetFileSize(wr, 0, OFFSET_BEGINNING) != 0) {
+        Close(wr);
+        wr = BNULL;
+    }
     h->rd = wr ? Open((STRPTR)out, MODE_OLDFILE) : BNULL;
     in = Open("NIL:", MODE_OLDFILE);
     er = err_to_out ? BNULL : Open("NIL:", MODE_NEWFILE);
@@ -105,26 +109,31 @@ static int start(ua_helper *h, const char *path, const char *name, const char *a
     if (!wr || !h->rd || !in || (!err_to_out && !er) || (curdir && !cd)) {
         snprintf(err, errlen, poll ? "cannot write the helper's output to T:"
                                    : "cannot open a pipe (is PIPE: mounted?)");
-        if (poll)
-            DeleteFile((STRPTR)out);
         UnLoadSeg(seg);
         if (wr) Close(wr);
         if (h->rd) Close(h->rd);
         if (in) Close(in);
         if (er) Close(er);
         if (cd) UnLock(cd);
+        if (poll)
+            DeleteFile((STRPTR)out);
         helper_free(h);
         return -1;
     }
     SetSignal(0, 1UL << h->sig);
-    h->proc = CreateNewProcTags(NP_Seglist, (IPTR)seg, NP_FreeSeglist, TRUE,
+    /* Polled: the output is ours to close, after the program has ended, so
+     * that everything it wrote is in the file before we read the end.
+     * Test aid: UnarcTestHelperNoProc makes the start fail here. */
+    h->wr = poll ? wr : BNULL;
+    h->proc = GetVar("UnarcTestHelperNoProc", tv, sizeof(tv), 0) > 0 ? NULL :
+              CreateNewProcTags(NP_Seglist, (IPTR)seg, NP_FreeSeglist, TRUE,
                                 NP_Name, (IPTR)name, NP_CommandName, (IPTR)name,
                                 NP_Cli, TRUE, NP_Arguments, (IPTR)args,
                                 NP_Input, (IPTR)in, NP_Output, (IPTR)wr,
                                 /* Errors into the output pipe as well: the
                                  * same handle, closed once, with the output. */
                                 NP_Error, (IPTR)(err_to_out ? wr : er),
-                                NP_CloseInput, TRUE, NP_CloseOutput, TRUE,
+                                NP_CloseInput, TRUE, NP_CloseOutput, !poll,
                                 NP_CloseError, err_to_out ? FALSE : TRUE,
                                 NP_StackSize, 262144,
                                 /* Our drawer must not stay locked by a helper. */
@@ -134,14 +143,14 @@ static int start(ua_helper *h, const char *path, const char *name, const char *a
                                 TAG_END);
     if (!h->proc) {
         snprintf(err, errlen, "cannot start %s", name);
-        if (poll)
-            DeleteFile((STRPTR)out);
         UnLoadSeg(seg);
         Close(wr);
         Close(h->rd);
         Close(in);
         if (er) Close(er);
         if (cd) UnLock(cd);
+        if (poll)
+            DeleteFile((STRPTR)h->outname);
         helper_free(h);
         return -1;
     }
@@ -160,27 +169,27 @@ int ua_helper_start_polled(ua_helper *h, const char *path, const char *name, con
     return start(h, path, name, args, curdir, err_to_out, 1, err, errlen);
 }
 
-/* The file grows while the program writes; 0 from Read only means "not
- * yet" until the program has ended. */
+/* The file grows while the program writes; 0 from Read means "not yet"
+ * until the program has ended and its output is closed. Ctrl-C to us is
+ * passed on whatever the read brought. */
 static LONG read_polled(ua_helper *h, void *buf, LONG len)
 {
     for (;;) {
-        int ended = h->exited;
-        LONG n = Read(h->rd, buf, len);
-        if (n != 0)
-            return n;
-        if (ended) {
-            /* DOS closes the program's output after its exit code ran:
-             * anything still buffered in that handle arrives then. */
-            if (h->drained)
-                return 0;
-            h->drained = 1;
-            Delay(5);
-            continue;
-        }
+        LONG n;
         if ((SetSignal(0, SIGBREAKF_CTRL_C) & SIGBREAKF_CTRL_C) && !h->cancelled) {
             h->cancelled = 1;
             ua_helper_poke(h);
+        }
+        n = Read(h->rd, buf, len);
+        if (n != 0 || !h->wr)
+            return n;
+        if (h->exited) {
+            /* helper_exit has run; let it return out of our code, then
+             * close the output: what it held is in the file after that. */
+            Delay(1);
+            Close(h->wr);
+            h->wr = BNULL;
+            continue;
         }
         Delay(2);
     }
@@ -220,14 +229,15 @@ LONG ua_helper_end(ua_helper *h)
         Close(h->rd);
         h->rd = BNULL;
     }
-    if (h->poll && h->proc) {
-        while (!h->exited)
-            Wait(1UL << h->sig);
-    }
     if (h->proc) {
         while (!h->exited)
             Wait(1UL << h->sig);
         Delay(1);      /* let helper_exit return out of our code */
+    }
+    /* Polled, after a failed read: the output is still ours to close. */
+    if (h->wr) {
+        Close(h->wr);
+        h->wr = BNULL;
     }
     rc = h->rc;
     if (h->poll)

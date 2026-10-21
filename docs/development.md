@@ -63,11 +63,20 @@ collect-aros itself can exit 0 with symbols left unresolved, which is also why
   at the end; an archive it replaces is deleted only then.
   Packing first walks every input once ("Preparing"): the list it builds,
   with each file's size, is what libarchive packs, and its total is the
-  100 % of the progress, counted in input bytes the engine has taken. LhA's
-  helper walks the drawers itself, so for LhA the list gives the totals and
-  the link check only; its progress inside a file comes from LHa's running
-  indicator (`q0`), read from a file in `T:` as it grows, because PIPE:
-  answers a read only once it can fill the whole buffer.
+  100 % of the progress, counted in input bytes the engine has taken. A file
+  that grew after the walk is stored as far as its size then and reported; a
+  drawer gone since is reported with everything below it. Cancel is honoured
+  while the writer closes the archive and once more just before the
+  temporary archive takes its name.
+  LhA is different: its helper walks the drawers again itself and the list
+  is dropped once it has given the totals and the link check, so files that
+  change in between are packed as the helper finds them. Its progress is an
+  estimate: each file counts in steps of LHa's running indicator (`q0`, up
+  to 58 marks per file) times the file's size, and in full when LHa reports
+  it done. The helper's output goes to a file in `T:` read as it grows,
+  because PIPE: answers a read only once it can fill the whole buffer; that
+  output handle is closed by us after the helper has ended, so its end is
+  in the file before we read it.
 
 Engine choice (`registry.c`): RAR goes to 7-Zip first. Plain 7z and ZIP go to
 libarchive first, as it is 2-3 times faster with many small entries; before
@@ -179,7 +188,10 @@ Test aids: `TESTQUIT` ends the program when its first job has ended; the variabl
 signals; `UnarcTestDelay` (ticks) slows the delivery of list entries;
 `UnarcTestSlowList` (ticks per 100 entries) slows reading the archive itself;
 `UnarcTestFailDir` (`name` or `name/k`) makes reading that drawer fail while
-packing.
+packing; `UnarcTestGoneDir` (`name`) makes packing unable to open that drawer
+again after preparing, as if deleted; `UnarcTestCancelAtFinish` sends Ctrl-C
+when the writer starts closing the archive; `UnarcTestHelperNoProc` makes
+starting a helper fail after its output file is open.
 
 ## Tests
 
