@@ -2,4 +2,4 @@
 libarchive  https://github.com/libarchive/libarchive.git           f81f50aa40fc4d94857ca1947da074ee67ea5675  v3.9.0, BSD-2-Clause
 xz          https://github.com/tukaani-project/xz.git              4b73f2ec19a99ef465282fbce633e8deb33691b3  v5.8.3 (liblzma is 0BSD)
 7zip        https://github.com/ip7z/7zip.git                       9128b80e3a471108678e2b3ec3c985861c8d7b0f  26.04; LGPL-2.1+ with the unRAR restriction on Compress/Rar*, see experiments/7z-backend
-zunekit     ../../aros-zuneng/zunekit                              37fc50baf71b88d9017da7cfe08852d35ca5f7b0  shared Zune components, MIT; not published yet: fetched from the sibling workspace
+zunekit     ../../aros-zuneng/zunekit                              7732ebde09130c59f70c6527d234e96e967cd62c  shared Zune components, MIT; not published yet: fetched from the sibling workspace

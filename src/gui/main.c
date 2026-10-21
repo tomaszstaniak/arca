@@ -28,10 +28,12 @@
 #include <mui/NList_mcc.h>
 #include "job.h"
 #include "zk_table.h"
+#include "zk_steps.h"
+#include "../version.h"
 #include "../engines/xad_static.h"
 
 #define APPNAME "Unarc"
-const char version[] = "$VER: Unarc 0.0.4 (21.10.2026)";
+const char version[] = "$VER: Unarc " UNARC_VR " (" UNARC_DATE ") " UNARC_RELEASE;
 
 /* From 0x100: Zune's MUI_Request runs the application's input loop and takes
  * return IDs 1..buttons+1 as its own answer (mui_request.c). */
@@ -2296,6 +2298,13 @@ static int build(void)
             "and it could not be opened.");
         return 0;
     }
+    {
+        /* The level slider: one step per level of the format, the level's
+         * name shown above it (start_show_level). */
+        static struct TagItem chain[] = { { MUIA_CycleChain, 1 }, { TAG_DONE, 0 } };
+        if (!zk_steps_init() || !(sl_level = zk_steps_new(4, 0, chain)))
+            return 0;
+    }
     lvview = zk_table_new(&tcfg, &lv, NULL);
     if (!lvview)
         return 0;
@@ -2338,13 +2347,7 @@ static int build(void)
                     Child, (IPTR)(t_level = TextObject, MUIA_Text_SetMin, FALSE, End),
                     Child, (IPTR)(HGroup,
                         Child, (IPTR)Label1("Faster"),
-                        Child, (IPTR)(sl_level = SliderObject,
-                            MUIA_Numeric_Min, 0,
-                            MUIA_Numeric_Max, 3,
-                            /* The level's name is shown above, not a number. */
-                            MUIA_Numeric_Format, (IPTR)" ",
-                            MUIA_CycleChain, 1,
-                        End),
+                        Child, (IPTR)sl_level,
                         Child, (IPTR)Label1("Smaller"),
                     End),
                 End),
@@ -2592,6 +2595,11 @@ static int build(void)
                 Child, (IPTR)(HGroup,
                     Child, (IPTR)(b_ssave = button("_Save")),
                     Child, (IPTR)(b_suse = button("_Use")),
+                    Child, (IPTR)HSpace(0),
+                    Child, (IPTR)(TextObject,
+                        MUIA_Text_Contents, (IPTR)"Unarc " UNARC_RELEASE,
+                        MUIA_Text_SetMin, TRUE,
+                    End),
                     Child, (IPTR)HSpace(0),
                     Child, (IPTR)(b_scancel = button("_Cancel")),
                 End),
@@ -3241,6 +3249,7 @@ static int gui_main(int argc, char **argv)
         poll_jobs();
     }
     MUI_DisposeObject(app);
+    zk_steps_exit();
     zk_table_exit();
     DeleteMsgPort(jport);
     b_reset();

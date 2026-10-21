@@ -11,6 +11,9 @@ TC=$UNARC_TOOLCHAIN_ABIV11
 X=$B/contrib-src/workbench/libs/xad/portable
 CC="$TC/x86_64-aros-gcc"
 CFLAGS=(--sysroot="$SDK" -O2 -Wall -Wno-pointer-sign -I"$P/include" -I"$R/src/third_party/limpet/include")
+# The release name for $VER and the program's own display (src/version.h);
+# packaging/make-package.sh needs the build made for the name it packages.
+[ -n "${UNARC_RELEASE:-}" ] && CFLAGS+=(-DUNARC_RELEASE="\"$UNARC_RELEASE\"")
 mkdir -p "$B/obj" "$B/bin"
 objs=()
 for f in core/compat core/session core/volumes core/bigfile core/methods core/times core/pack core/registry core/names core/plan core/fsl core/helper engines/be_libarchive engines/be_xad engines/be_7z third_party/limpet/limpet_query third_party/limpet/limpet_format cli/main; do
@@ -37,16 +40,19 @@ gobjs=()
 for o in "${objs[@]}"; do
   case $o in */main.o) ;; *) gobjs+=("$o") ;; esac
 done
-# The table comes from zunekit at the revision pinned in deps.lock.
+# The table and the step slider come from zunekit at the revision pinned in
+# deps.lock.
 ZK=$R/deps/zunekit/src
-[ -f "$ZK/zk_table.c" ] || { echo "deps/zunekit missing: run scripts/fetch-deps.sh" >&2; exit 1; }
+[ -f "$ZK/zk_steps.c" ] || { echo "deps/zunekit missing or old: run scripts/fetch-deps.sh" >&2; exit 1; }
 for f in gui/job gui/main; do
   o=$B/obj/gui_$(basename "$f").o
   "$CC" "${CFLAGS[@]}" -I"$ZK" -c "$R/src/$f.c" -o "$o"
   gobjs+=("$o")
 done
-"$CC" "${CFLAGS[@]}" -c "$ZK/zk_table.c" -o "$B/obj/zk_table.o"
-gobjs+=("$B/obj/zk_table.o")
+for c in zk_table zk_steps; do
+  "$CC" "${CFLAGS[@]}" -c "$ZK/$c.c" -o "$B/obj/$c.o"
+  gobjs+=("$B/obj/$c.o")
+done
 "$CC" --sysroot="$SDK" -o "$B/bin/Unarc" "${gobjs[@]}" \
   "$P/lib/libarchive.a" "$P/lib/libxadstatic.a" "$P/lib/liblzma.a" \
   "$SDK/lib/libbz2_nostdio.a" "$SDK/lib/libz.static.a" -liconv -lpthread

@@ -27,6 +27,7 @@
 #include <proto/dos.h>
 #include "../core/ua.h"
 #include "../engines/xad_static.h"
+#include "../version.h"
 #include <limpet/limpet.h>
 
 #define TEMPLATE "ARCHIVE,FILES/M,TO/K,LIST/S,PACK/S,FORMAT/K,LEVEL/K/N,RECOVER/S,ENGINE/K," \
@@ -59,7 +60,7 @@ static void stat_point(IPTR on, const char *what)
     fflush(stdout);
 }
 
-const char version[] = "$VER: unarc-cli 0.0.4 (21.10.2026)";
+const char version[] = "$VER: unarc-cli " UNARC_VR " (" UNARC_DATE ") " UNARC_RELEASE;
 
 /* Whether each stream goes to a Limpet window. Asked once: the query is a
  * DOS packet, which CON: and file handlers refuse at once. */
@@ -684,7 +685,7 @@ static int run_pack(IPTR *args)
 
 static void help(void)
 {
-    out("unarc-cli: list, extract and make archives.\n\n"
+    out("unarc-cli " UNARC_RELEASE ": list, extract and make archives.\n\n"
         "  unarc-cli <archive> [TO <drawer>]       extract next to the archive or into TO\n"
         "  unarc-cli <archive> LIST                show what is inside and where it would go\n"
         "  unarc-cli <archive> RECOVER             extract what a damaged archive still holds\n"

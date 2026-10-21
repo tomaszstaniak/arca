@@ -226,8 +226,15 @@ starting a helper fail after its output file is open.
 
 ## Package
 
+Build for a release name first: `UNARC_RELEASE=0.0.4-test7 scripts/build-abiv11.sh`.
+The name goes into both programs' `$VER` after the date and into what they
+show (the settings window, `unarc-cli HELP`); without it they are
+`0.0.4-dev`. The `$VER` version.revision is major.(minor * 100 + patch), since
+`Version` and installers compare two numbers: 0.0.4 is 0.4 (`src/version.h`).
+
 `packaging/make-package.sh <version>` writes `dist/Unarc-<version>-x86_64-abiv11.zip`
 (one drawer: the three programs, ReadMe, icons from `packaging/make-icons.py`,
 and a Licences drawer with every licence text, THIRD_PARTY_NOTICES and the
 source revision) and adds it to `dist/SHA256SUMS`. It refuses to replace a
-file in `dist/` and to package uncommitted sources.
+file in `dist/`, to package uncommitted sources, and to package programs built
+for another release name.

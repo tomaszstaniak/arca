@@ -23,6 +23,12 @@ if [ -e "$OUT" ]; then echo "$OUT exists; delivered files are not replaced" >&2;
 for f in "$BIN/Unarc" "$BIN/unarc-cli" "$Z7" "$LHA"; do
   [ -f "$f" ] || { echo "missing $f: build first" >&2; exit 1; }
 done
+# The programs must have been built for this name (UNARC_RELEASE=<version>
+# scripts/build-abiv11.sh): it is in their $VER and in what they show.
+for f in "$BIN/Unarc" "$BIN/unarc-cli"; do
+  grep -aq ") $VER\$" <(strings -a "$f" | grep -a '^\$VER: ') || {
+    echo "$f was not built as $VER: run UNARC_RELEASE=$VER scripts/build-abiv11.sh" >&2; exit 1; }
+done
 if [ -n "$(git -C "$R" status --porcelain -- src experiments scripts packaging patches upstreams.json deps.lock)" ]; then
   echo "the source tree has uncommitted changes; commit before packaging" >&2; exit 1
 fi
@@ -48,6 +54,7 @@ cp "$R/patches/lha/"*.patch "$R/patches/lha/series" "$T/lhasrc/unarc-lha-source/
 sed -n '/^@NODE "License"/,/^@ENDNODE/p' "$R/upstream/lha/dist/LHa_4U4A.guide" | grep -v '^@' \
   >"$T/LHa-for-UNIX-terms.txt"
 {
+  echo "Unarc $VER"
   echo "aros-unarc $(git -C "$R" rev-parse HEAD)"
   echo "unarc-7z: 7-Zip 26.04, experiments/7z-backend of the same revision"
   echo "unarc-lha: LHa for UNIX, sodero/lha $LHAPIN with patches/lha (source in Source/)"
