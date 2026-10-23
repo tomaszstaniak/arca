@@ -13,7 +13,17 @@ CC="$TC/x86_64-aros-gcc"
 CFLAGS=(--sysroot="$SDK" -O2 -Wall -Wno-pointer-sign -I"$P/include" -I"$R/src/third_party/limpet/include")
 # The release name for $VER and the program's own display (src/version.h);
 # packaging/make-package.sh needs the build made for the name it packages.
-[ -n "${UNARC_RELEASE:-}" ] && CFLAGS+=(-DUNARC_RELEASE="\"$UNARC_RELEASE\"")
+# The $VER pair is derived from the name, major.(minor * 100 + patch), which
+# stays in order and unique only while patch is below 100.
+if [ -n "${UNARC_RELEASE:-}" ]; then
+  if [[ ! $UNARC_RELEASE =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)(-[A-Za-z0-9.]+)?$ ]] ||
+     [ "${BASH_REMATCH[3]}" -ge 100 ]; then
+    echo "UNARC_RELEASE \"$UNARC_RELEASE\": expected major.minor.patch[-suffix], patch below 100" >&2
+    exit 1
+  fi
+  UNARC_VR="$((10#${BASH_REMATCH[1]})).$((10#${BASH_REMATCH[2]} * 100 + 10#${BASH_REMATCH[3]}))"
+  CFLAGS+=(-DUNARC_RELEASE="\"$UNARC_RELEASE\"" -DUNARC_VR="\"$UNARC_VR\"")
+fi
 mkdir -p "$B/obj" "$B/bin"
 objs=()
 for f in core/compat core/session core/volumes core/bigfile core/methods core/times core/pack core/registry core/names core/plan core/fsl core/helper engines/be_libarchive engines/be_xad engines/be_7z third_party/limpet/limpet_query third_party/limpet/limpet_format cli/main; do

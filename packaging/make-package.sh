@@ -25,9 +25,12 @@ for f in "$BIN/Unarc" "$BIN/unarc-cli" "$Z7" "$LHA"; do
 done
 # The programs must have been built for this name (UNARC_RELEASE=<version>
 # scripts/build-abiv11.sh): it is in their $VER and in what they show.
+# Compared as text, not as a pattern: "0.0.4" must not match "0x0x4".
 for f in "$BIN/Unarc" "$BIN/unarc-cli"; do
-  grep -aq ") $VER\$" <(strings -a "$f" | grep -a '^\$VER: ') || {
-    echo "$f was not built as $VER: run UNARC_RELEASE=$VER scripts/build-abiv11.sh" >&2; exit 1; }
+  got=$(strings -a "$f" | grep -a -m1 '^\$VER: ' | sed 's/^[^)]*) //')
+  [ "$got" = "$VER" ] || {
+    echo "$f was built as \"$got\", not $VER: run UNARC_RELEASE=$VER scripts/build-abiv11.sh" >&2
+    exit 1; }
 done
 if [ -n "$(git -C "$R" status --porcelain -- src experiments scripts packaging patches upstreams.json deps.lock)" ]; then
   echo "the source tree has uncommitted changes; commit before packaging" >&2; exit 1

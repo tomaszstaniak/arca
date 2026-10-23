@@ -230,7 +230,9 @@ Build for a release name first: `UNARC_RELEASE=0.0.4-test7 scripts/build-abiv11.
 The name goes into both programs' `$VER` after the date and into what they
 show (the settings window, `unarc-cli HELP`); without it they are
 `0.0.4-dev`. The `$VER` version.revision is major.(minor * 100 + patch), since
-`Version` and installers compare two numbers: 0.0.4 is 0.4 (`src/version.h`).
+`Version` and installers compare two numbers: 0.0.4 is 0.4. The build derives
+it from the name and refuses a patch number of 100 or more, where the pairs
+would stop being unique (`src/version.h`).
 
 `packaging/make-package.sh <version>` writes `dist/Unarc-<version>-x86_64-abiv11.zip`
 (one drawer: the three programs, ReadMe, icons from `packaging/make-icons.py`,
