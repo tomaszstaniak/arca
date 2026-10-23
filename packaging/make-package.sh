@@ -27,7 +27,9 @@ done
 # scripts/build-abiv11.sh): it is in their $VER and in what they show.
 # Compared as text, not as a pattern: "0.0.4" must not match "0x0x4".
 for f in "$BIN/Unarc" "$BIN/unarc-cli"; do
-  got=$(strings -a "$f" | grep -a -m1 '^\$VER: ' | sed 's/^[^)]*) //')
+  # grep -m1 stops reading; under pipefail the SIGPIPE to strings would end
+  # the script, so not in this pipeline.
+  got=$(set +o pipefail; strings -a "$f" | grep -a -m1 '^\$VER: ' | sed 's/^[^)]*) //')
   [ "$got" = "$VER" ] || {
     echo "$f was built as \"$got\", not $VER: run UNARC_RELEASE=$VER scripts/build-abiv11.sh" >&2
     exit 1; }
