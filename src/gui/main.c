@@ -54,7 +54,7 @@ static Object *wsettings, *c_sstart, *c_sopen, *cb_sopendir, *cb_sclose, *c_spac
 static Object *cb_newfolder;
 static Object *s_find, *lv, *lvview, *t_active, *t_bstatus, *s_to, *p_to, *b_exsel, *b_exall,
               *b_info, *b_bclose, *b_brecover;
-static Object *t_ptitle, *t_pto, *t_pname, *g_gauge, *t_pcount, *t_presult,
+static Object *t_ptitle, *t_pto, *t_pname, *g_gauge, *t_pcount, *t_presult, *f_presult,
               *b_pcancel, *b_popen, *b_pdetails, *b_pclose, *b_precover;
 static Object *lq, *g_qbtns, *b_qremove, *b_qcancelall;
 static Object *t_askq, *t_askinfo, *cb_all, *b_arep, *b_akeep, *b_askip, *b_acancel;
@@ -160,6 +160,18 @@ static void settext(Object *o, const char *fmt, ...)
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
     SetAttrs(o, MUIA_Text_Contents, (IPTR)buf, TAG_DONE);
+}
+
+/* The result's text: a Floattext, so that it wraps to the window's width
+ * (Text does not wrap, and long paths and errors were cut off). */
+static void setresult(const char *fmt, ...)
+{
+    char buf[2 * UA_PATHMAX + 512];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    SetAttrs(f_presult, MUIA_Floattext_Text, (IPTR)buf, TAG_DONE);
 }
 
 static void sizestr(UQUAD n, char *s, size_t sz)
@@ -908,7 +920,7 @@ static void prog_reset(const char *archive, const char *dest)
     settext(t_pto, "To: %s", dest);
     settext(t_pname, "");
     settext(t_pcount, "");
-    settext(t_presult, "");
+    setresult("");
     SetAttrs(g_gauge, MUIA_Gauge_Current, 0, MUIA_Gauge_InfoText, (IPTR)"", MUIA_ShowMe, TRUE,
              TAG_DONE);
     SetAttrs(b_pcancel, MUIA_ShowMe, TRUE, MUIA_Disabled, FALSE, TAG_DONE);
@@ -1077,10 +1089,10 @@ static void queue_summary(void)
     settext(t_ptitle, "\33b%d archives", nq);
     SetAttrs(wprog, MUIA_Window_Title, (IPTR)APPNAME, TAG_DONE);
     if (bad || cancelled)
-        settext(t_presult, "%d extracted, %d with problems, %d cancelled or removed.\n"
+        setresult("%d extracted, %d with problems, %d cancelled or removed.\n"
                 "Select an archive for its folder and details.", ok, bad, cancelled);
     else
-        settext(t_presult, "All %d extracted.\nSelect an archive for its folder and details.", ok);
+        setresult("All %d extracted.\nSelect an archive for its folder and details.", ok);
     SetAttrs(lq, MUIA_ShowMe, TRUE, TAG_DONE);
     SetAttrs(g_qbtns, MUIA_ShowMe, FALSE, TAG_DONE);
     SetAttrs(b_precover, MUIA_ShowMe, FALSE, TAG_DONE);
@@ -1461,7 +1473,7 @@ static void extract_done(uj_job *j)
     extracted_any = r->files || r->dirs;
     if (j->open_status == UA_OPEN_DAMAGED) {
         snprintf(head, sizeof(head), "The archive is damaged");
-        snprintf(body, sizeof(body), "Nothing was written.\n\"Recover...\" extracts what can still be read,\n"
+        snprintf(body, sizeof(body), "Nothing was written.\n\"Recover...\" extracts what can still be read, "
                  "into a new folder.");
     } else if (j->open_status == UA_OPEN_CANCELLED) {
         snprintf(head, sizeof(head), "Cancelled");
@@ -1499,7 +1511,7 @@ static void extract_done(uj_job *j)
     } else if (r->failed) {
         snprintf(head, sizeof(head), "Stopped: %s", r->why);
         snprintf(body, sizeof(body), "%s (%s) were extracted to\n%s\nbefore it stopped. "
-                 "Nothing that was there before\nwas lost.", fc, sz, r_root);
+                 "Nothing that was there before was lost.", fc, sz, r_root);
     } else if (r->errors) {
         snprintf(head, sizeof(head), "Partly done");
         snprintf(body, sizeof(body), "%s (%s) in\n%s\n%lu could not be written: see "
@@ -1512,7 +1524,7 @@ static void extract_done(uj_job *j)
                  (unsigned long)(r->renamed + j->plan.collisions),
                  j->plan.unsafe ? ", unsafe paths refused" : "",
                  j->plan.encrypted ? ", encrypted files not extracted" : "",
-                 j->recover ? ".\nRecovered from a damaged archive: check the files\nbefore "
+                 j->recover ? ".\nRecovered from a damaged archive: check the files before "
                  "relying on them" : "");
     } else {
         snprintf(head, sizeof(head), "Done");
@@ -1529,7 +1541,7 @@ static void extract_done(uj_job *j)
         snprintf(head, sizeof(head), "Done, with notes");
     if (extracted_any && j->have_plan && j->plan.root_renamed)
         snprintf(body + strlen(body), sizeof(body) - strlen(body),
-                 "\nA drawer of the archive's name was already there,\nso a new one was made.");
+                 "\nA drawer of the archive's name was already there, so a new one was made.");
     if (r->overwritten)
         snprintf(body + strlen(body), sizeof(body) - strlen(body), "\n%lu files were replaced.",
                  (unsigned long)r->overwritten);
@@ -1550,7 +1562,7 @@ static void extract_done(uj_job *j)
         (unsigned long)r->renamed, (unsigned long)r->overwritten, (unsigned long)r->errors,
         (unsigned long long)r->bytes, r->cancelled, r->failed, j->open_status, r_root);
     settext(t_ptitle, "\33b%s", head);
-    settext(t_presult, "%s", body);
+    setresult("%s", body);
     SetAttrs(t_pname, MUIA_ShowMe, FALSE, TAG_DONE);
     SetAttrs(g_gauge, MUIA_ShowMe, FALSE, TAG_DONE);
     SetAttrs(t_pcount, MUIA_ShowMe, FALSE, TAG_DONE);
@@ -1899,10 +1911,10 @@ static void k_next(void)
             /* Two lines like any result; one line per archive in Details. */
             settext(t_ptitle, "\33b%d archives made", k_made);
             if (k_bad)
-                settext(t_presult, "%d with problems: see Details.\nThe others are in %s.", k_bad,
+                setresult("%d with problems: see Details.\nThe others are in %s.", k_bad,
                         k_lastdir[0] ? k_lastdir : "their drawers");
             else
-                settext(t_presult, "Each item in its own archive, in\n%s", k_lastdir);
+                setresult("Each item in its own archive, in\n%s", k_lastdir);
             free(r_detail);
             r_detail = strdup(k_lines);
             SetAttrs(wprog, MUIA_Window_Title, (IPTR)APPNAME, TAG_DONE);
@@ -2060,7 +2072,7 @@ static void pack_done(uj_job *j)
         (unsigned long)r->skipped, (unsigned long)r->errors, (unsigned long long)r->bytes_in,
         (unsigned long long)r->bytes_out, r->cancelled, r->failed, j->extract_rc);
     settext(t_ptitle, "\33b%s", head);
-    settext(t_presult, "%s", body);
+    setresult("%s", body);
     SetAttrs(t_pname, MUIA_ShowMe, FALSE, TAG_DONE);
     SetAttrs(g_gauge, MUIA_ShowMe, FALSE, TAG_DONE);
     SetAttrs(t_pcount, MUIA_ShowMe, FALSE, TAG_DONE);
@@ -2451,7 +2463,21 @@ static int build(void)
                     MUIA_FixHeightTxt, (IPTR)"0",
                 End),
                 Child, (IPTR)(t_pcount = TextObject, MUIA_Text_SetMin, FALSE, End),
-                Child, (IPTR)(t_presult = TextObject, MUIA_Text_SetMin, FALSE, End),
+                /* Seven lines: the longest result (counts, a path wrapped
+                 * on three lines, skipped, two notes). No scroller: Zune's
+                 * Floattext wraps to the width of the whole Listview, the
+                 * scroller included (floattext.c SetText, MUIA_Width), so
+                 * text would run under it. The height cannot follow the
+                 * text: Zune fixes it when the object is made. */
+                Child, (IPTR)(t_presult = ListviewObject,
+                    MUIA_Listview_Input, FALSE,
+                    MUIA_Listview_ScrollerPos, MUIV_Listview_ScrollerPos_None,
+                    MUIA_Listview_List, (IPTR)(f_presult = FloattextObject,
+                        MUIA_Frame, MUIV_Frame_None,
+                        MUIA_Background, MUII_WindowBack,
+                        MUIA_FixHeightTxt, (IPTR)"\n\n\n\n\n\n",
+                    End),
+                End),
                 Child, (IPTR)(lq = ListviewObject,
                     MUIA_ShowMe, FALSE,
                     MUIA_CycleChain, 1,
