@@ -5,7 +5,8 @@
  * Version and installers compare as two numbers, so it is
  * major.(minor * 100 + patch): 0.0.4 is 0.4, a later 0.1.2 would be 0.102.
  * That needs patch below 100, which the build checks. The full name follows
- * the date. The values here are for builds without a name. */
+ * the date, which is the date of the commit built. The values here are for
+ * builds without a name. */
 #ifndef UNARC_VERSION_H
 #define UNARC_VERSION_H
 
@@ -15,6 +16,8 @@
 #ifndef UNARC_VR
 #define UNARC_VR   "0.4"
 #endif
+#ifndef UNARC_DATE
 #define UNARC_DATE "21.10.2026"
+#endif
 
 #endif

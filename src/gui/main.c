@@ -51,7 +51,7 @@ enum { ID_OPEN = 0x100, ID_START_CLOSE, ID_DROP,
 
 static Object *app, *wstart, *wbrowse, *wprog, *wask, *wdetail;
 static Object *o_icon, *o_drop, *b_open, *c_packfmt, *b_pack, *b_settings, *sl_level,
-              *t_level, *cb_separate, *t_where, *t_fmthint;
+              *t_level, *cb_separate, *t_where, *g_fmthint;
 static Object *wsettings, *c_sstart, *c_sopen, *cb_sopendir, *cb_sclose, *c_spackwhere,
               *s_spackdir, *p_spackdir, *c_sname, *c_sexwhere, *s_sexdir, *p_sexdir, *c_snewdir,
               *c_sexists, *b_ssave, *b_suse, *b_scancel;
@@ -1874,7 +1874,7 @@ static void start_show_level(void)
 static void start_format_changed(void)
 {
     int f = cur_fmt();
-    settext(t_fmthint, "%s", pfmts[f].hint);
+    SetAttrs(g_fmthint, MUIA_Group_ActivePage, f, TAG_DONE);
     SetAttrs(sl_level, MUIA_NoNotify, TRUE, MUIA_Numeric_Max, lvl_count(f) - 1,
              MUIA_Numeric_Value, pf_level[f], TAG_DONE);
     start_show_level();
@@ -2555,9 +2555,15 @@ static int build(void)
                         Child, (IPTR)HSpace(0),
                     End),
                     Child, (IPTR)Label1(""),
-                    /* As wide as the longest note (pfmts), so that none is cut. */
-                    Child, (IPTR)(t_fmthint = TextObject,
-                        MUIA_FixWidthTxt, (IPTR)"Smallest archives; opens with 7-Zip or Unarc.",
+                    /* One page per format (pfmts' order): a page group is as
+                     * wide as its widest page, so no note is cut and the
+                     * window does not change size with the format. */
+                    Child, (IPTR)(g_fmthint = VGroup,
+                        MUIA_Group_PageMode, TRUE,
+                        Child, (IPTR)(TextObject, MUIA_Text_Contents, (IPTR)pfmts[0].hint, End),
+                        Child, (IPTR)(TextObject, MUIA_Text_Contents, (IPTR)pfmts[1].hint, End),
+                        Child, (IPTR)(TextObject, MUIA_Text_Contents, (IPTR)pfmts[2].hint, End),
+                        Child, (IPTR)(TextObject, MUIA_Text_Contents, (IPTR)pfmts[3].hint, End),
                     End),
                     Child, (IPTR)Label1("Save to"),
                     Child, (IPTR)(t_where = TextObject, MUIA_Text_SetMin, FALSE, End),

@@ -14,7 +14,9 @@ CFLAGS=(--sysroot="$SDK" -O2 -Wall -Wno-pointer-sign -I"$P/include" -I"$R/src/th
 # The release name for $VER and the program's own display (src/version.h);
 # packaging/make-package.sh needs the build made for the name it packages.
 # The $VER pair is derived from the name, major.(minor * 100 + patch), which
-# stays in order and unique only while patch is below 100.
+# stays in order and unique only while patch is below 100. The $VER date is
+# the date of the commit built, so that a rebuild of one commit gives the same
+# file and a new release cannot carry the previous one's date.
 if [ -n "${UNARC_RELEASE:-}" ]; then
   if [[ ! $UNARC_RELEASE =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)(-[A-Za-z0-9.]+)?$ ]] ||
      [ "${BASH_REMATCH[3]}" -ge 100 ]; then
@@ -22,7 +24,9 @@ if [ -n "${UNARC_RELEASE:-}" ]; then
     exit 1
   fi
   UNARC_VR="$((10#${BASH_REMATCH[1]})).$((10#${BASH_REMATCH[2]} * 100 + 10#${BASH_REMATCH[3]}))"
-  CFLAGS+=(-DUNARC_RELEASE="\"$UNARC_RELEASE\"" -DUNARC_VR="\"$UNARC_VR\"")
+  UNARC_DATE=$(git -C "$R" log -1 --format=%cd --date=format:%d.%m.%Y)
+  CFLAGS+=(-DUNARC_RELEASE="\"$UNARC_RELEASE\"" -DUNARC_VR="\"$UNARC_VR\""
+           -DUNARC_DATE="\"$UNARC_DATE\"")
 fi
 mkdir -p "$B/obj" "$B/bin"
 objs=()
