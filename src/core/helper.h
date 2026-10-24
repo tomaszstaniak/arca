@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: MIT */
-/* Helper programs (unarc-7z, unarc-lha): programs of their own next to Unarc,
+/* Helper programs (unarc-7z, unarc-lha): programs of their own next to Arca,
  * run as child processes, never linked in (their licences differ from
- * Unarc's). helper.c starts one and reads its output. */
+ * Arca's). helper.c starts one and reads its output. */
 #ifndef UA_HELPER_H
 #define UA_HELPER_H
 

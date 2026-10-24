@@ -27,7 +27,7 @@ need bash, CMake, git and patch.
 
     scripts/fetch-deps.sh          # pinned sources from deps.lock into deps/
     scripts/build-deps-abiv11.sh   # static liblzma, libarchive, XAD into build/abiv11-x86_64/prefix
-    scripts/build-abiv11.sh        # build/abiv11-x86_64/bin/unarc-cli and Unarc
+    scripts/build-abiv11.sh        # build/abiv11-x86_64/bin/arca-cli and Arca
     scripts/build-lha-abiv11.sh    # build/abiv11-x86_64/bin/unarc-lha (LHa for UNIX + patches/lha)
 
 `fetch-deps.sh` puts unmodified dependencies (`deps.lock`) in `deps/` and the
@@ -49,8 +49,8 @@ collect-aros itself can exit 0 with symbols left unresolved, which is also why
   into AROS dates with the locale's offset for every engine.
 - `src/engines/`: libarchive, a statically linked XAD (`xad_static.c`, LGPL), and
   `be_7z.c`, which runs the separate program `unarc-7z` (7-Zip's 7z, RAR and
-  ZIP handlers, `experiments/7z-backend/`) when it is installed next to Unarc
-  and unarc-cli. It reads the program's line protocol (PROTOCOL.md there)
+  ZIP handlers, `experiments/7z-backend/`) when it is installed next to Arca
+  and arca-cli. It reads the program's line protocol (PROTOCOL.md there)
   from a `PIPE:` handle; the archive path goes as hex, the selection through a
   file in `T:`, the password through a second pipe. The program's protocol
   number is asked once per run; one of another release is not used.
@@ -97,16 +97,16 @@ ABIv11's `mktime()` ignores the time zone while `localtime()` applies it, so
 libarchive's RAR 4 extended times come out shifted by the zone; RAR goes to
 7-Zip first, which is right.
 
-- `src/cli/`: `unarc-cli`, the Shell program.
-- `src/gui/`: `Unarc`, the Zune program; `job.c` runs each job in a worker process.
+- `src/cli/`: `arca-cli`, the Shell program.
+- `src/gui/`: `Arca`, the Zune program; `job.c` runs each job in a worker process.
 
 ## Using the command-line program
 
-    unarc-cli ARCHIVE,FILES/M,TO/K,LIST/S,PACK/S,FORMAT/K,LEVEL/K/N,RECOVER/S,ENGINE/K,
+    arca-cli ARCHIVE,FILES/M,TO/K,LIST/S,PACK/S,FORMAT/K,LEVEL/K/N,RECOVER/S,ENGINE/K,
               OVERWRITE/S,SKIP/S,RENAME/S,NOWRAP/S,CANCELAFTER/K/N,STATS/S,QUIET/S,
               DIAGOUT/S,FORMATS/S,HELP/S,PASSWORD/K
 
-- `unarc-cli HELP` prints usage with examples; `FORMATS` what each format supports.
+- `arca-cli HELP` prints usage with examples; `FORMATS` what each format supports.
 - `LIST` shows the entries, name changes and where extraction would go; it writes
   nothing.
 - Without `LIST` or `PACK` the archive is extracted next to itself, or into `TO`.
@@ -154,17 +154,17 @@ libarchive's RAR 4 extended times come out shifted by the zone; RAR goes to
 
 ## The Zune program
 
-`Unarc` with no arguments opens a start window: drop an archive to extract it,
+`Arca` with no arguments opens a start window: drop an archive to extract it,
 files and drawers to pack them, or use the buttons, which do the same through
 file requesters. Started with an archive (a project icon whose default tool is
-`Unarc`, or `Unarc <archive>` in the Shell) it extracts next to the archive and
+`Arca`, or `Arca <archive>` in the Shell) it extracts next to the archive and
 shows the result; the start window's "Double-clicked archives" setting, or the
 tool type `MODE=BROWSE` (`BROWSE` in the Shell), shows the contents first instead.
 `MODE=EXTRACT` / `EXTRACT` force extraction. The setting is stored in
-`ENVARC:Unarc.prefs`.
+`ENVARC:Arca.prefs`.
 
 No file type association is installed by the build. To try it, give an archive a
-project icon with `Unarc` as its default tool, or set `Unarc` as the default tool
+project icon with `Arca` as its default tool, or set `Arca` as the default tool
 of the archive types in Wanderer's preferences.
 
 Several archives given or dropped at once are extracted one after another;
@@ -228,15 +228,25 @@ starting a helper fail after its output file is open.
 
 Build for a release name first: `UNARC_RELEASE=0.0.4-test7 scripts/build-abiv11.sh`.
 The name goes into both programs' `$VER` after the date and into what they
-show (the settings window, `unarc-cli HELP`); without it they are
+show (the settings window, `arca-cli HELP`); without it they are
 `0.0.4-dev`. The `$VER` version.revision is major.(minor * 100 + patch), since
 `Version` and installers compare two numbers: 0.0.4 is 0.4. The build derives
 it from the name and refuses a patch number of 100 or more, where the pairs
 would stop being unique (`src/version.h`).
 
-`packaging/make-package.sh <version>` writes `dist/Unarc-<version>-x86_64-abiv11.zip`
+`packaging/make-package.sh <version>` writes `dist/Arca-<version>-x86_64-abiv11.zip`
 (one drawer: the three programs, ReadMe, icons from `packaging/make-icons.py`,
 and a Licences drawer with every licence text, THIRD_PARTY_NOTICES and the
 source revision) and adds it to `dist/SHA256SUMS`. It refuses to replace a
 file in `dist/`, to package uncommitted sources, and to package programs built
 for another release name.
+
+## Provisional application name
+
+The application is now Arca and the command is arca-cli. The repository,
+UNARC_* build variables, test variables and helper filenames remain unchanged.
+The build emits Arca and arca-cli plus build-only Unarc/unarc-cli aliases for
+existing staging scripts; packages contain only the new application names.
+The MUI application base stays UNARC to preserve MUI preferences. Application
+settings load Arca.prefs first, fall back to Unarc.prefs, and save Arca.prefs.
+Existing Workbench default-tool associations must be updated to Arca manually.

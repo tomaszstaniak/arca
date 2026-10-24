@@ -1,11 +1,11 @@
 #!/bin/bash
 # Make the package for AROS ABIv11 x86_64 from the current build:
 #   packaging/make-package.sh <version>      e.g. 0.0.3-test1
-# Writes dist/Unarc-<version>-x86_64-abiv11.zip and adds it to dist/SHA256SUMS.
+# Writes dist/Arca-<version>-x86_64-abiv11.zip and adds it to dist/SHA256SUMS.
 # A file already in dist/ is never replaced: a new build needs a new version.
 #
-# The archive holds one drawer, Unarc, and its icon. Inside: Unarc (Zune),
-# unarc-cli (Shell), unarc-7z (7-Zip's handlers), unarc-lha (LHa for UNIX,
+# The archive holds one drawer, Arca, and its icon. Inside: Arca (Zune),
+# arca-cli (Shell), unarc-7z (7-Zip's handlers), unarc-lha (LHa for UNIX,
 # for making LhA archives), ReadMe, a Licences drawer with every licence
 # text, THIRD_PARTY_NOTICES and the source revision, and a Source drawer
 # with unarc-lha's source: its terms allow no binary-only distribution. Programs get the Unix mode 0755 in the ZIP, which AROS's UnZip
@@ -17,16 +17,16 @@ R=$UNARC_ROOT
 BIN=$R/build/abiv11-x86_64/bin
 Z7=$R/build/7z-backend/aros/bin/unarc-7z
 LHA=$BIN/unarc-lha
-OUT=$R/dist/Unarc-$VER-x86_64-abiv11.zip
+OUT=$R/dist/Arca-$VER-x86_64-abiv11.zip
 mkdir -p "$R/dist"
 if [ -e "$OUT" ]; then echo "$OUT exists; delivered files are not replaced" >&2; exit 1; fi
-for f in "$BIN/Unarc" "$BIN/unarc-cli" "$Z7" "$LHA"; do
+for f in "$BIN/Arca" "$BIN/arca-cli" "$Z7" "$LHA"; do
   [ -f "$f" ] || { echo "missing $f: build first" >&2; exit 1; }
 done
 # The programs must have been built for this name (UNARC_RELEASE=<version>
 # scripts/build-abiv11.sh): it is in their $VER and in what they show.
 # Compared as text, not as a pattern: "0.0.4" must not match "0x0x4".
-for f in "$BIN/Unarc" "$BIN/unarc-cli"; do
+for f in "$BIN/Arca" "$BIN/arca-cli"; do
   # grep -m1 stops reading; under pipefail the SIGPIPE to strings would end
   # the script, so not in this pipeline.
   got=$(set +o pipefail; strings -a "$f" | grep -a -m1 '^\$VER: ' | sed 's/^[^)]*) //')
@@ -59,7 +59,7 @@ cp "$R/patches/lha/"*.patch "$R/patches/lha/series" "$T/lhasrc/unarc-lha-source/
 sed -n '/^@NODE "License"/,/^@ENDNODE/p' "$R/upstream/lha/dist/LHa_4U4A.guide" | grep -v '^@' \
   >"$T/LHa-for-UNIX-terms.txt"
 {
-  echo "Unarc $VER"
+  echo "Arca $VER"
   echo "aros-unarc $(git -C "$R" rev-parse HEAD)"
   echo "unarc-7z: 7-Zip 26.04, experiments/7z-backend of the same revision"
   echo "unarc-lha: LHa for UNIX, sodero/lha $LHAPIN with patches/lha (source in Source/)"
@@ -76,25 +76,25 @@ def add(z, arc, src=None, data=None, mode=0o644, isdir=False):
     zi.compress_type = zipfile.ZIP_DEFLATED
     z.writestr(zi, b"" if isdir else (data if data is not None else open(src, "rb").read()))
 with zipfile.ZipFile(out, "w") as z:
-    add(z, "Unarc.info", os.path.join(t, "icons", "drawer.info"))
-    add(z, "Unarc", isdir=True, mode=0o755)
-    add(z, "Unarc/Unarc", os.path.join(bindir, "Unarc"), mode=0o755)
-    add(z, "Unarc/Unarc.info", os.path.join(t, "icons", "Unarc.info"))
-    add(z, "Unarc/unarc-cli", os.path.join(bindir, "unarc-cli"), mode=0o755)
-    add(z, "Unarc/unarc-7z", z7, mode=0o755)
-    add(z, "Unarc/unarc-lha", lha, mode=0o755)
-    add(z, "Unarc/ReadMe", os.path.join(r, "packaging", "ReadMe"))
-    add(z, "Unarc/ReadMe.info", os.path.join(t, "icons", "ReadMe.info"))
-    add(z, "Unarc/Licences", isdir=True, mode=0o755)
-    add(z, "Unarc/Licences/Unarc-LICENSE.txt", os.path.join(r, "LICENSE"))
-    add(z, "Unarc/Licences/THIRD_PARTY_NOTICES", os.path.join(r, "THIRD_PARTY_NOTICES"))
-    add(z, "Unarc/Licences/Revision", os.path.join(t, "Revision"))
+    add(z, "Arca.info", os.path.join(t, "icons", "drawer.info"))
+    add(z, "Arca", isdir=True, mode=0o755)
+    add(z, "Arca/Arca", os.path.join(bindir, "Arca"), mode=0o755)
+    add(z, "Arca/Arca.info", os.path.join(t, "icons", "Arca.info"))
+    add(z, "Arca/arca-cli", os.path.join(bindir, "arca-cli"), mode=0o755)
+    add(z, "Arca/unarc-7z", z7, mode=0o755)
+    add(z, "Arca/unarc-lha", lha, mode=0o755)
+    add(z, "Arca/ReadMe", os.path.join(r, "packaging", "ReadMe"))
+    add(z, "Arca/ReadMe.info", os.path.join(t, "icons", "ReadMe.info"))
+    add(z, "Arca/Licences", isdir=True, mode=0o755)
+    add(z, "Arca/Licences/Arca-LICENSE.txt", os.path.join(r, "LICENSE"))
+    add(z, "Arca/Licences/THIRD_PARTY_NOTICES", os.path.join(r, "THIRD_PARTY_NOTICES"))
+    add(z, "Arca/Licences/Revision", os.path.join(t, "Revision"))
     for f in sorted(os.listdir(os.path.join(r, "licenses"))):
-        add(z, f"Unarc/Licences/{f}", os.path.join(r, "licenses", f))
-    add(z, "Unarc/Licences/LHa-for-UNIX-terms.txt", os.path.join(t, "LHa-for-UNIX-terms.txt"))
-    add(z, "Unarc/Licences/LHa-for-UNIX-lha.man", os.path.join(r, "upstream", "lha", "man", "lha.man"))
-    add(z, "Unarc/Source", isdir=True, mode=0o755)
-    add(z, "Unarc/Source/unarc-lha-source.zip", os.path.join(t, "unarc-lha-source.zip"))
+        add(z, f"Arca/Licences/{f}", os.path.join(r, "licenses", f))
+    add(z, "Arca/Licences/LHa-for-UNIX-terms.txt", os.path.join(t, "LHa-for-UNIX-terms.txt"))
+    add(z, "Arca/Licences/LHa-for-UNIX-lha.man", os.path.join(r, "upstream", "lha", "man", "lha.man"))
+    add(z, "Arca/Source", isdir=True, mode=0o755)
+    add(z, "Arca/Source/unarc-lha-source.zip", os.path.join(t, "unarc-lha-source.zip"))
 PY
 ( cd "$R/dist" && shasum -a 256 "$(basename "$OUT")" >>SHA256SUMS )
 ls -l "$OUT"

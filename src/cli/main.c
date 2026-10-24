@@ -60,7 +60,7 @@ static void stat_point(IPTR on, const char *what)
     fflush(stdout);
 }
 
-const char version[] = "$VER: unarc-cli " UNARC_VR " (" UNARC_DATE ") " UNARC_RELEASE;
+const char version[] = "$VER: arca-cli " UNARC_VR " (" UNARC_DATE ") " UNARC_RELEASE;
 
 /* Whether each stream goes to a Limpet window. Asked once: the query is a
  * DOS packet, which CON: and file handlers refuse at once. */
@@ -685,18 +685,18 @@ static int run_pack(IPTR *args)
 
 static void help(void)
 {
-    out("unarc-cli " UNARC_RELEASE ": list, extract and make archives.\n\n"
-        "  unarc-cli <archive> [TO <drawer>]       extract next to the archive or into TO\n"
-        "  unarc-cli <archive> LIST                show what is inside and where it would go\n"
-        "  unarc-cli <archive> RECOVER             extract what a damaged archive still holds\n"
-        "  unarc-cli <new archive> PACK <files>... make a ZIP, tar.gz, 7z or LhA archive\n"
-        "  unarc-cli FORMATS                       what each format supports\n\n"
+    out("arca-cli " UNARC_RELEASE ": list, extract and make archives.\n\n"
+        "  arca-cli <archive> [TO <drawer>]       extract next to the archive or into TO\n"
+        "  arca-cli <archive> LIST                show what is inside and where it would go\n"
+        "  arca-cli <archive> RECOVER             extract what a damaged archive still holds\n"
+        "  arca-cli <new archive> PACK <files>... make a ZIP, tar.gz, 7z or LhA archive\n"
+        "  arca-cli FORMATS                       what each format supports\n\n"
         "Examples:\n"
-        "  unarc-cli RAM:Game.lha\n"
-        "  unarc-cli \"Work:Downloads/My Docs.zip\" TO RAM:docs\n"
-        "  unarc-cli Work:old.zip LIST\n"
-        "  unarc-cli RAM:backup.zip PACK Work:Projects S:Startup-Sequence\n"
-        "  unarc-cli RAM:src.tar.gz PACK Work:src LEVEL 9\n\n"
+        "  arca-cli RAM:Game.lha\n"
+        "  arca-cli \"Work:Downloads/My Docs.zip\" TO RAM:docs\n"
+        "  arca-cli Work:old.zip LIST\n"
+        "  arca-cli RAM:backup.zip PACK Work:Projects S:Startup-Sequence\n"
+        "  arca-cli RAM:src.tar.gz PACK Work:src LEVEL 9\n\n"
         "A multi-volume archive (name.part1.rar ..., name.rar + name.r00 ..., name.7z.001 ...)\n"
         "can be given by any of its volumes; all of them must be in the same drawer.\n\n"
         "Encrypted 7z and RAR archives: the password is asked on the console (not shown),\n"
@@ -759,7 +759,7 @@ int main(void)
     const IPTR want = 256 * 1024;
 
     if (!rda) {
-        PrintFault(IoErr(), "unarc-cli");
+        PrintFault(IoErr(), "arca-cli");
         return 20;
     }
     diag_out = run_args[A_DIAGOUT] != 0;

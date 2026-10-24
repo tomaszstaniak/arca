@@ -18,7 +18,7 @@ the build scripts, the pinned dependency revisions and our patches.
    and add its file name to `patches/contrib/series`. Or, for a one-off build, use
    another contrib revision by changing the `commit` in `upstreams.json`.
 3. Run `scripts/build-deps-abiv11.sh` and `scripts/build-abiv11.sh`. The new
-   `build/abiv11-x86_64/bin/unarc-cli` contains your XAD.
+   `build/abiv11-x86_64/bin/arca-cli` contains your XAD.
 
 ## libiconv
 

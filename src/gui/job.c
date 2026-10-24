@@ -16,7 +16,7 @@
 #include <dos/dostags.h>
 #include "job.h"
 
-#define WORKER_NAME "Unarc worker"
+#define WORKER_NAME "Arca worker"
 
 int uj_ticks_since(const struct DateStamp *a);
 
@@ -478,7 +478,7 @@ int uj_start(uj_job *j)
      * ran, and an unreleased copy would pin it for good). WindowPtr -1: a
      * missing volume is an error in the result, not a requester the worker
      * would wait on with nobody able to see why. */
-    /* A name per job: a second Unarc running its own job must not be taken
+    /* A name per job: a second Arca running its own job must not be taken
      * for ours by uj_wait_gone. */
     snprintf(j->pname, sizeof(j->pname), "%s %p", WORKER_NAME, (void *)j);
     p = CreateNewProcTags(NP_Entry, (IPTR)worker_main, NP_Name, (IPTR)j->pname,

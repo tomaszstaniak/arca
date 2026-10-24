@@ -1,8 +1,8 @@
-Unarc (working name), test build
+Arca (working name), test build
 =================================
 
-Unarc lists, extracts and makes archives on AROS. It comes as two programs
-over one core: Unarc, a Zune program, and unarc-cli, a Shell command. Two
+Arca lists, extracts and makes archives on AROS. It comes as two programs
+over one core: Arca, a Zune program, and arca-cli, a Shell command. Two
 helper programs come with them and are started when needed: unarc-7z reads
 7z, RAR and ZIP with 7-Zip's own code, and unarc-lha makes LhA archives.
 
@@ -13,21 +13,29 @@ base). It does not run on mainline AROS (ABIv1).
 Installing
 ----------
 
-Copy the Unarc drawer anywhere, for example to SYS:Utilities or to a drawer
+Copy the Arca drawer anywhere, for example to SYS:Utilities or to a drawer
 whose name has spaces. Nothing else is installed and nothing outside the
-drawer is changed, apart from ENVARC:Unarc.prefs when you change a setting.
-Keep unarc-7z and unarc-lha in the same drawer as Unarc and unarc-cli. To
-remove Unarc, delete the drawer (and ENVARC:Unarc.prefs).
+drawer is changed, apart from ENVARC:Arca.prefs when you change a setting.
+Keep unarc-7z and unarc-lha in the same drawer as Arca and arca-cli. To
+remove Arca, delete the drawer (and ENVARC:Arca.prefs).
 
-No file type is associated with Unarc. To open archives with it from
-Wanderer, give an archive a project icon whose default tool is Unarc, or set
-Unarc as the default tool of the archive types in Wanderer's preferences.
+Arca is the provisional name of the application previously tested as Unarc.
+It reads Unarc.prefs if Arca.prefs is absent and saves changes as Arca.prefs.
+The old preferences are left intact. Existing archive icons that name Unarc
+must be changed to Arca. The helper filenames remain unarc-7z and unarc-lha.
+
+The GUI uses Zune and the NList, NListview and NFloattext classes supplied
+by the tested 2026.09 base and AROS One systems.
+
+No file type is associated with Arca. To open archives with it from
+Wanderer, give an archive a project icon whose default tool is Arca, or set
+Arca as the default tool of the archive types in Wanderer's preferences.
 
 
 The Zune program
 ----------------
 
-Started on its own, Unarc opens its start window. Choose the format with
+Started on its own, Arca opens its start window. Choose the format with
 the button at the top (LhA, ZIP, 7z or tar.gz) and the compression with the
 slider, then drop files or drawers on the marked area: they are packed at
 once, next to where they are. "Each item into its own archive" makes one
@@ -43,16 +51,16 @@ every message.
 in a drawer with no file chosen to pack the whole drawer. "Open archive..."
 shows an archive's contents first.
 
-When an archive of the same name already exists, Unarc offers a new name
+When an archive of the same name already exists, Arca offers a new name
 ("Website 2.zip"), which Return chooses; replacing the old one needs its own
 button. The old archive is removed only after the new one is complete. If it
 cannot be removed (something has it open), it stays as "<name>.old" and the
 result says so.
 
 Started with an archive (a double-click on an archive whose default tool is
-Unarc), it extracts the archive next to itself into a new drawer and shows
+Arca), it extracts the archive next to itself into a new drawer and shows
 what happened. Settings, or the tool type MODE=BROWSE, can show the contents
-first instead. When a file to extract is already there, Unarc asks: it
+first instead. When a file to extract is already there, Arca asks: it
 shows the file's name, its drawer and both sizes and dates, and Return
 skips the file; replacing it needs its own button.
 
@@ -70,7 +78,7 @@ or drag the selected entries onto an open Wanderer drawer window. Amiga+A
 selects every entry. Several archives dropped at once are extracted one
 after another; the progress window lists them and ends with one summary.
 
-When a file already exists, Unarc asks; Return skips the file, and replacing
+When a file already exists, Arca asks; Return skips the file, and replacing
 it needs its own button. Cancel keeps the files already finished and removes
 the one in progress. Nothing that was there before is overwritten unless you
 say so.
@@ -79,12 +87,12 @@ say so.
 The Shell command
 -----------------
 
-    unarc-cli <archive>                 extract next to the archive
-    unarc-cli <archive> TO Work:Out     extract into Work:Out
-    unarc-cli <archive> LIST            show the contents, write nothing
-    unarc-cli new.lha PACK <files>      make an archive (.lha, .zip, .tar.gz, .7z)
-    unarc-cli HELP                      all options, with examples
-    unarc-cli FORMATS                   what each format supports
+    arca-cli <archive>                 extract next to the archive
+    arca-cli <archive> TO Work:Out     extract into Work:Out
+    arca-cli <archive> LIST            show the contents, write nothing
+    arca-cli new.lha PACK <files>      make an archive (.lha, .zip, .tar.gz, .7z)
+    arca-cli HELP                      all options, with examples
+    arca-cli FORMATS                   what each format supports
 
 Return codes: 0 done, 5 done with notes (something skipped or renamed),
 10 partly done, cancelled or stopped by an error, 20 nothing done. Ctrl-C
@@ -103,14 +111,14 @@ opened through any of their volumes. A set with a volume missing is refused
 before anything is written, and the message names the missing volume.
 
 Archives with Amiga protection bits and comments (LhA, LZX) keep them, and
-LhA archives made by Unarc store them too.
+LhA archives made by Arca store them too.
 
 
 Passwords
 ---------
 
 Encrypted 7z, RAR and ZIP archives (ZipCrypto and AES) are read through
-unarc-7z. When the list of entries itself is encrypted, Unarc asks for the
+unarc-7z. When the list of entries itself is encrypted, Arca asks for the
 password at once; when only the data is, before anything is written. The
 Shell command asks without showing what you type; in scripts, give it with
 PASSWORD. Without a password, encrypted entries are left out and reported.
@@ -121,7 +129,7 @@ unarc-7z
 --------
 
 unarc-7z is 7-Zip 26.04 (7z, RAR and ZIP handlers only), built for AROS as a
-program of its own. Unarc uses it for:
+program of its own. Arca uses it for:
 
 - every RAR archive;
 - encrypted 7z and ZIP archives;
@@ -130,9 +138,9 @@ program of its own. Unarc uses it for:
 - 7z archives split into several files.
 
 Plain 7z and ZIP archives are read by the built-in reader, which is faster.
-Without unarc-7z, Unarc still reads 7z, RAR and ZIP as far as the built-in
+Without unarc-7z, Arca still reads 7z, RAR and ZIP as far as the built-in
 reader can, without passwords, and says so when an archive needs unarc-7z.
-An unarc-7z from another Unarc release is not used; install both from one
+An unarc-7z from another Arca release is not used; install both from one
 package. Without it, some file times from RAR 4 archives can be off by your
 time zone.
 
@@ -141,7 +149,7 @@ unarc-lha
 ---------
 
 unarc-lha is LHa for UNIX 1.14i in its Amiga version (by Ola Söder), with a
-few changes of ours, built as a program of its own. Unarc and unarc-cli use
+few changes of ours, built as a program of its own. Arca and arca-cli use
 it to make LhA archives: header level 1 as Amiga LhA writes it, with file
 and drawer comments, all protection bits (h, s, p, a and rwed), dates to the
 second, and empty drawers. Its archives open with LhA on any Amiga, with XAD
@@ -149,7 +157,7 @@ and with LHa for UNIX. "Store only" stores (lh0), "Normal" packs (lh5).
 
 LhA packing refuses a volume as a whole (choose the drawers and files on it),
 a drawer that would contain the archive itself, and a tree with links in it
-(LhA would follow them); use ZIP or 7z for those. Without unarc-lha, Unarc
+(LhA would follow them); use ZIP or 7z for those. Without unarc-lha, Arca
 makes ZIP, 7z and tar.gz archives as before.
 
 
@@ -163,7 +171,7 @@ Known limitations
   So a 7z or ZIP archive that is itself over 2 GB cannot be opened there.
   Keep such archives under 2 GB, or split them into volumes.
 - Names are shown and written in ISO-8859-1, AROS's character set. A name
-  with characters outside it is changed, and Unarc lists such changes before
+  with characters outside it is changed, and Arca lists such changes before
   extracting.
 - Links stored in archives are not created; they are listed as not
   extracted.
@@ -173,9 +181,9 @@ Known limitations
 Licences
 --------
 
-Unarc's own code is under the MIT licence. It contains libarchive, XAD,
+Arca's own code is under the MIT licence. It contains libarchive, XAD,
 liblzma, zlib, bzip2 and GNU libiconv, each under its own licence; XAD and
-GNU libiconv are under the GNU LGPL 2.1, which lets you rebuild Unarc with a
+GNU libiconv are under the GNU LGPL 2.1, which lets you rebuild Arca with a
 changed version of them. unarc-7z contains 7-Zip under the GNU LGPL 2.1, and
 its RAR code comes with the unRAR licence restriction: it may not be used to
 re-create the RAR compression algorithm.

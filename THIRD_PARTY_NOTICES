@@ -32,10 +32,10 @@ src/engines/xad_static.c and xad_static.h (part of this program)
   licence restriction (licenses/7-Zip-unRAR-License.txt): they may not be used
   to make a program that creates RAR archives; unarc-7z only extracts.
   Unmodified sources, pinned in deps.lock; the AROS glue is ours (MIT).
-  Unarc and unarc-cli work without it (libarchive then reads 7z and RAR,
+  Arca and arca-cli work without it (libarchive then reads 7z and RAR,
   without passwords).
 
-Limpet SDK 0.3.0 (src/third_party/limpet, unarc-cli only)
+Limpet SDK 0.3.0 (src/third_party/limpet, arca-cli only)
   Copyright (c) 2026 Tomasz Staniak.
   Licence: MIT (licenses/LimpetSDK-LICENSE.txt). Unmodified.
   Used to tell whether output goes to a Limpet window.
@@ -51,7 +51,7 @@ LHa for UNIX 1.14i (unarc-lha, a separate program; upstreams.json "lha")
   LHa, ask for notice before distribution on non-Internet media, and restrict
   commercial use. The source of unarc-lha with our changes is in
   Source/unarc-lha-source.zip of the package. unarc-lha runs as its own process
-  and is not linked into Unarc.
+  and is not linked into Arca.
   Modified: yes, see patches/lha/.
 
 libarchive 3.9.0

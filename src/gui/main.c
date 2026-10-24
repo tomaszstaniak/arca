@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: MIT */
-/* Unarc, the Zune front end. Three windows over the core the command line
+/* Arca, the Zune front end. Three windows over the core the command line
  * uses: a start window (drop an archive, or open one), a browser (look before
  * writing anything), and a progress window that turns into the result. The
  * work runs in a worker process (job.c); this file only shows, asks and
@@ -36,8 +36,8 @@
 #include "../version.h"
 #include "../engines/xad_static.h"
 
-#define APPNAME "Unarc"
-const char version[] = "$VER: Unarc " UNARC_VR " (" UNARC_DATE ") " UNARC_RELEASE;
+#define APPNAME "Arca"
+const char version[] = "$VER: Arca " UNARC_VR " (" UNARC_DATE ") " UNARC_RELEASE;
 
 /* From 0x100: Zune's MUI_Request runs the application's input loop and takes
  * return IDs 1..buttons+1 as its own answer (mui_request.c). */
@@ -199,6 +199,17 @@ static void shortpath(char *out, size_t n, const char *path, size_t max)
     if (slash && slash[1] && (size_t)(slash - t) < tail / 2)
         t = slash + 1;
     snprintf(out, n, "%.*s...%s", (int)head, path, t);
+}
+
+/* Keep the destination readable during a job; the help bubble retains it all. */
+static void progress_destination(const char *label, const char *path)
+{
+    static char full[UA_PATHMAX];
+    char brief[49];
+    snprintf(full, sizeof(full), "%s", path);
+    shortpath(brief, sizeof(brief), full, sizeof(brief) - 1);
+    settext(t_pto, "%s: %s", label, brief);
+    SetAttrs(t_pto, MUIA_ShortHelp, (IPTR)full, TAG_DONE);
 }
 
 /* Result lines are kept to this many characters: the window stays the width
@@ -532,9 +543,10 @@ static int ask_password(const char *archive, int wrong, int can_skip)
 
 /* ------------------------------------------------------------- preferences */
 
-#define PREFS_NAME "Unarc.prefs"
+#define PREFS_NAME "Arca.prefs"
+#define LEGACY_PREFS_NAME "Unarc.prefs"
 
-/* One "KEY=value" per line in the variable ENV:Unarc.prefs. */
+/* One "KEY=value" per line in the variable ENV:Arca.prefs. */
 static const char *pref_get(const char *buf, const char *key)
 {
     size_t kl = strlen(key);
@@ -571,7 +583,8 @@ static void pref_str(const char *buf, const char *key, char *out, size_t n)
 static void prefs_load(void)
 {
     char buf[2 * UA_PATHMAX + 400];
-    if (GetVar(PREFS_NAME, buf, sizeof(buf), GVF_GLOBAL_ONLY) <= 0)
+    if (GetVar(PREFS_NAME, buf, sizeof(buf), GVF_GLOBAL_ONLY) <= 0 &&
+        GetVar(LEGACY_PREFS_NAME, buf, sizeof(buf), GVF_GLOBAL_ONLY) <= 0)
         return;
     onopen_browse = strstr(buf, "ONOPEN=BROWSE") != NULL;
     packfmt_pref = strstr(buf, "PACK=ZIP") ? 1 : strstr(buf, "PACK=7Z") ? 2 :
@@ -948,7 +961,7 @@ static int archive_usable(const char *path)
 static void browse(const char *archive)
 {
     if (job) {
-        say("Unarc is busy with another archive. Wait for it to finish, or cancel it.");
+        say("Arca is busy with another archive. Wait for it to finish, or cancel it.");
         return;
     }
     if (!archive_usable(archive))
@@ -996,7 +1009,7 @@ static void prog_reset(const char *archive, const char *dest)
     if (!queue_busy())
         queue_reset();
     settext(t_ptitle, "Extracting \33b%s", leafname(archive));
-    settext(t_pto, "To: %s", dest);
+    progress_destination("To", dest);
     settext(t_pname, "");
     settext(t_pcount, "");
     setresult("");
@@ -1019,7 +1032,7 @@ static void start_extract(const char *archive, const char *dest, int recover, in
 {
     uj_job *j;
     if (job) {
-        say("Unarc is busy with another archive. Wait for it to finish, or cancel it.");
+        say("Arca is busy with another archive. Wait for it to finish, or cancel it.");
         return;
     }
     j = uj_new(UJ_EXTRACT, archive, jport);
@@ -1300,7 +1313,7 @@ static void show_ask(uj_msg *m)
 {
     BPTR l = Lock((STRPTR)m->path, SHARED_LOCK);
     char old[80] = "unknown", sz[32], ds[40], name[RES_COLS + 1], where[RES_COLS + 1];
-    static char dir[UA_PATHMAX];
+    static char dir[UA_PATHMAX], fullpath[UA_PATHMAX];
     held_ask = m;
     if (l) {
         struct FileInfoBlock *fib = AllocDosObject(DOS_FIB, NULL);
@@ -1325,7 +1338,9 @@ static void show_ask(uj_msg *m)
     shortpath(where, sizeof(where), dir, RES_COLS);
     settext(t_askname, "\33b%s", name);
     settext(t_askwhere, "%s", where);
-    SetAttrs(t_askwhere, MUIA_ShortHelp, (IPTR)dir, TAG_DONE);
+    snprintf(fullpath, sizeof(fullpath), "%s", m->path);
+    SetAttrs(t_askwhere, MUIA_ShortHelp, (IPTR)fullpath, TAG_DONE);
+    SetAttrs(t_askname, MUIA_ShortHelp, (IPTR)fullpath, TAG_DONE);
     settext(t_askold, "%s", old);
     settext(t_asknew, "%s, %s", sz, ds);
     SetAttrs(cb_all, MUIA_Selected, FALSE, TAG_DONE);
@@ -1537,9 +1552,9 @@ static void list_done(uj_job *j)
             settext(t_bstatus, "The archive is damaged and nothing could be listed.");
             SetAttrs(b_brecover, MUIA_ShowMe, TRUE, TAG_DONE);
         } else if (j->open_status == UA_OPEN_NOENGINE)
-            settext(t_bstatus, "This is not an archive Unarc can read (%s).", ua_format_name(j->fmt));
+            settext(t_bstatus, "This is not an archive Arca can read (%s).", ua_format_name(j->fmt));
         else if (j->open_status == UA_OPEN_UNSUPPORTED)
-            settext(t_bstatus, "Unarc cannot read this archive: %s. See Details.", blist.why);
+            settext(t_bstatus, "Arca cannot read this archive: %s. See Details.", blist.why);
         else
             settext(t_bstatus, "Cannot read the archive. %s", j->err[0] ? j->err : "See Details.");
     }
@@ -1575,7 +1590,7 @@ static void extract_done(uj_job *j)
                  "Nothing was written.");
         snprintf(sum, sizeof(sum), "%s", body);
     } else if (j->open_status == UA_OPEN_NOENGINE) {
-        snprintf(head, sizeof(head), "Not an archive Unarc can read");
+        snprintf(head, sizeof(head), "Not an archive Arca can read");
         snprintf(body, sizeof(body), "Format: %s. Nothing was written.", ua_format_name(j->fmt));
         snprintf(sum, sizeof(sum), "Format: %s.\nNothing was written.", ua_format_name(j->fmt));
     } else if (j->open_status == UA_OPEN_UNSUPPORTED) {
@@ -1585,7 +1600,7 @@ static void extract_done(uj_job *j)
         else
             strncat(why7, "\n", sizeof(why7) - strlen(why7) - 1);
         snprintf(head, sizeof(head), "Not supported");
-        snprintf(body, sizeof(body), "Unarc cannot read this archive: %s.\n%sNothing was written.",
+        snprintf(body, sizeof(body), "Arca cannot read this archive: %s.\n%sNothing was written.",
                  j->list.why, why7);
         cut(c, sizeof(c), j->list.why, RES_COLS);
         snprintf(sum, sizeof(sum), "%s\nNothing was written.", c);
@@ -1841,7 +1856,7 @@ static const struct pfmt {
     { "ZIP", UA_PACK_ZIP, ".zip", 4, { "Store only", "Fast", "Normal", "Best" }, { 0, 1, -1, 9 },
       "Opens almost everywhere; no Amiga comments." },
     { "7z", UA_PACK_7Z, ".7z", 3, { "Fast", "Normal", "Best" }, { 1, -1, 9 },
-      "Smallest archives; opens with 7-Zip or Unarc." },
+      "Smallest archives; opens with 7-Zip or Arca." },
     { "tar.gz", UA_PACK_TGZ, ".tar.gz", 3, { "Fast", "Normal", "Best" }, { 1, -1, 9 },
       "For Unix systems; no Amiga comments." },
 };
@@ -2100,7 +2115,7 @@ static void pack_start_one(struct kreq *r)
         settext(t_ptitle, "Packing \33b%s\33n (%d of %d)", leafname(r_archive), kcur, k_total);
     else
         settext(t_ptitle, "Packing \33b%s", leafname(r_archive));
-    settext(t_pto, "Into: %s", r_archive);
+    progress_destination("Into", r_archive);
     settext(t_pname, "Preparing...");
 }
 
@@ -2110,7 +2125,7 @@ static void pack_now(char **items, int n)
 {
     int i;
     if (job || nk) {
-        say("Unarc is busy with another job. Wait for it to finish, or cancel it.");
+        say("Arca is busy with another job. Wait for it to finish, or cancel it.");
         for (i = 0; i < n; i++)
             free(items[i]);
         free(items);
@@ -2476,7 +2491,7 @@ static int build(void)
         table_drag_ended, table_selected_all
     };
     if (!zk_table_init()) {
-        say("Unarc needs the class NList.mcc, which AROS normally includes,\n"
+        say("Arca needs the class NList.mcc, which AROS normally includes,\n"
             "and it could not be opened.");
         return 0;
     }
@@ -2733,7 +2748,7 @@ static int build(void)
             End),
         End),
         SubWindow, (IPTR)(wsettings = WindowObject,
-            MUIA_Window_Title, (IPTR)"Unarc settings",
+            MUIA_Window_Title, (IPTR)"Arca settings",
             MUIA_Window_ID, MAKE_ID('U','A','S','E'),
             WindowContents, (IPTR)(VGroup,
                 Child, (IPTR)(RegisterGroup(reg_titles),
@@ -2825,7 +2840,7 @@ static int build(void)
                     Child, (IPTR)(b_suse = button("_Use")),
                     Child, (IPTR)HSpace(0),
                     Child, (IPTR)(TextObject,
-                        MUIA_Text_Contents, (IPTR)"Unarc " UNARC_RELEASE,
+                        MUIA_Text_Contents, (IPTR)"Arca " UNARC_RELEASE,
                         MUIA_Text_SetMin, TRUE,
                     End),
                     Child, (IPTR)HSpace(0),
@@ -3260,7 +3275,7 @@ static int gui_main(int argc, char **argv)
         if (jport)
             DeleteMsgPort(jport);
         if (argc)
-            printf("Unarc: cannot create the application (is MUI/Zune installed?)\n");
+            printf("Arca: cannot create the application (is MUI/Zune installed?)\n");
         return 20;
     }
     notify();
@@ -3283,7 +3298,7 @@ static int gui_main(int argc, char **argv)
             int k, added = 0;
             for (k = 0; k < nargs; k++) {
                 if (!is_archive(args[k]))
-                    say("\"%s\" is not an archive Unarc can read.", args[k]);
+                    say("\"%s\" is not an archive Arca can read.", args[k]);
                 else
                     added += queue_add(args[k]);
             }

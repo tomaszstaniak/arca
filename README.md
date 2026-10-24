@@ -1,9 +1,9 @@
-# aros-unarc
+# Arca
 
-`aros-unarc` (working name) is an archiver for AROS: a Zune program (`Unarc`) and a
-Shell program (`unarc-cli`) over one core. It lists and extracts ZIP, LhA, LZX,
+Arca (provisional name; source repository `aros-unarc`) is an archiver for AROS: a Zune program (`Arca`) and a
+Shell program (`arca-cli`) over one core. It lists and extracts ZIP, LhA, LZX,
 7z, RAR, tar and compressed tar archives and more through libarchive and a
-statically linked XAD, and makes ZIP, tar.gz and 7z archives. It is in
+statically linked XAD, and makes LhA, ZIP, tar.gz and 7z archives. It is in
 development: nothing has been released, and only AROS ABIv11 on x86_64 is built
 and tested.
 

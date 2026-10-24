@@ -118,13 +118,14 @@ def main():
     out = Path(sys.argv[1])
     out.mkdir(parents=True, exist_ok=True)
     icons = {
-        "Unarc.info": (tool_icon(), [(ATTR_TYPE, WBTOOL), (ATTR_STACKSIZE, 262144), (ATTR_FRAMELESS, 1)]),
+        "Arca.info": (tool_icon(), [(ATTR_TYPE, WBTOOL), (ATTR_STACKSIZE, 262144), (ATTR_FRAMELESS, 1)]),
         "drawer.info": (drawer_icon(), [(ATTR_TYPE, WBDRAWER), (ATTR_FRAMELESS, 1),
                                         (ATTR_DRAWERX, 80), (ATTR_DRAWERY, 60),
                                         (ATTR_DRAWERWIDTH, 420), (ATTR_DRAWERHEIGHT, 200)]),
         "ReadMe.info": (readme_icon(), [(ATTR_TYPE, WBPROJECT), (ATTR_FRAMELESS, 1),
                                         (ATTR_DEFAULTTOOL, "SYS:Utilities/MultiView")]),
     }
+    icons["Unarc.info"] = icons["Arca.info"]  # Existing test staging scripts.
     for name, (pixels, attrs) in icons.items():
         (out / name).write_bytes(icon_png(pixels, attrs))
         print(out / name)

@@ -5,7 +5,7 @@ updated: 2026-10-16
 
 # Documentation
 
-aros-unarc (working name) is in development and has no user documentation yet;
+Arca is in development. The packaged ReadMe covers installation and use;
 [Development](development.md) describes the programs as they are now.
 
 - [Development](development.md): contributor setup, build, and verification.

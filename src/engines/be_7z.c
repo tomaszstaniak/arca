@@ -89,7 +89,7 @@ static void check_version(void)
     int proto = -1, rc = -1;
     prog_ok = 0;
     if (child_start(&c, "version", NULL, NULL, NULL, NULL, err, sizeof(err)) < 0) {
-        snprintf(prog_why, sizeof(prog_why), "%s next to Unarc could not be started: %s.", PROG,
+        snprintf(prog_why, sizeof(prog_why), "%s next to Arca could not be started: %s.", PROG,
                  err);
         return;
     }
@@ -109,12 +109,12 @@ static void check_version(void)
     if (proto == PROTOCOL && rc == 0)
         prog_ok = 1;
     else if (proto > 0)
-        snprintf(prog_why, sizeof(prog_why), "%s next to Unarc is from another release (protocol "
-                 "%d, this Unarc needs %d), so it is not used; install both from one package.",
+        snprintf(prog_why, sizeof(prog_why), "%s next to Arca is from another release (protocol "
+                 "%d, this Arca needs %d), so it is not used; install both from one package.",
                  PROG, proto, PROTOCOL);
     else
-        snprintf(prog_why, sizeof(prog_why), "%s next to Unarc did not answer as expected, so it "
-                 "is not used; install it from the Unarc package.", PROG);
+        snprintf(prog_why, sizeof(prog_why), "%s next to Arca did not answer as expected, so it "
+                 "is not used; install it from the Arca package.", PROG);
 }
 #endif /* UA_7Z_HOST_TEST */
 
@@ -123,7 +123,7 @@ int ua_7z_available(char *why, int whylen)
     find_prog_now();
     if (!find_prog()) {
         if (why)
-            snprintf(why, whylen, "%s is not next to Unarc; with it, Unarc also reads encrypted "
+            snprintf(why, whylen, "%s is not next to Arca; with it, Arca also reads encrypted "
                      "7z and ZIP archives and every RAR.", PROG);
         return 0;
     }
