@@ -26,9 +26,13 @@
 #include <proto/layers.h>
 #include <clib/alib_protos.h>
 #include <mui/NList_mcc.h>
+#include <mui/NListview_mcc.h>
+#include <mui/NFloattext_mcc.h>
 #include "job.h"
 #include "zk_table.h"
 #include "zk_steps.h"
+#include "zk_icon.h"
+#include "zk_drop.h"
 #include "../version.h"
 #include "../engines/xad_static.h"
 
@@ -46,7 +50,7 @@ enum { ID_OPEN = 0x100, ID_START_CLOSE, ID_DROP,
        ID_SETTINGS, ID_S_SAVE, ID_S_USE, ID_S_CANCEL, ID_S_WHERE };
 
 static Object *app, *wstart, *wbrowse, *wprog, *wask, *wdetail;
-static Object *t_drop, *t_startnote, *b_open, *c_packfmt, *b_pack, *b_settings, *sl_level,
+static Object *o_icon, *o_drop, *b_open, *c_packfmt, *b_pack, *b_settings, *sl_level,
               *t_level, *cb_separate, *t_where, *t_fmthint;
 static Object *wsettings, *c_sstart, *c_sopen, *cb_sopendir, *cb_sclose, *c_spackwhere,
               *s_spackdir, *p_spackdir, *c_sname, *c_sexwhere, *s_sexdir, *p_sexdir, *c_snewdir,
@@ -54,10 +58,10 @@ static Object *wsettings, *c_sstart, *c_sopen, *cb_sopendir, *cb_sclose, *c_spac
 static Object *cb_newfolder;
 static Object *s_find, *lv, *lvview, *t_active, *t_bstatus, *s_to, *p_to, *b_exsel, *b_exall,
               *b_info, *b_bclose, *b_brecover;
-static Object *t_ptitle, *t_pto, *t_pname, *g_gauge, *t_pcount, *t_presult, *f_presult,
+static Object *t_ptitle, *t_pto, *t_pname, *g_gauge, *t_pcount, *t_presult,
               *b_pcancel, *b_popen, *b_pdetails, *b_pclose, *b_precover;
 static Object *lq, *g_qbtns, *b_qremove, *b_qcancelall;
-static Object *t_askq, *t_askinfo, *cb_all, *b_arep, *b_akeep, *b_askip, *b_acancel;
+static Object *t_askq, *t_askname, *t_askwhere, *t_askold, *t_asknew, *cb_all, *b_arep, *b_akeep, *b_askip, *b_acancel;
 static Object *f_detail;
 
 static struct MsgPort *jport;     /* the worker's messages */
@@ -162,16 +166,87 @@ static void settext(Object *o, const char *fmt, ...)
     SetAttrs(o, MUIA_Text_Contents, (IPTR)buf, TAG_DONE);
 }
 
-/* The result's text: a Floattext, so that it wraps to the window's width
- * (Text does not wrap, and long paths and errors were cut off). */
+/* A long text cut at its end, or a path cut in its middle (the volume and
+ * the last names stay), to at most max characters, with "..." where text was
+ * left out. For lines that must not grow a window; the whole text is shown
+ * elsewhere (Details, a requester). */
+static void cut(char *out, size_t n, const char *s, size_t max)
+{
+    if (max >= n)
+        max = n - 1;
+    if (strlen(s) <= max || max < 8)
+        snprintf(out, n, "%.*s", (int)max, s);
+    else
+        snprintf(out, n, "%.*s...", (int)(max - 3), s);
+}
+
+static void shortpath(char *out, size_t n, const char *path, size_t max)
+{
+    size_t len = strlen(path), head = 0, tail;
+    const char *colon = strchr(path, ':'), *t, *slash;
+    if (max >= n)
+        max = n - 1;
+    if (len <= max || max < 12) {
+        cut(out, n, path, max);
+        return;
+    }
+    if (colon && (size_t)(colon - path) + 1 <= max / 3)
+        head = colon - path + 1;
+    tail = max - head - 3;
+    t = path + len - tail;
+    /* Start the kept end at a whole name when one starts early in it. */
+    slash = strchr(t, '/');
+    if (slash && slash[1] && (size_t)(slash - t) < tail / 2)
+        t = slash + 1;
+    snprintf(out, n, "%.*s...%s", (int)head, path, t);
+}
+
+/* Result lines are kept to this many characters: the window stays the width
+ * it had during the job, and nothing needs wrapping. */
+#define RES_COLS 52
+
+/* The short summary under a result's headline: at most three lines of at
+ * most RES_COLS characters. The whole text is in Details (detail_text). A
+ * summary longer than that loses its ends here, never in a field too small
+ * to show it. */
 static void setresult(const char *fmt, ...)
 {
-    char buf[2 * UA_PATHMAX + 512];
+    char buf[2 * UA_PATHMAX + 512], out[3 * (RES_COLS + 2) + 1], *line, *next;
+    int lines = 0;
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
-    SetAttrs(f_presult, MUIA_Floattext_Text, (IPTR)buf, TAG_DONE);
+    out[0] = 0;
+    for (line = buf; line && lines < 3; line = next, lines++) {
+        char c[RES_COLS + 1];
+        next = strchr(line, '\n');
+        if (next)
+            *next++ = 0;
+        cut(c, sizeof(c), line, RES_COLS);
+        snprintf(out + strlen(out), sizeof(out) - strlen(out), "%s%s", lines ? "\n" : "", c);
+    }
+    SetAttrs(t_presult, MUIA_Text_Contents, (IPTR)out, TAG_DONE);
+}
+
+/* A summary that leaves something out says where the rest is: on a line of
+ * its own, or at the end of the third line. */
+static void result_more(char *sum, size_t n, int more)
+{
+    char *nl = strchr(sum, '\n'), *third = nl ? strchr(nl + 1, '\n') : NULL;
+    if (!more)
+        return;
+    if (!third) {
+        snprintf(sum + strlen(sum), n - strlen(sum), "\nMore in Details.");
+        return;
+    }
+    third++;
+    if (strlen(third) + 17 > RES_COLS) {
+        char c[RES_COLS + 1];
+        cut(c, sizeof(c), third, RES_COLS - 17);
+        snprintf(third, n - (third - sum), "%s", c);
+    }
+    snprintf(sum + strlen(sum), n - strlen(sum), " More in Details.");
 }
 
 static void sizestr(UQUAD n, char *s, size_t sz)
@@ -544,6 +619,10 @@ static void prefs_save(void)
 /* ------------------------------------------------------------- browser */
 
 static void b_note_selection(void);
+static void start_note(const char *title, const char *text);
+
+#define DROP_TITLE "Drop files or an archive here"
+#define DROP_TEXT "Files are packed, an archive is extracted."
 
 /* Protection bits as List shows them ("hspa" set, "rwed" granted). */
 static void protstr(const ua_entry *e, char *prot, size_t n)
@@ -1214,24 +1293,21 @@ static void datestr(const struct DateStamp *ds, char *out, size_t n)
         out[0] = 0;
 }
 
+/* The question names the file and its drawer on lines of their own, each
+ * cut to fit, so a long path does not make the window wide or push the
+ * buttons out of view. The whole path is the drawer line's help bubble. */
 static void show_ask(uj_msg *m)
 {
     BPTR l = Lock((STRPTR)m->path, SHARED_LOCK);
-    char info[160] = "", incoming[160] = "", sz[32], ds[40];
+    char old[80] = "unknown", sz[32], ds[40], name[RES_COLS + 1], where[RES_COLS + 1];
+    static char dir[UA_PATHMAX];
     held_ask = m;
     if (l) {
         struct FileInfoBlock *fib = AllocDosObject(DOS_FIB, NULL);
         if (fib && Examine(l, fib)) {
-            struct DateTime dt;
-            char d[16], t[16], sz[32];
-            memset(&dt, 0, sizeof(dt));
-            dt.dat_Stamp = fib->fib_Date;
-            dt.dat_Format = FORMAT_DOS;
-            dt.dat_StrDate = d;
-            dt.dat_StrTime = t;
-            DateToStr(&dt);
             sizestr(UA_FIB_SIZE(fib), sz, sizeof(sz));
-            snprintf(info, sizeof(info), "Existing file: %s, %s %.5s", sz, d, t);
+            datestr(&fib->fib_Date, ds, sizeof(ds));
+            snprintf(old, sizeof(old), "%s, %s", sz, ds);
         }
         FreeDosObject(DOS_FIB, fib);
         UnLock(l);
@@ -1244,9 +1320,14 @@ static void show_ask(uj_msg *m)
         datestr(&m->edate, ds, sizeof(ds));
     else
         snprintf(ds, sizeof(ds), "no date");
-    snprintf(incoming, sizeof(incoming), "From the archive: %s, %s", sz, ds);
-    settext(t_askq, "\33b%s\33n already exists.", m->path);
-    settext(t_askinfo, "%s\n%s", info, incoming);
+    snprintf(dir, sizeof(dir), "%.*s", (int)(PathPart((STRPTR)m->path) - (STRPTR)m->path), m->path);
+    cut(name, sizeof(name), leafname(m->path), RES_COLS);
+    shortpath(where, sizeof(where), dir, RES_COLS);
+    settext(t_askname, "\33b%s", name);
+    settext(t_askwhere, "%s", where);
+    SetAttrs(t_askwhere, MUIA_ShortHelp, (IPTR)dir, TAG_DONE);
+    settext(t_askold, "%s", old);
+    settext(t_asknew, "%s, %s", sz, ds);
     SetAttrs(cb_all, MUIA_Selected, FALSE, TAG_DONE);
     open_win(wask, 1);
     /* Return answers Skip; Replace needs its key or a click. */
@@ -1368,22 +1449,26 @@ static void on_batch(uj_msg *m)
     settext(t_bstatus, "Reading the archive... %lu entries", (unsigned long)b_count);
 }
 
-static void detail_text(uj_job *j, const char *title)
+/* Details: the headline and the whole result text, then what the archive
+ * and the engine were, then every message the job kept. */
+static void detail_text(uj_job *j, const char *title, const char *body)
 {
-    size_t n = (j->log ? j->loglen : 0) + strlen(j->archive) + strlen(j->err) + 512;
+    size_t n = (j->log ? j->loglen : 0) + strlen(j->archive) + strlen(j->err) +
+               (body ? strlen(body) : 0) + 512;
     char *s;
     free(r_detail);
     r_detail = s = malloc(n);
     if (!s)
         return;
+    snprintf(s, n, "%s\n\n%s%s", title, body ? body : "", body ? "\n\n" : "");
     if (j->kind == UJ_PACK)
         /* Packing reads no archive: the format is the one written, and
          * libarchive's writer is the only engine. */
-        snprintf(s, n, "%s\n\nArchive: %s\nFormat: %s\n%s\n", title, j->archive,
+        snprintf(s + strlen(s), n - strlen(s), "Archive: %s\nFormat: %s\n%s\n", j->archive,
                  ua_pack_format_name(j->pack.fmt), j->err[0] ? j->err : "");
     else
-        snprintf(s, n, "%s\n\nArchive: %s\nFormat: %s\nEngine: %s\n%s%s\n", title, j->archive,
-                 ua_format_name(j->fmt), j->list.engine ? j->list.engine->name : "none",
+        snprintf(s + strlen(s), n - strlen(s), "Archive: %s\nFormat: %s\nEngine: %s\n%s%s\n",
+                 j->archive, ua_format_name(j->fmt), j->list.engine ? j->list.engine->name : "none",
                  j->recover ? "Mode: recovery\n" : "", j->err[0] ? j->err : "");
     if (j->log)
         strncat(s, j->log, n - strlen(s) - 1);
@@ -1444,9 +1529,9 @@ static void list_done(uj_job *j)
             b_note_selection();
             settext(t_active, "Will extract to %s", bplan.root);
         }
-        detail_text(j, "Listing");
+        detail_text(j, "Listing", NULL);
     } else {
-        detail_text(j, "Listing failed");
+        detail_text(j, "Listing failed", NULL);
         uj_take_list(j, &blist, &bplan);
         if (j->open_status == UA_OPEN_DAMAGED) {
             settext(t_bstatus, "The archive is damaged and nothing could be listed.");
@@ -1463,28 +1548,36 @@ static void list_done(uj_job *j)
 static void extract_done(uj_job *j)
 {
     ua_report *r = &j->rep;
-    char sz[32], fc[32], head[200], body[UA_PATHMAX + 600];
-    int extracted_any;
+    char sz[32], fc[32], head[200], body[UA_PATHMAX + 600], where[RES_COLS + 1], c[RES_COLS + 1];
+    /* The summary: up to three short lines (setresult). The full text, with
+     * the whole path and every note, is body, shown in Details. */
+    char sum[3 * (RES_COLS + 2) + 1];
+    int extracted_any, more = 0;
 
     snprintf(r_root, sizeof(r_root), "%s", j->have_plan ? j->plan.root : "");
     r_damaged = j->open_status == UA_OPEN_DAMAGED;
     sizestr(r->bytes, sz, sizeof(sz));
     snprintf(fc, sizeof(fc), "%lu file%s", (unsigned long)r->files, r->files == 1 ? "" : "s");
+    shortpath(where, sizeof(where), r_root, RES_COLS);
     extracted_any = r->files || r->dirs;
     if (j->open_status == UA_OPEN_DAMAGED) {
         snprintf(head, sizeof(head), "The archive is damaged");
         snprintf(body, sizeof(body), "Nothing was written.\n\"Recover...\" extracts what can still be read, "
                  "into a new folder.");
+        snprintf(sum, sizeof(sum), "Nothing was written.\n\"Recover...\" extracts what can still be read.");
     } else if (j->open_status == UA_OPEN_CANCELLED) {
         snprintf(head, sizeof(head), "Cancelled");
         snprintf(body, sizeof(body), "Stopped while reading the archive. Nothing was written.");
+        snprintf(sum, sizeof(sum), "Stopped while reading the archive.\nNothing was written.");
     } else if (j->open_status == UA_OPEN_PASSWORD) {
         snprintf(head, sizeof(head), "Password needed");
         snprintf(body, sizeof(body), "The archive is encrypted and no password was given.\n"
                  "Nothing was written.");
+        snprintf(sum, sizeof(sum), "%s", body);
     } else if (j->open_status == UA_OPEN_NOENGINE) {
         snprintf(head, sizeof(head), "Not an archive Unarc can read");
         snprintf(body, sizeof(body), "Format: %s. Nothing was written.", ua_format_name(j->fmt));
+        snprintf(sum, sizeof(sum), "Format: %s.\nNothing was written.", ua_format_name(j->fmt));
     } else if (j->open_status == UA_OPEN_UNSUPPORTED) {
         char why7[160];
         if (ua_7z_available(why7, sizeof(why7)))
@@ -1494,28 +1587,46 @@ static void extract_done(uj_job *j)
         snprintf(head, sizeof(head), "Not supported");
         snprintf(body, sizeof(body), "Unarc cannot read this archive: %s.\n%sNothing was written.",
                  j->list.why, why7);
+        cut(c, sizeof(c), j->list.why, RES_COLS);
+        snprintf(sum, sizeof(sum), "%s\nNothing was written.", c);
+        more = strlen(j->list.why) > RES_COLS || why7[0];
     } else if (j->open_status == UA_OPEN_ERROR && !strncmp(j->err, "Incomplete multi-volume", 23)) {
         snprintf(head, sizeof(head), "Incomplete set");
         snprintf(body, sizeof(body), "%s\nNothing was written.", j->err);
+        cut(c, sizeof(c), j->err, RES_COLS);
+        snprintf(sum, sizeof(sum), "%s\nNothing was written.", c);
+        more = strlen(j->err) > RES_COLS;
     } else if (j->open_status == UA_OPEN_ERROR || (j->extract_rc < 0 && !extracted_any &&
                                                    !r->cancelled && !r->failed)) {
         snprintf(head, sizeof(head), "Failed");
         snprintf(body, sizeof(body), "%s\nNothing was written.", j->err[0] ? j->err : "See Details.");
+        cut(c, sizeof(c), j->err[0] ? j->err : "The reason is in Details.", RES_COLS);
+        snprintf(sum, sizeof(sum), "%s\nNothing was written.", c);
+        more = strlen(j->err) > RES_COLS;
     } else if (r->cancelled && !extracted_any) {
         snprintf(head, sizeof(head), "Cancelled");
         snprintf(body, sizeof(body), "Nothing was extracted.");
+        snprintf(sum, sizeof(sum), "%s", body);
     } else if (r->cancelled) {
         snprintf(head, sizeof(head), "Cancelled");
         snprintf(body, sizeof(body), "%s (%s) were extracted to\n%s\nand kept; the file in "
                  "progress was removed.", fc, sz, r_root);
+        snprintf(sum, sizeof(sum), "%s (%s) kept in\n%s\nThe file in progress was removed.", fc, sz,
+                 where);
     } else if (r->failed) {
         snprintf(head, sizeof(head), "Stopped: %s", r->why);
         snprintf(body, sizeof(body), "%s (%s) were extracted to\n%s\nbefore it stopped. "
                  "Nothing that was there before was lost.", fc, sz, r_root);
+        snprintf(sum, sizeof(sum), "%s (%s) in\n%s\nNothing that was there before was lost.", fc, sz,
+                 where);
+        more = strlen(head) > RES_COLS;
     } else if (r->errors) {
         snprintf(head, sizeof(head), "Partly done");
         snprintf(body, sizeof(body), "%s (%s) in\n%s\n%lu could not be written: see "
                  "Details.", fc, sz, r_root, (unsigned long)r->errors);
+        snprintf(sum, sizeof(sum), "%s (%s) in\n%s\n%lu could not be written.", fc, sz, where,
+                 (unsigned long)r->errors);
+        more = 1;
     } else if (r->skipped || r->renamed || j->plan.unsafe || j->plan.encrypted ||
                j->plan.collisions || j->plan.lossy || j->recover) {
         snprintf(head, sizeof(head), "Done, with notes");
@@ -1526,32 +1637,44 @@ static void extract_done(uj_job *j)
                  j->plan.encrypted ? ", encrypted files not extracted" : "",
                  j->recover ? ".\nRecovered from a damaged archive: check the files before "
                  "relying on them" : "");
+        snprintf(sum, sizeof(sum), "%s (%s) in\n%s\nSkipped %lu, renamed %lu.", fc, sz, where,
+                 (unsigned long)r->skipped, (unsigned long)(r->renamed + j->plan.collisions));
+        more = j->plan.unsafe || j->plan.encrypted || j->recover;
     } else {
         snprintf(head, sizeof(head), "Done");
         snprintf(body, sizeof(body), "%s (%s) in\n%s", fc, sz, r_root);
+        snprintf(sum, sizeof(sum), "%s (%s) in\n%s", fc, sz, where);
     }
-    if (j->skipped_encrypted)
+    if (j->skipped_encrypted) {
         snprintf(body + strlen(body), sizeof(body) - strlen(body),
                  "\n%lu encrypted file%s left out (no password).",
                  (unsigned long)j->skipped_encrypted,
                  j->skipped_encrypted == 1 ? " was" : "s were");
+        more = 1;
+    }
     /* Something to report: say so in the headline as well. */
     if (!strcmp(head, "Done") && (j->skipped_encrypted ||
                                   (extracted_any && j->have_plan && j->plan.root_renamed)))
         snprintf(head, sizeof(head), "Done, with notes");
-    if (extracted_any && j->have_plan && j->plan.root_renamed)
+    if (extracted_any && j->have_plan && j->plan.root_renamed) {
         snprintf(body + strlen(body), sizeof(body) - strlen(body),
                  "\nA drawer of the archive's name was already there, so a new one was made.");
-    if (r->overwritten)
+        more = 1;
+    }
+    if (r->overwritten) {
         snprintf(body + strlen(body), sizeof(body) - strlen(body), "\n%lu files were replaced.",
                  (unsigned long)r->overwritten);
+        more = 1;
+    }
     if ((r->errors || r->failed) && j->plan.with_password && pw_of(j->archive)) {
         memset(pw, 0, sizeof(pw));
         pw_for[0] = 0;
         snprintf(body + strlen(body), sizeof(body) - strlen(body),
                  "\nThe password may be wrong; it will be asked again.");
+        more = 1;
     }
-    detail_text(j, head);
+    result_more(sum, sizeof(sum), more);
+    detail_text(j, head, body);
     snprintf(r_head, sizeof(r_head), "%s", head);
     r_ok = !strcmp(head, "Done") || !strcmp(head, "Done, with notes");
     r_clean = !strcmp(head, "Done") && !j->skipped_encrypted &&
@@ -1561,8 +1684,9 @@ static void extract_done(uj_job *j)
         (unsigned long)r->files, (unsigned long)r->dirs, (unsigned long)r->skipped,
         (unsigned long)r->renamed, (unsigned long)r->overwritten, (unsigned long)r->errors,
         (unsigned long long)r->bytes, r->cancelled, r->failed, j->open_status, r_root);
-    settext(t_ptitle, "\33b%s", head);
-    setresult("%s", body);
+    cut(c, sizeof(c), head, RES_COLS);
+    settext(t_ptitle, "\33b%s", c);
+    setresult("%s", sum);
     SetAttrs(t_pname, MUIA_ShowMe, FALSE, TAG_DONE);
     SetAttrs(g_gauge, MUIA_ShowMe, FALSE, TAG_DONE);
     SetAttrs(t_pcount, MUIA_ShowMe, FALSE, TAG_DONE);
@@ -1593,6 +1717,7 @@ static void on_done(uj_job *j)
     uj_wait_gone(j);
     job = NULL;
     jobs_done++;
+    start_note(NULL, NULL);
     if (held_ask) {          /* cannot happen: the worker waited for it */
         held_ask = NULL;
         open_win(wask, 0);
@@ -1712,13 +1837,13 @@ static const struct pfmt {
     const char *hint;
 } pfmts[4] = {
     { "LhA", UA_PACK_LHA, ".lha", 2, { "Store only", "Normal" }, { 0, -1 },
-      "Keeps Amiga comments and protection bits. Opens with LhA on any Amiga and with XAD." },
+      "Keeps Amiga comments and protection bits." },
     { "ZIP", UA_PACK_ZIP, ".zip", 4, { "Store only", "Fast", "Normal", "Best" }, { 0, 1, -1, 9 },
-      "Opens almost everywhere. Amiga comments and the h, s, p, a bits are not kept." },
+      "Opens almost everywhere; no Amiga comments." },
     { "7z", UA_PACK_7Z, ".7z", 3, { "Fast", "Normal", "Best" }, { 1, -1, 9 },
-      "The smallest archives; needs 7-Zip or Unarc to open. No Amiga comments." },
+      "Smallest archives; opens with 7-Zip or Unarc." },
     { "tar.gz", UA_PACK_TGZ, ".tar.gz", 3, { "Fast", "Normal", "Best" }, { 1, -1, 9 },
-      "For Unix systems. No Amiga comments." },
+      "For Unix systems; no Amiga comments." },
 };
 
 static const char *pack_ext(int f)
@@ -1741,16 +1866,14 @@ static int cur_fmt(void)
 static void start_show_level(void)
 {
     int f = cur_fmt();
-    settext(t_level, "Compression: \33b%s", pfmts[f].lv[pf_level[f]]);
+    settext(t_level, "\33b%s", pfmts[f].lv[pf_level[f]]);
 }
 
-/* The start window follows the format: the drop text, the level slider's
- * range and position. */
+/* The start window follows the format: what it keeps, the level slider's
+ * range and position. The format itself is named once, on its button. */
 static void start_format_changed(void)
 {
     int f = cur_fmt();
-    settext(t_drop, "\n\n\33bDrop files or drawers here to pack them as %s\33n\n"
-            "Drop an archive to extract it\n\n", pfmts[f].name);
     settext(t_fmthint, "%s", pfmts[f].hint);
     SetAttrs(sl_level, MUIA_NoNotify, TRUE, MUIA_Numeric_Max, lvl_count(f) - 1,
              MUIA_Numeric_Value, pf_level[f], TAG_DONE);
@@ -1759,12 +1882,25 @@ static void start_format_changed(void)
 
 static void start_show_where(void)
 {
-    if (pf_pack_where == 2 && pf_pack_dir[0])
-        settext(t_where, "Archives are saved in %s.", pf_pack_dir);
-    else if (pf_pack_where == 1)
-        settext(t_where, "You choose where each archive is saved.");
+    char where[RES_COLS + 1];
+    if (pf_pack_where == 2 && pf_pack_dir[0]) {
+        shortpath(where, sizeof(where), pf_pack_dir, 40);
+        settext(t_where, "In %s", where);
+    } else if (pf_pack_where == 1)
+        settext(t_where, "Asked for each archive");
     else
-        settext(t_where, "Archives are saved next to the items.");
+        settext(t_where, "Next to the items");
+}
+
+/* The drop area says what a drop does; while a drop cannot be taken, or
+ * after one was taken only in part, it says that instead, until the job
+ * ends (on_done). */
+static void start_note(const char *title, const char *text)
+{
+    if (title)
+        zk_drop_set(o_drop, title, text);
+    else
+        zk_drop_set(o_drop, DROP_TITLE, DROP_TEXT);
 }
 
 /* The name of a volume or assign ("Work" for "Work:"), or the last part. */
@@ -1909,12 +2045,13 @@ static void k_next(void)
         nk = kcur = 0;
         if (k_total > 1) {
             /* Two lines like any result; one line per archive in Details. */
+            char where[RES_COLS + 1];
+            shortpath(where, sizeof(where), k_lastdir[0] ? k_lastdir : "their drawers", RES_COLS);
             settext(t_ptitle, "\33b%d archives made", k_made);
             if (k_bad)
-                setresult("%d with problems: see Details.\nThe others are in %s.", k_bad,
-                        k_lastdir[0] ? k_lastdir : "their drawers");
+                setresult("%d with problems: see Details.\nThe others are in\n%s", k_bad, where);
             else
-                setresult("Each item in its own archive, in\n%s", k_lastdir);
+                setresult("Each item in its own archive, in\n%s", where);
             free(r_detail);
             r_detail = strdup(k_lines);
             SetAttrs(wprog, MUIA_Window_Title, (IPTR)APPNAME, TAG_DONE);
@@ -2034,45 +2171,64 @@ static void pack_done(uj_job *j)
 {
     ua_pack_report *r = &j->prep;
     char sz[32], out[32], fc[32], head[200], body[2 * UA_PATHMAX + 400];
+    char name[RES_COLS + 1], where[RES_COLS + 1], c[RES_COLS + 1], sum[3 * (RES_COLS + 2) + 1];
+    int more = 0;
     sizestr(r->bytes_in, sz, sizeof(sz));
     sizestr(r->bytes_out, out, sizeof(out));
     snprintf(fc, sizeof(fc), "%lu file%s", (unsigned long)r->files, r->files == 1 ? "" : "s");
     archive_drawer(j->archive, r_root, sizeof(r_root));
+    /* The summary names the archive and its drawer on lines of their own,
+     * so a long path does not push the counts out of view. */
+    cut(name, sizeof(name), leafname(j->archive), RES_COLS);
+    shortpath(where, sizeof(where), r_root, RES_COLS - 3);
     if (j->extract_rc < 0 && r->cancelled) {
         snprintf(head, sizeof(head), "Cancelled");
         snprintf(body, sizeof(body), "No archive was created.%s", r->replaced ? "" :
                  "\nAn archive that was there before is unchanged.");
+        snprintf(sum, sizeof(sum), "%s", body);
     } else if (j->extract_rc < 0) {
         snprintf(head, sizeof(head), "Not created: %s", r->why[0] ? r->why : j->err);
         snprintf(body, sizeof(body), "No archive was created.\nAn archive that was there "
                  "before is unchanged.");
+        snprintf(sum, sizeof(sum), "%s", body);
+        more = strlen(head) > RES_COLS;
     } else if (r->errors) {
         snprintf(head, sizeof(head), "Archive created, with errors");
         snprintf(body, sizeof(body), "%s\n%s (%s) packed into %s.\n%lu could not be packed as "
                  "they were: see Details.", j->archive, fc, sz, out, (unsigned long)r->errors);
+        snprintf(sum, sizeof(sum), "%s\nin %s\n%lu could not be packed as they were.", name, where,
+                 (unsigned long)r->errors);
+        more = 1;
     } else if (r->skipped || r->kept[0]) {
         snprintf(head, sizeof(head), "Archive created, with notes");
         snprintf(body, sizeof(body), "%s\n%s (%s) packed into %s.", j->archive, fc, sz, out);
+        snprintf(sum, sizeof(sum), "%s\nin %s\n%s (%s) packed into %s.", name, where, fc, sz, out);
         if (r->skipped)
             snprintf(body + strlen(body), sizeof(body) - strlen(body),
                      "\n%lu links were not followed.", (unsigned long)r->skipped);
+        more = 1;
     } else {
         snprintf(head, sizeof(head), "Archive created");
         snprintf(body, sizeof(body), "%s\n%s (%s) packed into %s.", j->archive, fc, sz, out);
+        snprintf(sum, sizeof(sum), "%s\nin %s\n%s (%s) packed into %s.", name, where, fc, sz, out);
     }
     if (j->extract_rc == 0 && r->kept[0])
         snprintf(body + strlen(body), sizeof(body) - strlen(body),
                  "\nThe old archive could not be deleted (something had it open);\n"
                  "it is kept as %s.", r->kept);
-    else if (j->extract_rc == 0 && r->replaced)
+    else if (j->extract_rc == 0 && r->replaced) {
         strncat(body, "\nThe old archive was replaced.", sizeof(body) - strlen(body) - 1);
-    detail_text(j, head);
+        more = 1;
+    }
+    result_more(sum, sizeof(sum), more);
+    detail_text(j, head, body);
     dbg("job pack done: %s | files=%lu dirs=%lu skipped=%lu errors=%lu in=%llu out=%llu "
         "cancelled=%d failed=%d rc=%d", head, (unsigned long)r->files, (unsigned long)r->dirs,
         (unsigned long)r->skipped, (unsigned long)r->errors, (unsigned long long)r->bytes_in,
         (unsigned long long)r->bytes_out, r->cancelled, r->failed, j->extract_rc);
-    settext(t_ptitle, "\33b%s", head);
-    setresult("%s", body);
+    cut(c, sizeof(c), head, RES_COLS);
+    settext(t_ptitle, "\33b%s", c);
+    setresult("%s", sum);
     SetAttrs(t_pname, MUIA_ShowMe, FALSE, TAG_DONE);
     SetAttrs(g_gauge, MUIA_ShowMe, FALSE, TAG_DONE);
     SetAttrs(t_pcount, MUIA_ShowMe, FALSE, TAG_DONE);
@@ -2193,21 +2349,24 @@ static void handle_drop(void)
     if (archives == ndropped) {
         /* Archives only: one after another, each its own job. */
         int added = 0;
-        settext(t_startnote, "");
+        char note[80];
+        start_note(NULL, NULL);
         for (i = 0; i < ndropped; i++)
             added += queue_add(dropped[i]);
-        if (added < ndropped)
-            settext(t_startnote, "Only %d archives can wait at a time; %d were not added.", QMAX,
-                    ndropped - added);
+        if (added < ndropped) {
+            snprintf(note, sizeof(note), "Only %d archives can wait at a time; %d were not added.",
+                     QMAX, ndropped - added);
+            start_note("Not all were added", note);
+        }
         queue_next();
     } else if (job) {
-        settext(t_startnote, "Busy; files to pack can be dropped when the current job is done.");
+        start_note("Busy", "Files to pack can be dropped when this job is done.");
     } else {
         /* Files and drawers, or archives mixed with them: that is packing;
          * the pack window shows what and where before anything starts. */
         char **items = calloc(ndropped, sizeof(char *));
         int n = 0;
-        settext(t_startnote, "");
+        start_note(NULL, NULL);
         for (i = 0; items && i < ndropped; i++)
             if (dropped[i]) {
                 items[n++] = dropped[i];
@@ -2234,7 +2393,7 @@ static Object *button(const char *label)
 static const char *onopen_labels[] = { "Extract next to the archive", "Show their contents", NULL };
 static const char *packfmt_labels[] = { "LhA", "ZIP", "7z", "tar.gz", NULL };
 static const char *reg_titles[] = { "General", "Packing", "Extracting", NULL };
-static const char *start_labels[] = { "The pack window", "A requester to open an archive", NULL };
+static const char *start_labels[] = { "The start window", "A requester to open an archive", NULL };
 static const char *packwhere_labels[] = { "Next to the items", "Ask each time", "In this drawer:",
                                           NULL };
 static const char *name_labels[] = { "After the drawer they are in", "Archive", NULL };
@@ -2297,6 +2456,17 @@ static void table_selected_all(void *ctx)
     DoMethod(app, MUIM_Application_ReturnID, ID_B_SEL);
 }
 
+/* The program's own icon, under whatever name it was started. */
+static const char *icon_name(void)
+{
+    static char n[UA_PATHMAX];
+    char p[256];
+    if (!GetProgramName(p, sizeof(p)))
+        snprintf(p, sizeof(p), "%s", FindTask(NULL)->tc_Node.ln_Name);
+    snprintf(n, sizeof(n), "PROGDIR:%s", FilePart(p));
+    return n;
+}
+
 static int build(void)
 {
     static const struct zk_table_cfg tcfg = {
@@ -2314,7 +2484,11 @@ static int build(void)
         /* The level slider: one step per level of the format, the level's
          * name shown above it (start_show_level). */
         static struct TagItem chain[] = { { MUIA_CycleChain, 1 }, { TAG_DONE, 0 } };
+        static struct TagItem back[] = { { MUIA_Background, MUII_TextBack }, { TAG_DONE, 0 } };
         if (!zk_steps_init() || !(sl_level = zk_steps_new(4, 0, chain)))
+            return 0;
+        if (!zk_icon_init() || !zk_drop_init() || !(o_icon = zk_icon_new(icon_name(), NULL)) ||
+            !(o_drop = zk_drop_new(DROP_TITLE, DROP_TEXT, back)))
             return 0;
     }
     lvview = zk_table_new(&tcfg, &lv, NULL);
@@ -2331,11 +2505,22 @@ static int build(void)
         SubWindow, (IPTR)(wstart = WindowObject,
             MUIA_Window_Title, (IPTR)APPNAME,
             MUIA_Window_ID, MAKE_ID('U','A','S','T'),
+            /* Zune opened it at its smallest width, which left the level
+             * slider a few steps' width; a window the user sized is kept
+             * by its ID. */
+            MUIA_Window_Width, MUIV_Window_Width_Visible(45),
             MUIA_Window_AppWindow, TRUE,
             WindowContents, (IPTR)(VGroup,
+                /* Header: the program's icon and name, and the format the
+                 * next drop packs to. */
                 Child, (IPTR)(HGroup,
-                    Child, (IPTR)LLabel1("Pack as"),
+                    Child, (IPTR)o_icon,
+                    Child, (IPTR)(TextObject,
+                        MUIA_Font, MUIV_Font_Big,
+                        MUIA_Text_Contents, (IPTR)"\33b" APPNAME,
+                    End),
                     Child, (IPTR)HSpace(0),
+                    Child, (IPTR)Label1("_Format"),
                     Child, (IPTR)(c_packfmt = CycleObject,
                         MUIA_Cycle_Entries, (IPTR)packfmt_labels,
                         MUIA_ControlChar, 'f',
@@ -2345,37 +2530,39 @@ static int build(void)
                         MUIA_FixWidthTxt, (IPTR)"MMtar.gzMM",
                     End),
                 End),
-                Child, (IPTR)(t_drop = TextObject,
-                    TextFrame,
-                    MUIA_Background, MUII_TextBack,
-                    MUIA_Text_PreParse, (IPTR)"\33c",
-                    /* Sized for the longest text it shows; it can grow. */
-                    MUIA_Text_Contents, (IPTR)"\n\n\33bDrop files or drawers here to pack them as "
-                        "tar.gz\33n\nDrop an archive to extract it\n\n",
-                    MUIA_Text_SetVMax, FALSE,
-                End),
-                Child, (IPTR)(VGroup,
-                    GroupFrame,
-                    Child, (IPTR)(t_level = TextObject, MUIA_Text_SetMin, FALSE, End),
+                Child, (IPTR)o_drop,
+                /* What the next pack does, one row each, labels on the left. The
+                 * empty labels are labels, not HSpace: a space has weight and
+                 * would widen the label column at the slider's cost. */
+                Child, (IPTR)(ColGroup(2),
+                    Child, (IPTR)Label1("Compression"),
                     Child, (IPTR)(HGroup,
-                        Child, (IPTR)Label1("Faster"),
+                        Child, (IPTR)(TextObject, MUIA_Text_Contents, (IPTR)"Faster",
+                            MUIA_Text_SetMax, TRUE, End),
                         Child, (IPTR)sl_level,
-                        Child, (IPTR)Label1("Smaller"),
+                        Child, (IPTR)(TextObject, MUIA_Text_Contents, (IPTR)"Smaller",
+                            MUIA_Text_SetMax, TRUE, End),
+                        /* The level's name, as wide as the longest. */
+                        Child, (IPTR)(t_level = TextObject,
+                            MUIA_FixWidthTxt, (IPTR)"MStore onlyM",
+                        End),
                     End),
+                    Child, (IPTR)Label1(""),
+                    Child, (IPTR)(HGroup,
+                        Child, (IPTR)(cb_separate = MUI_MakeObject(MUIO_Checkmark,
+                                                                  (IPTR)"_Each item into its own archive")),
+                        Child, (IPTR)LLabel1("_Each item into its own archive"),
+                        Child, (IPTR)HSpace(0),
+                    End),
+                    Child, (IPTR)Label1(""),
+                    /* As wide as the longest note (pfmts), so that none is cut. */
+                    Child, (IPTR)(t_fmthint = TextObject,
+                        MUIA_FixWidthTxt, (IPTR)"Smallest archives; opens with 7-Zip or Unarc.",
+                    End),
+                    Child, (IPTR)Label1("Save to"),
+                    Child, (IPTR)(t_where = TextObject, MUIA_Text_SetMin, FALSE, End),
                 End),
-                Child, (IPTR)(HGroup,
-                    Child, (IPTR)(cb_separate = MUI_MakeObject(MUIO_Checkmark,
-                                                              (IPTR)"_Each item into its own archive")),
-                    Child, (IPTR)LLabel1("_Each item into its own archive"),
-                    Child, (IPTR)HSpace(0),
-                End),
-                Child, (IPTR)(t_fmthint = TextObject, MUIA_Text_SetMin, FALSE, End),
-                Child, (IPTR)(t_where = TextObject, MUIA_Text_SetMin, FALSE, End),
-                Child, (IPTR)(t_startnote = TextObject,
-                    MUIA_Text_PreParse, (IPTR)"\33c",
-                    MUIA_Text_Contents, (IPTR)"",
-                    MUIA_Text_SetMin, FALSE,
-                End),
+                Child, (IPTR)MUI_MakeObject(MUIO_HBar, 2),
                 Child, (IPTR)(HGroup,
                     Child, (IPTR)(b_open = button("_Open archive...")),
                     Child, (IPTR)(b_pack = button("_Pack...")),
@@ -2463,20 +2650,15 @@ static int build(void)
                     MUIA_FixHeightTxt, (IPTR)"0",
                 End),
                 Child, (IPTR)(t_pcount = TextObject, MUIA_Text_SetMin, FALSE, End),
-                /* Seven lines: the longest result (counts, a path wrapped
-                 * on three lines, skipped, two notes). No scroller: Zune's
-                 * Floattext wraps to the width of the whole Listview, the
-                 * scroller included (floattext.c SetText, MUIA_Width), so
-                 * text would run under it. The height cannot follow the
-                 * text: Zune fixes it when the object is made. */
-                Child, (IPTR)(t_presult = ListviewObject,
-                    MUIA_Listview_Input, FALSE,
-                    MUIA_Listview_ScrollerPos, MUIV_Listview_ScrollerPos_None,
-                    MUIA_Listview_List, (IPTR)(f_presult = FloattextObject,
-                        MUIA_Frame, MUIV_Frame_None,
-                        MUIA_Background, MUII_WindowBack,
-                        MUIA_FixHeightTxt, (IPTR)"\n\n\n\n\n\n",
-                    End),
+                /* The summary: three short lines (setresult); the whole
+                 * text is in Details. Three lines always, so the window does
+                 * not change height with the result. Zune clamps FixHeightTxt
+                 * to the first contents' height unless SetVMax is off
+                 * (area.c, __area_finish_minmax). */
+                Child, (IPTR)(t_presult = TextObject,
+                    MUIA_Text_Contents, (IPTR)"",
+                    MUIA_Text_SetVMax, FALSE,
+                    MUIA_FixHeightTxt, (IPTR)"X\nX\nX",
                 End),
                 Child, (IPTR)(lq = ListviewObject,
                     MUIA_ShowMe, FALSE,
@@ -2512,10 +2694,24 @@ static int build(void)
         End),
         SubWindow, (IPTR)(wask = WindowObject,
             MUIA_Window_Title, (IPTR)"File exists",
-            MUIA_Window_ID, MAKE_ID('U','A','A','S'),
+            /* No MUIA_Window_ID, as for the progress window: each question
+             * sizes the window to its own names. */
             WindowContents, (IPTR)(VGroup,
-                Child, (IPTR)(t_askq = TextObject, MUIA_Text_SetMin, FALSE, End),
-                Child, (IPTR)(t_askinfo = TextObject, MUIA_Text_SetMin, FALSE, End),
+                Child, (IPTR)(t_askq = TextObject,
+                    MUIA_Text_Contents, (IPTR)"A file of this name is already there.",
+                End),
+                Child, (IPTR)(ColGroup(2),
+                    GroupFrame,
+                    MUIA_Background, MUII_GroupBack,
+                    Child, (IPTR)Label1("File"),
+                    Child, (IPTR)(t_askname = TextObject, End),
+                    Child, (IPTR)Label1("In"),
+                    Child, (IPTR)(t_askwhere = TextObject, End),
+                    Child, (IPTR)Label1("On disk"),
+                    Child, (IPTR)(t_askold = TextObject, End),
+                    Child, (IPTR)Label1("In the archive"),
+                    Child, (IPTR)(t_asknew = TextObject, End),
+                End),
                 Child, (IPTR)(HGroup,
                     Child, (IPTR)(cb_all = MUI_MakeObject(MUIO_Checkmark, (IPTR)"_Do the same for the rest")),
                     Child, (IPTR)LLabel1("_Do the same for the rest"),
@@ -2636,10 +2832,13 @@ static int build(void)
             MUIA_Window_ID, MAKE_ID('U','A','D','T'),
             MUIA_Window_Width, MUIV_Window_Width_Screen(50),
             MUIA_Window_Height, MUIV_Window_Height_Screen(40),
+            /* NList's Floattext: Zune's wraps lines under its own scroller
+             * (floattext.c SetText wraps to the width of the whole Listview),
+             * and the end of a long path was hidden there. NFloattext wraps to
+             * the visible width and copies the text it is given. */
             WindowContents, (IPTR)(VGroup,
-                Child, (IPTR)ListviewObject,
-                    MUIA_Listview_Input, FALSE,
-                    MUIA_Listview_List, (IPTR)(f_detail = FloattextObject,
+                Child, (IPTR)NListviewObject,
+                    MUIA_NListview_NList, (IPTR)(f_detail = NFloattextObject,
                         ReadListFrame,
                     End),
                 End,
@@ -3099,7 +3298,7 @@ static int gui_main(int argc, char **argv)
         case ID_DROP:
             dbg("drop %d items, first %s", ndropped, ndropped ? dropped[0] : "-");
             if (job && qcur < 0)
-                settext(t_startnote, "Busy with another archive; drop again when it is done.");
+                start_note("Busy", "Drop again when this archive is done.");
             else
                 handle_drop();
             DoMethod(lq, MUIM_List_Redraw, MUIV_List_Redraw_All);
@@ -3275,6 +3474,8 @@ static int gui_main(int argc, char **argv)
         poll_jobs();
     }
     MUI_DisposeObject(app);
+    zk_drop_exit();
+    zk_icon_exit();
     zk_steps_exit();
     zk_table_exit();
     DeleteMsgPort(jport);

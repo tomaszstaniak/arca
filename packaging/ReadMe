@@ -27,13 +27,17 @@ Unarc as the default tool of the archive types in Wanderer's preferences.
 The Zune program
 ----------------
 
-Started on its own, Unarc opens its pack window. Choose the format with the
-button at the top (LhA, ZIP, 7z or tar.gz) and the compression with the
-slider, then drop files or drawers on the window: they are packed at once,
-next to where they are. "Each item into its own archive" makes one archive
-per dropped item. An archive dropped on the window is extracted instead.
-Packing first counts what was dropped ("Preparing..."), then shows how much
-of it is packed; Cancel works in both steps and leaves no archive.
+Started on its own, Unarc opens its start window. Choose the format with
+the button at the top (LhA, ZIP, 7z or tar.gz) and the compression with the
+slider, then drop files or drawers on the marked area: they are packed at
+once, next to where they are. "Each item into its own archive" makes one
+archive per dropped item. An archive dropped on the window is extracted
+instead. Packing first counts what was dropped ("Preparing..."), then shows
+how much of it is packed; Cancel works in both steps and leaves no archive.
+
+When a job ends, the window shows a short summary: what was done, the
+drawer and any notes. "Details..." shows the whole text, with full paths and
+every message.
 
 "Pack..." does the same through a file requester: choose files, or press OK
 in a drawer with no file chosen to pack the whole drawer. "Open archive..."
@@ -48,7 +52,9 @@ result says so.
 Started with an archive (a double-click on an archive whose default tool is
 Unarc), it extracts the archive next to itself into a new drawer and shows
 what happened. Settings, or the tool type MODE=BROWSE, can show the contents
-first instead.
+first instead. When a file to extract is already there, Unarc asks: it
+shows the file's name, its drawer and both sizes and dates, and Return
+skips the file; replacing it needs its own button.
 
 Settings... has three pages. General: what to show at start, what a
 double-click on an archive does, whether to open the drawer with the result
