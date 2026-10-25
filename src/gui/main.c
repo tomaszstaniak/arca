@@ -303,6 +303,47 @@ static int lockpath(BPTR lock, const char *name, char *out, size_t n)
     return 1;
 }
 
+/* A requester or a typed field can give a name relative to this process's
+ * current drawer ("//sub" after Parent, an empty drawer for the one Arca was
+ * started in). The worker has no current drawer, so such a name would be
+ * looked up from the boot volume's root there: "object not found". Every
+ * name is made absolute here, before a job or the settings keep it. A name
+ * that does not exist yet (a drawer an extraction makes) is resolved through
+ * the nearest drawer that does. */
+static void full_path(const char *in, char *out, size_t n)
+{
+    char head[UA_PATHMAX];
+    const char *rest = "";
+    BPTR l = BNULL;
+    size_t hl;
+    snprintf(out, n, "%s", in);
+    if (in[0] != ':' && strchr(in, ':'))
+        return;
+    snprintf(head, sizeof(head), "%s", in);
+    for (;;) {
+        char *slash;
+        l = Lock((STRPTR)head, SHARED_LOCK);
+        if (l || !head[0])
+            break;
+        slash = strrchr(head, '/');
+        /* "a/b" goes up to "a", but in "//b" the slashes are the parents. */
+        if (!slash)
+            hl = head[0] == ':' ? 1 : 0;
+        else if (slash == head || slash[-1] == '/')
+            hl = slash - head + 1;
+        else
+            hl = slash - head;
+        if (hl >= strlen(head))
+            break;
+        rest = in + (slash && hl == (size_t)(slash - head) ? hl + 1 : hl);
+        head[hl] = 0;
+    }
+    if (!l || !NameFromLock(l, out, n) || (*rest && !AddPart((STRPTR)out, (STRPTR)rest, n)))
+        snprintf(out, n, "%s", in);
+    if (l)
+        UnLock(l);
+}
+
 static int is_dir(const char *path)
 {
     BPTR l = Lock((STRPTR)path, SHARED_LOCK);
@@ -381,7 +422,7 @@ static int ask_drawer(const char *title, const char *initial, char *out, size_t 
     if (!fr)
         return 0;
     if (MUI_AslRequestTags(fr, TAG_DONE)) {
-        snprintf(out, n, "%s", fr->fr_Drawer);
+        full_path((char *)fr->fr_Drawer, out, n);
         ok = 1;
     }
     MUI_FreeAslRequest(fr);
@@ -396,7 +437,7 @@ static int ask_archive(const char *title, char *out, size_t n)
     if (!fr)
         return 0;
     if (MUI_AslRequestTags(fr, TAG_DONE) && fr->fr_File[0]) {
-        snprintf(out, n, "%s", fr->fr_Drawer);
+        full_path((char *)fr->fr_Drawer, out, n);
         ok = AddPart(out, fr->fr_File, n) != 0;
     }
     MUI_FreeAslRequest(fr);
@@ -1968,7 +2009,7 @@ static int ask_save(const char *dir, const char *leaf, char *out, size_t n)
     if (!fr)
         return 0;
     if (MUI_AslRequestTags(fr, TAG_DONE) && fr->fr_File[0]) {
-        snprintf(out, n, "%s", fr->fr_Drawer);
+        full_path((char *)fr->fr_Drawer, out, n);
         ok = AddPart((STRPTR)out, fr->fr_File, n) != 0;
     }
     MUI_FreeAslRequest(fr);
@@ -2288,22 +2329,21 @@ static void pack_pick(void)
     if (MUI_AslRequestTags(fr, TAG_DONE)) {
         LONG i, cnt = fr->fr_NumArgs ? fr->fr_NumArgs : (fr->fr_File[0] ? 1 : 0);
         items = calloc(cnt ? cnt : 1, sizeof(char *));
-        if (items && !cnt && fr->fr_Drawer[0]) {
-            /* The drawer itself, by its full name. */
+        if (items && !cnt) {
+            /* The drawer itself, by its full name (an empty drawer is the
+             * one shown first, Arca's current one). */
             char p[UA_PATHMAX];
-            BPTR l = Lock(fr->fr_Drawer, SHARED_LOCK);
-            if (l && NameFromLock(l, p, sizeof(p)))
-                items[n++] = strdup(p);
-            else
-                items[n++] = strdup((char *)fr->fr_Drawer);
-            if (l)
-                UnLock(l);
+            full_path((char *)fr->fr_Drawer, p, sizeof(p));
+            if (p[0] && (items[n] = strdup(p)))
+                n++;
         }
         for (i = 0; items && i < cnt; i++) {
             char p[UA_PATHMAX];
-            snprintf(p, sizeof(p), "%s", fr->fr_Drawer);
-            AddPart((STRPTR)p, fr->fr_NumArgs ? (STRPTR)fr->fr_ArgList[i].wa_Name : fr->fr_File,
-                    sizeof(p));
+            struct WBArg *wa = fr->fr_NumArgs ? &fr->fr_ArgList[i] : NULL;
+            if (!wa || !wa->wa_Lock || !lockpath(wa->wa_Lock, (char *)wa->wa_Name, p, sizeof(p))) {
+                full_path((char *)fr->fr_Drawer, p, sizeof(p));
+                AddPart((STRPTR)p, wa ? (STRPTR)wa->wa_Name : fr->fr_File, sizeof(p));
+            }
             if (p[0] && (items[n] = strdup(p)))
                 n++;
         }
@@ -2983,11 +3023,17 @@ static void settings_take(int keep)
     pf_close_after = v != 0;
     pf_pack_where = cycle_of(c_spackwhere);
     GetAttr(MUIA_String_Contents, s_spackdir, (IPTR *)&s);
-    snprintf(pf_pack_dir, sizeof(pf_pack_dir), "%s", s ? (char *)s : "");
+    if (s && *s)
+        full_path((char *)s, pf_pack_dir, sizeof(pf_pack_dir));
+    else
+        pf_pack_dir[0] = 0;
     pf_name_drawer = cycle_of(c_sname) == 0;
     pf_ex_where = cycle_of(c_sexwhere);
     GetAttr(MUIA_String_Contents, s_sexdir, (IPTR *)&s);
-    snprintf(pf_ex_dir, sizeof(pf_ex_dir), "%s", s ? (char *)s : "");
+    if (s && *s)
+        full_path((char *)s, pf_ex_dir, sizeof(pf_ex_dir));
+    else
+        pf_ex_dir[0] = 0;
     pf_ex_newdir = cycle_of(c_snewdir) == 0;
     pf_ex_exists = cycle_of(c_sexists);
     /* "In this drawer" with no drawer named means next to the items. */
@@ -3034,7 +3080,7 @@ static void b_replan(void)
     if (!b_loaded || job || b_status != UA_OPEN_OK)
         return;
     GetAttr(MUIA_String_Contents, s_to, (IPTR *)&to);
-    snprintf(dest, sizeof(dest), "%s", to && *to ? (char *)to : bplan.dest);
+    full_path(to && *to ? (char *)to : bplan.dest, dest, sizeof(dest));
     if (ua_plan_make(&blist, b_planname, dest, !b_newfolder(), &bplan, err, sizeof(err)))
         settext(t_active, "Cannot extract there: %s", err);
     else
@@ -3082,7 +3128,7 @@ static void b_start_extract(int all)
     if (!b_loaded || job)
         return;
     GetAttr(MUIA_String_Contents, s_to, (IPTR *)&to);
-    snprintf(dest, sizeof(dest), "%s", to && *to ? (char *)to : bplan.dest);
+    full_path(to && *to ? (char *)to : bplan.dest, dest, sizeof(dest));
     if (!writable(dest)) {
         char other[UA_PATHMAX];
         if (!ask_drawer("That drawer cannot be written. Extract to:", "RAM:", other, sizeof(other)))
