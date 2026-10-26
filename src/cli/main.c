@@ -796,7 +796,7 @@ int main(void)
         rc = NewStackSwap(&sss, (LONG_FUNC)run_trampoline, &ssa);
         FreeVec(stk);
     } else {
-        rc = run(run_args);
+        rc = run_trampoline();
     }
     memset(password, 0, sizeof(password));
     FreeArgs(rda);

@@ -606,8 +606,10 @@ static void pref_str(const char *buf, const char *key, char *out, size_t n)
 static void prefs_load(void)
 {
     char buf[2 * UA_PATHMAX + 400];
-    if (GetVar(PREFS_NAME, buf, sizeof(buf), GVF_GLOBAL_ONLY) <= 0 &&
-        GetVar(LEGACY_PREFS_NAME, buf, sizeof(buf), GVF_GLOBAL_ONLY) <= 0)
+    /* GVF_BINARY_VAR: without it GetVar stops at the first line, and every
+     * setting but ONOPEN was lost at the next start. */
+    if (GetVar(PREFS_NAME, buf, sizeof(buf), GVF_GLOBAL_ONLY | GVF_BINARY_VAR) <= 0 &&
+        GetVar(LEGACY_PREFS_NAME, buf, sizeof(buf), GVF_GLOBAL_ONLY | GVF_BINARY_VAR) <= 0)
         return;
     onopen_browse = strstr(buf, "ONOPEN=BROWSE") != NULL;
     packfmt_pref = strstr(buf, "PACK=ZIP") ? 1 : strstr(buf, "PACK=7Z") ? 2 :
