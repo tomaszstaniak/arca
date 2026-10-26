@@ -6,8 +6,7 @@ over one core: Arca, a Zune program, and arca-cli, a Shell command. Two
 helper programs come with them and are started when needed: unarc-7z reads
 7z, RAR and ZIP with 7-Zip's own code, and unarc-lha makes LhA archives.
 
-This is a test build for AROS ABIv11 on x86_64 (AROS One and the 2026.09
-base). It does not run on mainline AROS (ABIv1).
+@TARGET@
 
 
 Installing
@@ -24,8 +23,8 @@ It reads Unarc.prefs if Arca.prefs is absent and saves changes as Arca.prefs.
 The old preferences are left intact. Existing archive icons that name Unarc
 must be changed to Arca. The helper filenames remain unarc-7z and unarc-lha.
 
-The GUI uses Zune and the NList, NListview and NFloattext classes supplied
-by the tested 2026.09 base and AROS One systems.
+The GUI uses Zune and the NList, NListview and NFloattext classes that come
+with AROS. If one of them is missing, Arca names it when it starts.
 
 No file type is associated with Arca. To open archives with it from
 Wanderer, give an archive a project icon whose default tool is Arca, or set

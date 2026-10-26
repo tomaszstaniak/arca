@@ -8,9 +8,11 @@ updated: 2026-10-17
 ## Supported scope
 
 Intended targets, in order: AROS ABIv11 on x86_64 first; then ABIv11 on the other
-AROS architectures; then mainline AROS (ABIv1). Only ABIv11 x86_64 is built so far.
-ABIv11 and mainline binaries are not interchangeable; each needs its own toolchain,
-SDK, build output and test.
+AROS architectures; then mainline AROS (ABIv1). Built: ABIv11 x86_64 and, from
+0.0.4-test12, mainline ABIv1 x86_64 (`v1`). ABIv11 and mainline binaries are not
+interchangeable; each has its own toolchain, SDK, build directory
+(`build/abiv11-x86_64`, `build/v1-x86_64`), package and test. Passing on one
+says nothing about the other.
 
 ## Setup
 
@@ -18,25 +20,40 @@ Copy `local.env.example` to `local.env` and set:
 
 - `UNARC_TOOLCHAIN_ABIV11`: directory with `x86_64-aros-gcc` (GCC 10.5.0 for ABIv11);
 - `UNARC_SDK_ABIV11`: the ABIv11 SDK directory containing `include/` and `lib/`;
+- for mainline, `UNARC_TOOLCHAIN_V1` and `UNARC_SDK_V1` (the mainline GCC 10.5
+  toolchain and the `Developer` directory of a mainline build), and
+  `UNARC_V1_HOST_BUILD`, that build's host tree (its `genmodule` writes XAD's
+  headers, which the mainline SDK lacks, and its GCC tree rebuilds libgcc's
+  unwinder, see below);
 - optionally `UNARC_DEPS_MIRROR`: local clones to fetch dependencies from.
 
 Environment variables already set take precedence over `local.env`. The scripts
 need bash, CMake, git and patch.
 
-## Build (ABIv11 x86_64)
+## Build
 
-    scripts/fetch-deps.sh          # pinned sources from deps.lock into deps/
-    scripts/build-deps-abiv11.sh   # static liblzma, libarchive, XAD into build/abiv11-x86_64/prefix
-    scripts/build-abiv11.sh        # build/abiv11-x86_64/bin/arca-cli and Arca
-    scripts/build-lha-abiv11.sh    # build/abiv11-x86_64/bin/unarc-lha (LHa for UNIX + patches/lha)
+Each script takes the ABI, `abiv11` (the default) or `v1`:
+
+    scripts/fetch-deps.sh                 # pinned sources from deps.lock into deps/
+    scripts/build-deps.sh <abi>           # static liblzma, libarchive, XAD into build/<abi>-x86_64/prefix
+    scripts/build.sh <abi>                # build/<abi>-x86_64/bin/arca-cli and Arca
+    scripts/build-lha.sh <abi>            # build/<abi>-x86_64/bin/unarc-lha (LHa for UNIX + patches/lha)
+    experiments/7z-backend/build.sh aros  # unarc-7z for ABIv11 (aros-v1 for mainline)
+
+The `*-abiv11.sh` names still work and build ABIv11. Mainline differs in three
+places, each handled in the scripts: its SDK has no iconv (libarchive is built
+without it and uses Arca's `locale_charset()`); it has no XAD headers
+(generated with that build's genmodule); and its libgcc catches no C++ throw,
+so `scripts/build-unwind-fix-v1.sh` must run before `unarc-7z` is built for
+`aros-v1`, which links the rebuilt `unwind-dw2.o`.
 
 `fetch-deps.sh` puts unmodified dependencies (`deps.lock`) in `deps/` and the
 repositories we patch (`upstreams.json`) as clean checkouts in `upstream/`.
-`build-deps-abiv11.sh` applies `patches/<id>/series` to a copy in `build/`; neither
-`deps/` nor `upstream/` is edited. See [patching](patching.md). `build-abiv11.sh`
+`build-deps.sh` applies `patches/<id>/series` to a copy in `build/`; neither
+`deps/` nor `upstream/` is edited. See [patching](patching.md). `build.sh`
 stops with a non-zero exit code if a linked program has undefined symbols:
 collect-aros itself can exit 0 with symbols left unresolved, which is also why
-`build-deps-abiv11.sh` switches off functions CMake wrongly finds.
+`build-deps.sh` switches off functions CMake wrongly finds.
 
 ## Layout
 
@@ -226,7 +243,7 @@ starting a helper fail after its output file is open.
 
 ## Package
 
-Build for a release name first: `UNARC_RELEASE=0.0.4-test7 scripts/build-abiv11.sh`.
+Build for a release name first: `UNARC_RELEASE=0.0.4-test7 scripts/build.sh <abi>`.
 The name goes into both programs' `$VER` after the date and into what they
 show (the settings window, `arca-cli HELP`); without it they are
 `0.0.4-dev`. The `$VER` version.revision is major.(minor * 100 + patch), since
@@ -234,7 +251,8 @@ show (the settings window, `arca-cli HELP`); without it they are
 it from the name and refuses a patch number of 100 or more, where the pairs
 would stop being unique (`src/version.h`).
 
-`packaging/make-package.sh <version>` writes `dist/Arca-<version>-x86_64-abiv11.zip`
+`packaging/make-package.sh <version> [abiv11|v1]` writes
+`dist/Arca-<version>-x86_64-abiv11.zip` or `dist/Arca-<version>-x86_64-v1.zip`
 (one drawer: the three programs, ReadMe, icons from `packaging/make-icons.py`,
 and a Licences drawer with every licence text, THIRD_PARTY_NOTICES and the
 source revision) and adds it to `dist/SHA256SUMS`. It refuses to replace a

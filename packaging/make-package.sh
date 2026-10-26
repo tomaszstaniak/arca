@@ -1,7 +1,8 @@
 #!/bin/bash
-# Make the package for AROS ABIv11 x86_64 from the current build:
-#   packaging/make-package.sh <version>      e.g. 0.0.3-test1
-# Writes dist/Arca-<version>-x86_64-abiv11.zip and adds it to dist/SHA256SUMS.
+# Make the package for one ABI from the current build of that ABI:
+#   packaging/make-package.sh <version> [abiv11|v1]      e.g. 0.0.3-test1
+# Writes dist/Arca-<version>-x86_64-abiv11.zip (or -x86_64-v1.zip for
+# mainline AROS) and adds it to dist/SHA256SUMS.
 # A file already in dist/ is never replaced: a new build needs a new version.
 #
 # The archive holds one drawer, Arca, and its icon. Inside: Arca (Zune),
@@ -11,13 +12,13 @@
 # with unarc-lha's source: its terms allow no binary-only distribution. Programs get the Unix mode 0755 in the ZIP, which AROS's UnZip
 # turns into the e bit.
 set -euo pipefail
-. "$(dirname "$0")/../scripts/env.sh"
-VER=${1:?usage: make-package.sh <version>}
-R=$UNARC_ROOT
-BIN=$R/build/abiv11-x86_64/bin
+VER=${1:?usage: make-package.sh <version> [abiv11|v1]}
+. "$(dirname "$0")/../scripts/abi.sh" "${2:-abiv11}"
+BIN=$B/bin
 Z7=$R/build/7z-backend/aros/bin/unarc-7z
+[ "$UNARC_ABI" = v1 ] && Z7=$R/build/7z-backend/aros-v1/bin/unarc-7z
 LHA=$BIN/unarc-lha
-OUT=$R/dist/Arca-$VER-x86_64-abiv11.zip
+OUT=$R/dist/Arca-$VER-$PKG_SUFFIX.zip
 mkdir -p "$R/dist"
 if [ -e "$OUT" ]; then echo "$OUT exists; delivered files are not replaced" >&2; exit 1; fi
 for f in "$BIN/Arca" "$BIN/arca-cli" "$Z7" "$LHA"; do
@@ -31,7 +32,7 @@ for f in "$BIN/Arca" "$BIN/arca-cli"; do
   # the script, so not in this pipeline.
   got=$(set +o pipefail; strings -a "$f" | grep -a -m1 '^\$VER: ' | sed 's/^[^)]*) //')
   [ "$got" = "$VER" ] || {
-    echo "$f was built as \"$got\", not $VER: run UNARC_RELEASE=$VER scripts/build-abiv11.sh" >&2
+    echo "$f was built as \"$got\", not $VER: run UNARC_RELEASE=$VER scripts/build.sh $UNARC_ABI" >&2
     exit 1; }
 done
 if [ -n "$(git -C "$R" status --porcelain -- src experiments scripts packaging patches upstreams.json deps.lock)" ]; then
@@ -52,8 +53,8 @@ cp "$R/patches/lha/"*.patch "$R/patches/lha/series" "$T/lhasrc/unarc-lha-source/
   echo "with the changes in unarc-patches/, applied in the order of unarc-patches/series."
   echo "Each patch says what it changes and why. The terms of LHa for UNIX are in"
   echo "man/lha.man and, in English, in dist/LHa_4U4A.guide (\"License\"); they also"
-  echo "apply to this modified program. Built for AROS ABIv11 x86_64 with"
-  echo "scripts/build-lha-abiv11.sh of aros-unarc $(git -C "$R" rev-parse HEAD)."
+  echo "apply to this modified program. Built for $ABI_TEXT with"
+  echo "scripts/build-lha.sh of aros-unarc $(git -C "$R" rev-parse HEAD)."
 } >"$T/lhasrc/unarc-lha-source/README.unarc"
 ( cd "$T/lhasrc" && zip -q -r -X ../unarc-lha-source.zip unarc-lha-source )
 sed -n '/^@NODE "License"/,/^@ENDNODE/p' "$R/upstream/lha/dist/LHa_4U4A.guide" | grep -v '^@' \
@@ -63,8 +64,16 @@ sed -n '/^@NODE "License"/,/^@ENDNODE/p' "$R/upstream/lha/dist/LHa_4U4A.guide" |
   echo "aros-unarc $(git -C "$R" rev-parse HEAD)"
   echo "unarc-7z: 7-Zip 26.04, experiments/7z-backend of the same revision"
   echo "unarc-lha: LHa for UNIX, sodero/lha $LHAPIN with patches/lha (source in Source/)"
-  echo "built $(date -u +%Y-%m-%d) for AROS ABIv11 x86_64"
+  echo "built $(date -u +%Y-%m-%d) for $ABI_TEXT"
 } >"$T/Revision"
+# The ReadMe names the system this package is for.
+if [ "$UNARC_ABI" = v1 ]; then
+  printf '%s\n' "This is a test build for mainline AROS (ABIv1) on x86_64. It does not run" \
+    "on ABIv11 systems such as AROS One: use the -x86_64-abiv11 package there." >"$T/target"
+else
+  printf '%s\n' "This is a test build for AROS ABIv11 on x86_64 (AROS One and the 2026.09" \
+    "base). It does not run on mainline AROS (ABIv1): use the -x86_64-v1 package" "there." >"$T/target"
+fi
 python3 - "$OUT" "$T" "$R" "$BIN" "$Z7" "$LHA" <<'PY'
 import os, sys, time, zipfile
 out, t, r, bindir, z7, lha = sys.argv[1:7]
@@ -83,7 +92,9 @@ with zipfile.ZipFile(out, "w") as z:
     add(z, "Arca/arca-cli", os.path.join(bindir, "arca-cli"), mode=0o755)
     add(z, "Arca/unarc-7z", z7, mode=0o755)
     add(z, "Arca/unarc-lha", lha, mode=0o755)
-    add(z, "Arca/ReadMe", os.path.join(r, "packaging", "ReadMe"))
+    readme = open(os.path.join(r, "packaging", "ReadMe")).read()
+    assert "@TARGET@" in readme
+    add(z, "Arca/ReadMe", data=readme.replace("@TARGET@", open(os.path.join(t, "target")).read()).encode())
     add(z, "Arca/ReadMe.info", os.path.join(t, "icons", "ReadMe.info"))
     add(z, "Arca/Licences", isdir=True, mode=0o755)
     add(z, "Arca/Licences/Arca-LICENSE.txt", os.path.join(r, "LICENSE"))

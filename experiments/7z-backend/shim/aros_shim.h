@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
-/* Force-included (-include) into every unit of the AROS ABIv11 build of the
- * 7-Zip sources. Two problems of the SDK-202609 headers are handled here. */
+/* Force-included (-include) into every unit of the AROS builds of the 7-Zip
+ * sources. Two problems of the SDK headers are handled here (the second is
+ * ABIv11's only: build.sh defines UNARC_SDK_HAS_TOWUPPER for mainline). */
 #ifndef UNARC_AROS_SHIM_H
 #define UNARC_AROS_SHIM_H
 
@@ -29,7 +30,7 @@
 /* 2. The SDK's <wctype.h> is empty, so towupper/towlower are missing. These
  * stand-ins map ASCII only; 7-Zip uses them for case-insensitive name
  * comparison in MyString.cpp (MyCharUpper/MyCharLower), not for decoding. */
-#ifdef __cplusplus
+#if defined(__cplusplus) && !defined(UNARC_SDK_HAS_TOWUPPER)
 #include <stddef.h>
 #include <wchar.h>
 static inline wint_t towupper(wint_t c) { return (c >= 'a' && c <= 'z') ? c - 32 : c; }

@@ -1,9 +1,9 @@
-# Cross toolchain file for AROS ABIv11 x86_64 (GCC 10.5 + SDK-202609).
-# Paths come from UNARC_TOOLCHAIN_ABIV11 and UNARC_SDK_ABIV11 (see local.env.example).
+# Cross toolchain file for AROS x86_64, either ABI. Paths come from UNARC_TC
+# and UNARC_SDK, which scripts/abi.sh sets for the ABI being built.
 set(CMAKE_SYSTEM_NAME Generic)
 set(CMAKE_SYSTEM_PROCESSOR x86_64)
-set(_tc $ENV{UNARC_TOOLCHAIN_ABIV11})
-set(_sdk $ENV{UNARC_SDK_ABIV11})
+set(_tc $ENV{UNARC_TC})
+set(_sdk $ENV{UNARC_SDK})
 set(CMAKE_C_COMPILER ${_tc}/x86_64-aros-gcc)
 set(CMAKE_AR ${_tc}/x86_64-aros-ar)
 set(CMAKE_RANLIB ${_tc}/x86_64-aros-ranlib)

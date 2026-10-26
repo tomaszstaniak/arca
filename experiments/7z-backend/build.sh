@@ -1,7 +1,8 @@
 #!/bin/bash
 # Rebuild the 7-Zip backend probe from clean: lib7zbackend.a and unarc-7z,
-# for AROS ABIv11 x86_64 (cross) and, if clang++ is present, for the host.
-# usage: build.sh [aros|host|all]   (default all)
+# for AROS ABIv11 x86_64 (aros), mainline AROS ABIv1 x86_64 (aros-v1) and,
+# if clang++ is present, for the host.
+# usage: build.sh [aros|aros-v1|host|all]   (default all: aros and host)
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
@@ -20,7 +21,7 @@ COMMON=(-O2 -Wall -Wno-unknown-pragmas)
 list_sources() {
   grep -v '^[[:space:]]*#' "$HERE/sources.txt" | grep -v '^[[:space:]]*$' | sed "s|^|$SZ/|"
   case $1 in
-    aros) echo "$HERE/aros_system.cpp" ;;      # GetRamSize via exec AvailMem
+    aros*) echo "$HERE/aros_system.cpp" ;;     # GetRamSize via exec AvailMem
     host) echo "$SZ/CPP/Windows/System.cpp" ;;  # upstream, builds on macOS
   esac
   echo "$HERE/zip_out_stub.cpp"
@@ -28,14 +29,24 @@ list_sources() {
 
 
 build_target() {
-  local t=$1 CC CXX AR NM extra_c extra_cxx
+  local t=$1 CC CXX AR NM extra_c extra_cxx tc sdk unwind=()
   case $t in
-    aros)
-      : "${UNARC_TOOLCHAIN_ABIV11:?set in local.env}" "${UNARC_SDK_ABIV11:?set in local.env}"
-      CC="$UNARC_TOOLCHAIN_ABIV11/x86_64-aros-gcc --sysroot=$UNARC_SDK_ABIV11"
-      CXX="$UNARC_TOOLCHAIN_ABIV11/x86_64-aros-g++ --sysroot=$UNARC_SDK_ABIV11"
-      AR="$UNARC_TOOLCHAIN_ABIV11/x86_64-aros-ar"
-      NM="$UNARC_TOOLCHAIN_ABIV11/x86_64-aros-nm"
+    aros|aros-v1)
+      if [ "$t" = aros ]; then
+        : "${UNARC_TOOLCHAIN_ABIV11:?set in local.env}" "${UNARC_SDK_ABIV11:?set in local.env}"
+        tc=$UNARC_TOOLCHAIN_ABIV11 sdk=$UNARC_SDK_ABIV11
+      else
+        : "${UNARC_TOOLCHAIN_V1:?set in local.env}" "${UNARC_SDK_V1:?set in local.env}"
+        tc=$UNARC_TOOLCHAIN_V1 sdk=$UNARC_SDK_V1
+        # Mainline's libgcc catches no throw; 7-Zip throws on bad data
+        # (scripts/build-unwind-fix-v1.sh).
+        unwind=("$ROOT/build/v1-x86_64/unwind-fix/unwind-dw2.o")
+        [ -f "${unwind[0]}" ] || { echo "missing ${unwind[0]}: run scripts/build-unwind-fix-v1.sh" >&2; exit 1; }
+      fi
+      CC="$tc/x86_64-aros-gcc --sysroot=$sdk"
+      CXX="$tc/x86_64-aros-g++ --sysroot=$sdk"
+      AR="$tc/x86_64-aros-ar"
+      NM="$tc/x86_64-aros-nm"
       # No -fPIC: upstream adds it, and on this compiler it redefines __PIC__,
       # which -Werror turns into a failure; AROS executables are not PIC anyway.
       # aros_shim.h: pthread.h (still reached through C/Threads.h) included with
@@ -43,6 +54,8 @@ build_target() {
       # empty wctype.h lacks. See README.md.
       extra_c=(-I"$HERE/shim" -include "$HERE/shim/aros_shim.h")
       extra_cxx=(-I"$HERE/shim" -include "$HERE/shim/aros_shim.h")
+      # Mainline's wctype.h declares towupper/towlower; ABIv11's does not.
+      [ "$t" = aros-v1 ] && extra_cxx+=(-DUNARC_SDK_HAS_TOWUPPER)
       ;;
     host)
       CC="clang"; CXX="clang++"; AR="ar"; NM="nm"
@@ -80,11 +93,11 @@ build_target() {
   if [ "$t" = host ]; then
     $CXX -o "$B/bin/unarc-7z" "$B/obj/unarc7z.o" -Wl,-force_load,"$B/lib7zbackend.a"
   else
-    $CXX -o "$B/bin/unarc-7z" "$B/obj/unarc7z.o" \
+    $CXX -o "$B/bin/unarc-7z" "$B/obj/unarc7z.o" ${unwind[@]+"${unwind[@]}"} \
       -Wl,--whole-archive "$B/lib7zbackend.a" -Wl,--no-whole-archive
   fi
   # collect-aros can exit 0 with unresolved symbols left; check ourselves.
-  if [ "$t" = aros ]; then
+  if [ "$t" != host ]; then
     local undef; undef=$($NM -u "$B/bin/unarc-7z" | grep -v ' w ' || true)
     if [ -n "$undef" ]; then echo "unresolved symbols in unarc-7z:"; echo "$undef"; exit 1; fi
   fi
@@ -93,7 +106,8 @@ build_target() {
 
 case $WHAT in
   aros) build_target aros ;;
+  aros-v1) build_target aros-v1 ;;
   host) build_target host ;;
   all)  build_target aros; if command -v clang++ >/dev/null; then build_target host; fi ;;
-  *) echo "usage: $0 [aros|host|all]" >&2; exit 2 ;;
+  *) echo "usage: $0 [aros|aros-v1|host|all]" >&2; exit 2 ;;
 esac
