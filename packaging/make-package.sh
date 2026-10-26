@@ -94,7 +94,7 @@ with zipfile.ZipFile(out, "w") as z:
     add(z, "Arca/unarc-lha", lha, mode=0o755)
     readme = open(os.path.join(r, "packaging", "ReadMe")).read()
     assert "@TARGET@" in readme
-    add(z, "Arca/ReadMe", data=readme.replace("@TARGET@", open(os.path.join(t, "target")).read()).encode())
+    add(z, "Arca/ReadMe", data=readme.replace("@TARGET@\n", open(os.path.join(t, "target")).read()).encode())
     add(z, "Arca/ReadMe.info", os.path.join(t, "icons", "ReadMe.info"))
     add(z, "Arca/Licences", isdir=True, mode=0o755)
     add(z, "Arca/Licences/Arca-LICENSE.txt", os.path.join(r, "LICENSE"))
