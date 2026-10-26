@@ -259,6 +259,12 @@ source revision) and adds it to `dist/SHA256SUMS`. It refuses to replace a
 file in `dist/`, to package uncommitted sources, and to package programs built
 for another release name.
 
+Mainline AROS ships no UnZip (and no lha). `packaging/zip-to-pkg.py
+dist/Arca-<version>-x86_64-v1.zip` writes the same files, byte for byte, as an
+AROS `.pkg` next to it, which the system's own `C:Unpack` installs
+(`Unpack Arca-<version>-x86_64-v1.pkg TO SYS:Utilities`). Unpack keeps no
+protection bits or dates; the files get the volume's defaults (`rwed`).
+
 ## Provisional application name
 
 The application is now Arca and the command is arca-cli. The repository,

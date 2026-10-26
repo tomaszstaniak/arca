@@ -19,7 +19,10 @@ if os.path.exists(stage):
     sys.exit(f"{stage} exists; use a new directory")
 os.makedirs(os.path.join(stage, "corpus"))
 shutil.copy2(cli, os.path.join(stage, "unarc-cli"))
-shutil.copy2(probe, os.path.join(stage, "charset-probe"))
+# Mainline has no iconv and so no charset-probe; the memory loops (its
+# control) are then left out with nomem.
+if os.path.exists(probe):
+    shutil.copy2(probe, os.path.join(stage, "charset-probe"))
 shutil.copy2(os.path.join(os.path.dirname(cli), "longpath-probe"), os.path.join(stage, "longpath-probe"))
 shutil.copy2(os.path.join(os.path.dirname(cli), "uatool"), os.path.join(stage, "uatool"))
 if "ffsprobe" in opts:
@@ -46,7 +49,7 @@ if "freeown" in opts:
     for old in ("ua1015a", "ua1015a-c4", "ua1015b", "ua1015b-full", "ua1015d", "ua1015e"):
         L.append(f"Delete RESULTS:{old} ALL QUIET FORCE")
 L += [f"MakeDir {O}", f"MakeDir {O}/out",
-     "Protect RAM:u/unarc-cli +e", "Protect RAM:u/charset-probe +e", "Protect RAM:u/longpath-probe +e",
+     "Protect RAM:u/unarc-cli +e", "Protect RAM:u/longpath-probe +e",
      "Protect RAM:u/uatool +e",
      f"Version >{O}/env.txt", f"Version exec.library FULL >>{O}/env.txt",
      f"Version dos.library FULL >>{O}/env.txt",
@@ -56,7 +59,8 @@ L += [f"MakeDir {O}", f"MakeDir {O}/out",
      f"Avail >>{O}/env.txt",
      f"List RAM:u/unarc-cli >>{O}/env.txt",
      "CD RAM:u",
-     f"charset-probe >{O}/charset-probe.txt",
+     *([f"Protect RAM:u/charset-probe +e", f"charset-probe >{O}/charset-probe.txt"]
+       if os.path.exists(probe) else []),
      f"Info RESULTS: >>{O}/env.txt"]
 
 def case(name, cmd, after=()):
@@ -336,16 +340,18 @@ if "core4" in opts:
             case(n, f"{U} RAM:sw/a.zip TO RAM:sw/{n} {eng} TESTSWAP corpus/{other}.zip".replace("  ", " "),
                  [f"List RAM:sw/{n} ALL"])
     L.append("UnSetEnv UnarcTestNoStamp")
-    # More than 2^31 bytes: written and checked, then replaced and checked.
-    case("C6a-big-extract", f"{U} corpus/bigzero.tar.xz TO SYS:uatest-big STATS",
-         ["List SYS:uatest-big ALL", "Info SYS:"])
-    # NOWRAP: straight into the drawer that has bigzero/ already, so the file
-    # is replaced (with the folder rule it went to a new "bigzero 2").
-    case("C6b-big-replace", f"{U} corpus/bigzero.tar.xz TO SYS:uatest-big NOWRAP OVERWRITE STATS",
-         ["List SYS:uatest-big ALL", "Echo \"leftover .ua files:\"",
-          "List SYS:uatest-big ALL FILES PAT=.ua#?", "Echo \"== sums\"",
-          "RAM:u/uatool sum SYS:uatest-big"])
-    L.append("Delete SYS:uatest-big ALL QUIET FORCE")
+    # More than 2^31 bytes: written and checked, then replaced and checked
+    # (nobig: left out).
+    if "nobig" not in opts:
+        case("C6a-big-extract", f"{U} corpus/bigzero.tar.xz TO SYS:uatest-big STATS",
+             ["List SYS:uatest-big ALL", "Info SYS:"])
+        # NOWRAP: straight into the drawer that has bigzero/ already, so the file
+        # is replaced (with the folder rule it went to a new "bigzero 2").
+        case("C6b-big-replace", f"{U} corpus/bigzero.tar.xz TO SYS:uatest-big NOWRAP OVERWRITE STATS",
+             ["List SYS:uatest-big ALL", "Echo \"leftover .ua files:\"",
+              "List SYS:uatest-big ALL FILES PAT=.ua#?", "Echo \"== sums\"",
+              "RAM:u/uatool sum SYS:uatest-big"])
+        L.append("Delete SYS:uatest-big ALL QUIET FORCE")
 if "vol" in opts:
     # Multi-volume sets, opened from different parts; incomplete sets refused.
     U = "unarc-cli"

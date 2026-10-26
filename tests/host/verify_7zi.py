@@ -67,7 +67,7 @@ check(got_sums(29) == got_sums(30) and len(got_sums(29)) == 2,
       "30 = 29: the CP437 name comes out the same through both engines")
 check("Stopped while reading" in blocks.get(31, ""), "31: Ctrl-C while listing: stopped, nothing written")
 check("CANCELLED" in blocks.get(32, ""), "32: Ctrl-C while decoding: cancelled")
-for n, text in ((33, "unarc-7z is not next to Unarc"), (37, "another release")):
+for n, text in ((33, "unarc-7z is not next to Arca"), (37, "another release")):
     check(text in blocks.get(n, ""), f"{n:02d}: says \"{text}\"")
 st = open(os.path.join(res, "7zi-status.txt"), "rb").read().decode("latin-1")
 check("unarc-7z" not in st, "no unarc-7z left running at the end")

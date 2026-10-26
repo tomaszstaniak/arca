@@ -64,21 +64,23 @@ L.append('Echo "tz.script {tag} done"')
 open(os.path.join(stage, "tz.script"), "w").write("\n".join(L) + "\n")
 
 # ---- the package
-P = '"RAM:Unarc Test/Unarc'
+# The package's drawer is Arca since 0.0.4-test10; the test drawer's name
+# has a space.
+P = '"RAM:Arca Test/Arca'
 LOG = f"{O}/pkg-log.txt"
 L = ["FailAt 30", "Stack 40960", f"MakeDir {O}",
-     'MakeDir "RAM:Unarc Test"',
-     f'C:UnZip >{O}/pkg-unzip.txt RAM:u/package.zip -d "RAM:Unarc Test"',
+     'MakeDir "RAM:Arca Test"',
+     f'C:UnZip >{O}/pkg-unzip.txt RAM:u/package.zip -d "RAM:Arca Test"',
      f'Echo "unzip RC=$RC" >>{LOG}',
-     f'List "RAM:Unarc Test" ALL >{O}/pkg-list.txt',
-     f'Version {P}/unarc-cli" FULL >>{LOG}',
-     f'Version {P}/Unarc" FULL >>{LOG}',
+     f'List "RAM:Arca Test" ALL >{O}/pkg-list.txt',
+     f'Version {P}/arca-cli" FULL >>{LOG}',
+     f'Version {P}/Arca" FULL >>{LOG}',
      "MakeDir RAM:pk"]
 
 
 def pcase(n, args, what):
     L.append(f'Echo "== {n} {what}" >>{LOG}')
-    L.append(f'{P}/unarc-cli" <NIL: >>{LOG} {args} TO RAM:pk/{n} DIAGOUT QUIET')
+    L.append(f'{P}/arca-cli" <NIL: >>{LOG} {args} TO RAM:pk/{n} DIAGOUT QUIET')
     L.append(f'Echo "RC=$RC" >>{LOG}')
     L.append(f"If EXISTS RAM:pk/{n}")
     L.append(f"RAM:u/uatool sum RAM:pk/{n} >{O}/pkg-{n}.sums")
@@ -105,9 +107,9 @@ L.append('Echo "pkg.script done; delete the drawer with pkgdel.script after the 
 open(os.path.join(stage, "pkg.script"), "w").write("\n".join(L) + "\n")
 open(os.path.join(stage, "pkgdel.script"), "w").write("\n".join([
     "FailAt 30",
-    f'Delete "RAM:Unarc Test" ALL QUIET >{O}/pkg-delete.txt',
+    f'Delete "RAM:Arca Test" ALL QUIET >{O}/pkg-delete.txt',
     f'Echo "delete RC=$RC" >>{O}/pkg-delete.txt',
-    f'If EXISTS "RAM:Unarc Test"',
+    f'If EXISTS "RAM:Arca Test"',
     f'Echo "the drawer is still there" >>{O}/pkg-delete.txt',
     "EndIf"]) + "\n")
 print("tz.script, pkg.script, pkgdel.script, encsolid.7z")
