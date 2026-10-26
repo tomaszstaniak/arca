@@ -29,6 +29,7 @@
 #include <mui/NListview_mcc.h>
 #include <mui/NFloattext_mcc.h>
 #include "job.h"
+#include "fullpath.h"
 #include "zk_table.h"
 #include "zk_steps.h"
 #include "zk_icon.h"
@@ -303,45 +304,29 @@ static int lockpath(BPTR lock, const char *name, char *out, size_t n)
     return 1;
 }
 
-/* A requester or a typed field can give a name relative to this process's
- * current drawer ("//sub" after Parent, an empty drawer for the one Arca was
- * started in). The worker has no current drawer, so such a name would be
- * looked up from the boot volume's root there: "object not found". Every
- * name is made absolute here, before a job or the settings keep it. A name
- * that does not exist yet (a drawer an extraction makes) is resolved through
- * the nearest drawer that does. */
-static void full_path(const char *in, char *out, size_t n)
+static void say(const char *fmt, ...);
+
+/* full_path, and when it fails a requester naming the name and the reason:
+ * the caller then stops what it was about to do. */
+static int need_full(const char *in, char *out, size_t n)
 {
-    char head[UA_PATHMAX];
-    const char *rest = "";
-    BPTR l = BNULL;
-    size_t hl;
-    snprintf(out, n, "%s", in);
-    if (in[0] != ':' && strchr(in, ':'))
-        return;
-    snprintf(head, sizeof(head), "%s", in);
-    for (;;) {
-        char *slash;
-        l = Lock((STRPTR)head, SHARED_LOCK);
-        if (l || !head[0])
-            break;
-        slash = strrchr(head, '/');
-        /* "a/b" goes up to "a", but in "//b" the slashes are the parents. */
-        if (!slash)
-            hl = head[0] == ':' ? 1 : 0;
-        else if (slash == head || slash[-1] == '/')
-            hl = slash - head + 1;
-        else
-            hl = slash - head;
-        if (hl >= strlen(head))
-            break;
-        rest = in + (slash && hl == (size_t)(slash - head) ? hl + 1 : hl);
-        head[hl] = 0;
-    }
-    if (!l || !NameFromLock(l, out, n) || (*rest && !AddPart((STRPTR)out, (STRPTR)rest, n)))
-        snprintf(out, n, "%s", in);
-    if (l)
-        UnLock(l);
+    if (full_path(in, out, n))
+        return 1;
+    dbg("full_path refused \"%s\": %s", in, fp_why);
+    say("Arca could not find the full name of\n%s\n%s\nNothing was started.", in, fp_why);
+    return 0;
+}
+
+/* AddPart, and when the name does not fit a requester: AddPart leaves the
+ * drawer alone in out then, which must not be used in the file's place. */
+static int add_name(char *out, const char *name, size_t n)
+{
+    char dir[UA_PATHMAX];
+    snprintf(dir, sizeof(dir), "%s", out);
+    if (AddPart((STRPTR)out, (STRPTR)name, n))
+        return 1;
+    say("The name\n%s\nin\n%s\nis too long for Arca. Nothing was started.", name, dir);
+    return 0;
 }
 
 static int is_dir(const char *path)
@@ -421,10 +406,8 @@ static int ask_drawer(const char *title, const char *initial, char *out, size_t 
                                  ASLFR_InitialDrawer, (IPTR)initial, TAG_DONE);
     if (!fr)
         return 0;
-    if (MUI_AslRequestTags(fr, TAG_DONE)) {
-        full_path((char *)fr->fr_Drawer, out, n);
-        ok = 1;
-    }
+    if (MUI_AslRequestTags(fr, TAG_DONE))
+        ok = need_full((char *)fr->fr_Drawer, out, n);
     MUI_FreeAslRequest(fr);
     return ok;
 }
@@ -437,8 +420,7 @@ static int ask_archive(const char *title, char *out, size_t n)
     if (!fr)
         return 0;
     if (MUI_AslRequestTags(fr, TAG_DONE) && fr->fr_File[0]) {
-        full_path((char *)fr->fr_Drawer, out, n);
-        ok = AddPart(out, fr->fr_File, n) != 0;
+        ok = need_full((char *)fr->fr_Drawer, out, n) && add_name(out, fr->fr_File, n);
     }
     MUI_FreeAslRequest(fr);
     return ok;
@@ -645,6 +627,18 @@ static void prefs_load(void)
     pref_str(buf, "EXDIR", pf_ex_dir, sizeof(pf_ex_dir));
     pf_ex_newdir = pref_int(buf, "NEWDIR", 1, 1);
     pf_ex_exists = pref_int(buf, "EXISTS", 0, 2);
+    /* Settings saved before 0.0.4-test11 kept the drawers as typed, which may
+     * be relative or PROGDIR:. Resolved here, in Arca's own drawer, so that
+     * the settings window shows the drawer that will be used; one that cannot
+     * be resolved stays as it is and is refused, with the reason, when used. */
+    {
+        char t[UA_PATHMAX];
+        if (pf_pack_dir[0] && full_path(pf_pack_dir, t, sizeof(t)))
+            snprintf(pf_pack_dir, sizeof(pf_pack_dir), "%s", t);
+        if (pf_ex_dir[0] && full_path(pf_ex_dir, t, sizeof(t)))
+            snprintf(pf_ex_dir, sizeof(pf_ex_dir), "%s", t);
+        dbg("prefs packdir \"%s\" exdir \"%s\"", pf_pack_dir, pf_ex_dir);
+    }
 }
 
 /* keep: also in ENVARC: so that it survives a reboot ("Save"); otherwise ENV:
@@ -1132,8 +1126,8 @@ static void extract_now(const char *archive)
         say("Cannot find the drawer of\n%s", archive);
         return;
     }
-    if (pf_ex_where == 2 && pf_ex_dir[0])
-        snprintf(dest, sizeof(dest), "%s", pf_ex_dir);
+    if (pf_ex_where == 2 && pf_ex_dir[0] && !need_full(pf_ex_dir, dest, sizeof(dest)))
+        return;
     if (pf_ex_where == 1) {
         char other[UA_PATHMAX], title[300];
         snprintf(title, sizeof(title), "Extract \"%s\" to", leafname(archive));
@@ -2009,8 +2003,7 @@ static int ask_save(const char *dir, const char *leaf, char *out, size_t n)
     if (!fr)
         return 0;
     if (MUI_AslRequestTags(fr, TAG_DONE) && fr->fr_File[0]) {
-        full_path((char *)fr->fr_Drawer, out, n);
-        ok = AddPart((STRPTR)out, fr->fr_File, n) != 0;
+        ok = need_full((char *)fr->fr_Drawer, out, n) && add_name(out, fr->fr_File, n);
     }
     MUI_FreeAslRequest(fr);
     return ok;
@@ -2031,9 +2024,10 @@ static int pack_target(char **items, int n, int fmt, char *out, size_t on, int *
     else
         snprintf(base, sizeof(base), "Archive");
     snprintf(leaf, sizeof(leaf), "%s%s", base, ext);
-    if (pf_pack_where == 2 && pf_pack_dir[0])
-        snprintf(dir, sizeof(dir), "%s", pf_pack_dir);
-    else
+    if (pf_pack_where == 2 && pf_pack_dir[0]) {
+        if (!need_full(pf_pack_dir, dir, sizeof(dir)))
+            return 0;
+    } else
         snprintf(dir, sizeof(dir), "%s", parent[0] ? parent : "RAM:");
     if (pf_pack_where == 1 || !writable(dir)) {
         if (pf_pack_where != 1)
@@ -2317,7 +2311,7 @@ static void pack_pick(void)
 {
     struct FileRequester *fr;
     char **items = NULL;
-    int n = 0;
+    int n = 0, bad = 0, oom = 0;
     /* One requester for files and drawers: the files chosen in a drawer, or
      * with none chosen, the drawer itself. */
     fr = MUI_AllocAslRequestTags(ASL_FileRequest,
@@ -2329,37 +2323,52 @@ static void pack_pick(void)
     if (MUI_AslRequestTags(fr, TAG_DONE)) {
         LONG i, cnt = fr->fr_NumArgs ? fr->fr_NumArgs : (fr->fr_File[0] ? 1 : 0);
         items = calloc(cnt ? cnt : 1, sizeof(char *));
-        if (items && !cnt) {
+        if (!items)
+            bad = oom = 1;
+        else if (!cnt) {
             /* The drawer itself, by its full name (an empty drawer is the
              * one shown first, Arca's current one). */
             char p[UA_PATHMAX];
-            full_path((char *)fr->fr_Drawer, p, sizeof(p));
-            if (p[0] && (items[n] = strdup(p)))
-                n++;
+            if (!need_full((char *)fr->fr_Drawer, p, sizeof(p)))
+                bad = 1;
+            else if (!(items[n++] = strdup(p)))
+                bad = oom = 1;
         }
-        for (i = 0; items && i < cnt; i++) {
+        /* Every chosen name or none: a name that cannot be made whole stops
+         * the packing, so that no drawer is packed in a file's place and no
+         * chosen file is left out without a word. */
+        for (i = 0; !bad && i < cnt; i++) {
             char p[UA_PATHMAX];
             struct WBArg *wa = fr->fr_NumArgs ? &fr->fr_ArgList[i] : NULL;
-            if (!wa || !wa->wa_Lock || !lockpath(wa->wa_Lock, (char *)wa->wa_Name, p, sizeof(p))) {
-                full_path((char *)fr->fr_Drawer, p, sizeof(p));
-                AddPart((STRPTR)p, wa ? (STRPTR)wa->wa_Name : fr->fr_File, sizeof(p));
+            const char *leaf = wa ? (const char *)wa->wa_Name : (const char *)fr->fr_File;
+            if (!wa || !wa->wa_Lock || !lockpath(wa->wa_Lock, leaf, p, sizeof(p))) {
+                if (!need_full((char *)fr->fr_Drawer, p, sizeof(p)) || !add_name(p, leaf, sizeof(p))) {
+                    bad = 1;
+                    break;
+                }
             }
-            if (p[0] && (items[n] = strdup(p)))
-                n++;
+            if (!(items[n++] = strdup(p)))
+                bad = oom = 1;
         }
+        dbg("pack_pick %ld chosen, %d names, %s", (long)cnt, n, bad ? "refused" : "ok");
     }
     MUI_FreeAslRequest(fr);
-    if (n)
-        pack_now(items, n);
-    else
+    if (bad || !n) {
+        if (oom)
+            say("Not enough memory to pack these files.");
+        while (items && n)
+            free(items[--n]);
         free(items);
+        return;
+    }
+    pack_now(items, n);
 }
 
 /* ------------------------------------------------------------- drops */
 
 #define MAXDROP 64
 static char *dropped[MAXDROP];
-static int ndropped;
+static int ndropped, ndrop_lost;
 
 static void drops_clear(void)
 {
@@ -2380,10 +2389,15 @@ AROS_UFH3S(void, drop_func,
     /* Copy and return: Zune replies to the message right after this hook,
      * and Wanderer waits for that reply. The work starts later. */
     drops_clear();
-    for (i = 0; i < am->am_NumArgs && ndropped < MAXDROP; i++) {
+    ndrop_lost = 0;
+    for (i = 0; i < am->am_NumArgs; i++) {
         char p[UA_PATHMAX];
-        if (lockpath(am->am_ArgList[i].wa_Lock, (char *)am->am_ArgList[i].wa_Name, p, sizeof(p)))
-            dropped[ndropped++] = strdup(p);
+        if (ndropped < MAXDROP &&
+            lockpath(am->am_ArgList[i].wa_Lock, (char *)am->am_ArgList[i].wa_Name, p, sizeof(p)) &&
+            (dropped[ndropped] = strdup(p)))
+            ndropped++;
+        else
+            ndrop_lost++;
     }
     DoMethod(app, MUIM_Application_ReturnID, ID_DROP);
     AROS_USERFUNC_EXIT
@@ -2396,6 +2410,15 @@ static struct Hook drop_hook;
 static void handle_drop(void)
 {
     int i, archives = 0;
+    if (ndrop_lost) {
+        /* Not with the rest: the user dropped these together. */
+        if (ndropped + ndrop_lost > MAXDROP)
+            start_note("Too many items", "Arca takes up to 64 items in one drop.");
+        else
+            start_note("Not started", "A dropped name could not be read in full.");
+        drops_clear();
+        return;
+    }
     for (i = 0; i < ndropped; i++)
         if (dropped[i] && is_archive(dropped[i]))
             archives++;
@@ -2522,6 +2545,37 @@ static const char *icon_name(void)
     return n;
 }
 
+/* Why Arca cannot start, naming the part that is missing. Shown with an
+ * Intuition requester, not a Zune one (Zune may be the part that fails), and
+ * also printed when started from a Shell: from Workbench nothing else would
+ * say it. */
+static int from_shell;
+
+static void start_fail(const char *fmt, ...)
+{
+    char buf[600];
+    struct EasyStruct es = { sizeof(struct EasyStruct), 0, (STRPTR)APPNAME, (STRPTR)"%s",
+                             (STRPTR)"OK" };
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    dbg("start failed: %s", buf);
+    if (from_shell)
+        printf("%s: %s\n", APPNAME, buf);
+    EasyRequest(NULL, &es, NULL, (IPTR)buf);
+}
+
+/* An external Zune class, opened once to see that it is there. */
+static int have_class(const char *name)
+{
+    struct IClass *c = MUI_GetClass((ClassID)name);
+    if (!c)
+        return 0;
+    MUI_FreeClass(c);
+    return 1;
+}
+
 static int build(void)
 {
     static const struct zk_table_cfg tcfg = {
@@ -2530,25 +2584,44 @@ static int build(void)
         "MAW=70 BAR,P=\33r BAR,BAR,", table_columns, NULL, table_drag_started,
         table_drag_ended, table_selected_all
     };
+    static const char *const ext[] = { "NListview.mcc", "NFloattext.mcc" };
+    unsigned k;
+    /* NList.mcc first: zk_table_init opens it with care (its first open
+     * starts a process that would keep our drawer in use). */
     if (!zk_table_init()) {
-        say("Arca needs the class NList.mcc, which AROS normally includes,\n"
-            "and it could not be opened.");
+        start_fail("Arca needs the Zune class NList.mcc (in SYS:Classes/Zune/),\n"
+                   "which could not be opened.");
         return 0;
     }
+    for (k = 0; k < sizeof(ext) / sizeof(ext[0]); k++)
+        if (!have_class(ext[k])) {
+            start_fail("Arca needs the Zune class %s (in SYS:Classes/Zune/),\n"
+                       "which could not be opened.", ext[k]);
+            return 0;
+        }
     {
         /* The level slider: one step per level of the format, the level's
          * name shown above it (start_show_level). */
         static struct TagItem chain[] = { { MUIA_CycleChain, 1 }, { TAG_DONE, 0 } };
         static struct TagItem back[] = { { MUIA_Background, MUII_TextBack }, { TAG_DONE, 0 } };
-        if (!zk_steps_init() || !(sl_level = zk_steps_new(4, 0, chain)))
+        if (!zk_steps_init() || !zk_icon_init() || !zk_drop_init()) {
+            start_fail("Arca could not create its own Zune classes\n"
+                       "(muimaster.library %d.%d).", MUIMasterBase->lib_Version,
+                       MUIMasterBase->lib_Revision);
             return 0;
-        if (!zk_icon_init() || !zk_drop_init() || !(o_icon = zk_icon_new(icon_name(), NULL)) ||
-            !(o_drop = zk_drop_new(DROP_TITLE, DROP_TEXT, back)))
+        }
+        if (!(sl_level = zk_steps_new(4, 0, chain)) || !(o_icon = zk_icon_new(icon_name(), NULL)) ||
+            !(o_drop = zk_drop_new(DROP_TITLE, DROP_TEXT, back))) {
+            start_fail("Arca could not create the parts of its start window\n"
+                       "(not enough memory?).");
             return 0;
+        }
     }
     lvview = zk_table_new(&tcfg, &lv, NULL);
-    if (!lvview)
+    if (!lvview) {
+        start_fail("Arca could not create its list (NList.mcc was found).");
         return 0;
+    }
     qdisplay_hook.h_Entry = (HOOKFUNC)AROS_ASMSYMNAME(qdisplay_func);
     drop_hook.h_Entry = (HOOKFUNC)AROS_ASMSYMNAME(drop_func);
 
@@ -2906,8 +2979,13 @@ static int build(void)
             End),
         End),
     End;
-    if (!app)
+    if (!app) {
+        start_fail("Arca could not create its windows. The Zune classes it needs\n"
+                   "were found (muimaster.library %d.%d); not enough memory,\n"
+                   "or a class that failed to make its object.",
+                   MUIMasterBase->lib_Version, MUIMasterBase->lib_Revision);
         return 0;
+    }
     return 1;
 }
 
@@ -3013,8 +3091,16 @@ static int cycle_of(Object *o)
 /* keep: "Save" (survives a reboot) rather than "Use". */
 static void settings_take(int keep)
 {
-    STRPTR s = NULL;
+    STRPTR sp = NULL, se = NULL;
     IPTR v = 0;
+    char packdir[UA_PATHMAX] = "", exdir[UA_PATHMAX] = "";
+    /* Both drawers first: a name that cannot be made whole keeps the
+     * settings as they were and the window open. */
+    GetAttr(MUIA_String_Contents, s_spackdir, (IPTR *)&sp);
+    GetAttr(MUIA_String_Contents, s_sexdir, (IPTR *)&se);
+    if ((sp && *sp && !need_full((char *)sp, packdir, sizeof(packdir))) ||
+        (se && *se && !need_full((char *)se, exdir, sizeof(exdir))))
+        return;
     pf_start_open = cycle_of(c_sstart);
     onopen_browse = cycle_of(c_sopen) == 1;
     GetAttr(MUIA_Selected, cb_sopendir, &v);
@@ -3022,18 +3108,10 @@ static void settings_take(int keep)
     GetAttr(MUIA_Selected, cb_sclose, &v);
     pf_close_after = v != 0;
     pf_pack_where = cycle_of(c_spackwhere);
-    GetAttr(MUIA_String_Contents, s_spackdir, (IPTR *)&s);
-    if (s && *s)
-        full_path((char *)s, pf_pack_dir, sizeof(pf_pack_dir));
-    else
-        pf_pack_dir[0] = 0;
+    snprintf(pf_pack_dir, sizeof(pf_pack_dir), "%s", packdir);
     pf_name_drawer = cycle_of(c_sname) == 0;
     pf_ex_where = cycle_of(c_sexwhere);
-    GetAttr(MUIA_String_Contents, s_sexdir, (IPTR *)&s);
-    if (s && *s)
-        full_path((char *)s, pf_ex_dir, sizeof(pf_ex_dir));
-    else
-        pf_ex_dir[0] = 0;
+    snprintf(pf_ex_dir, sizeof(pf_ex_dir), "%s", exdir);
     pf_ex_newdir = cycle_of(c_snewdir) == 0;
     pf_ex_exists = cycle_of(c_sexists);
     /* "In this drawer" with no drawer named means next to the items. */
@@ -3080,7 +3158,10 @@ static void b_replan(void)
     if (!b_loaded || job || b_status != UA_OPEN_OK)
         return;
     GetAttr(MUIA_String_Contents, s_to, (IPTR *)&to);
-    full_path(to && *to ? (char *)to : bplan.dest, dest, sizeof(dest));
+    if (!full_path(to && *to ? (char *)to : bplan.dest, dest, sizeof(dest))) {
+        settext(t_active, "Cannot extract there: %s", fp_why);
+        return;
+    }
     if (ua_plan_make(&blist, b_planname, dest, !b_newfolder(), &bplan, err, sizeof(err)))
         settext(t_active, "Cannot extract there: %s", err);
     else
@@ -3128,7 +3209,8 @@ static void b_start_extract(int all)
     if (!b_loaded || job)
         return;
     GetAttr(MUIA_String_Contents, s_to, (IPTR *)&to);
-    full_path(to && *to ? (char *)to : bplan.dest, dest, sizeof(dest));
+    if (!need_full(to && *to ? (char *)to : bplan.dest, dest, sizeof(dest)))
+        return;
     if (!writable(dest)) {
         char other[UA_PATHMAX];
         if (!ask_drawer("That drawer cannot be written. Extract to:", "RAM:", other, sizeof(other)))
@@ -3278,13 +3360,12 @@ static int read_shell_args(void)
         STRPTR *f = (STRPTR *)a[0];
         for (; *f && nargs < MAXARGS; f++) {
             char p[UA_PATHMAX];
-            BPTR l = Lock(*f, SHARED_LOCK);
-            if (l && NameFromLock(l, p, sizeof(p)))
-                args[nargs++] = strdup(p);
-            else
-                args[nargs++] = strdup((char *)*f);
-            if (l)
-                UnLock(l);
+            if (!full_path((char *)*f, p, sizeof(p))) {
+                printf("%s: %s: %s\n", APPNAME, (char *)*f, fp_why);
+                FreeArgs(rda);
+                return 0;
+            }
+            args[nargs++] = strdup(p);
         }
     }
     if (a[1])
@@ -3301,6 +3382,7 @@ static int gui_main(int argc, char **argv)
     ULONG sigs = 0;
     int quit = 0, i;
 
+    from_shell = argc != 0;
     if (argc == 0) {
         read_wb_args((struct WBStartup *)argv);
     } else if (!read_shell_args()) {
@@ -3312,16 +3394,19 @@ static int gui_main(int argc, char **argv)
         char v[16];
         if (GetVar("UnarcTestDelay", v, sizeof(v), 0) > 0)
             test_delay = atoi(v);
+        fp_test_fail = GetVar("UnarcTestNoFullPath", v, sizeof(v), 0) > 0;
     }
     dbg("start sigalloc=%08lx avail=%lu args=%d mode=%d", (unsigned long)FindTask(NULL)->tc_SigAlloc,
         (unsigned long)AvailMem(MEMF_ANY), nargs, mode);
     prefs_load();
+    dbg("muimaster.library %d.%d", MUIMasterBase->lib_Version, MUIMasterBase->lib_Revision);
     jport = CreateMsgPort();
-    if (!jport || !build()) {
-        if (jport)
-            DeleteMsgPort(jport);
-        if (argc)
-            printf("Arca: cannot create the application (is MUI/Zune installed?)\n");
+    if (!jport) {
+        start_fail("Arca could not create a message port (no free signal or memory).");
+        return 20;
+    }
+    if (!build()) {
+        DeleteMsgPort(jport);
         return 20;
     }
     notify();

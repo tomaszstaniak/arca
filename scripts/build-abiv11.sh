@@ -58,7 +58,7 @@ done
 # at the revision pinned in deps.lock.
 ZK=$R/deps/zunekit/src
 [ -f "$ZK/zk_drop.c" ] || { echo "deps/zunekit missing or old: run scripts/fetch-deps.sh" >&2; exit 1; }
-for f in gui/job gui/main; do
+for f in gui/job gui/fullpath gui/main; do
   o=$B/obj/gui_$(basename "$f").o
   "$CC" "${CFLAGS[@]}" -I"$ZK" -c "$R/src/$f.c" -o "$o"
   gobjs+=("$o")
