@@ -5,7 +5,8 @@
 
 Writes dist/Arca-<ver>-x86_64-v1.pkg next to the ZIP and adds it to
 dist/SHA256SUMS. Mainline AROS ships no UnZip (and no lha); its C:Unpack
-reads .pkg, the format of the AROS installer: "PKG", version 1, a LONG size,
+reads .pkg, the format of the AROS installer: "PKG", version 1, a LONG size
+(of the whole uncompressed stream),
 then per file a LONG path length, the path with its NUL, a LONG data length
 and the data (big endian), the whole stream bzip2-compressed
 (workbench/c/Unpack/package.c, tools/package/FORMAT). Every file is copied
@@ -30,6 +31,10 @@ with zipfile.ZipFile(src) as z:
         data = z.read(info)
         body += struct.pack(">I", len(path)) + path + b"\0" + struct.pack(">I", len(data)) + data
         n += 1
+# The header's size is the whole uncompressed stream, header included
+# (tools/package/FORMAT). Unpack checks it since mainline 5ac123c062
+# (2026-09-19) and refuses 0 with "invalid package size".
+body[4:8] = struct.pack(">I", len(body))
 with open(out, "wb") as f:
     f.write(bz2.compress(bytes(body), 9))
 digest = hashlib.sha256(open(out, "rb").read()).hexdigest()
