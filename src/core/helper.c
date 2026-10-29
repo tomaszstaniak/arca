@@ -15,6 +15,7 @@
 #include <proto/dos.h>
 #include <dos/dostags.h>
 #include <dos/dosextens.h>
+#include <dos/stdio.h>
 #include "helper.h"
 
 int ua_helper_find(const char *name, char *path, size_t n)
@@ -70,6 +71,7 @@ static int start(ua_helper *h, const char *path, const char *name, const char *a
     char out[64];
     char tv[4];
     BPTR seg, wr, in, er, cd = BNULL;
+    int vbuf = 1;
 
     memset(h, 0, sizeof(*h));
     h->sig = -1;
@@ -106,9 +108,17 @@ static int start(ua_helper *h, const char *path, const char *name, const char *a
     er = err_to_out ? BNULL : Open("NIL:", MODE_NEWFILE);
     if (curdir)
         cd = DupLock(curdir);
-    if (!wr || !h->rd || !in || (!err_to_out && !er) || (curdir && !cd)) {
+    /* Mainline's PIPE: handles are interactive, so DOS makes them line
+     * buffered: every LF, CR or NUL in the program's binary output became a
+     * packet of its own (5.5 million for one 241 MB text file, 280 s where
+     * full buffering takes 3 s). Nothing in the protocol waits for us to read
+     * a line before the program goes on, so full buffering loses nothing. */
+    if (wr && !poll && SetVBuf(wr, NULL, BUF_FULL, -1) != 0)
+        vbuf = 0;
+    if (!wr || !h->rd || !in || (!err_to_out && !er) || (curdir && !cd) || !vbuf) {
         snprintf(err, errlen, poll ? "cannot write the helper's output to T:"
-                                   : "cannot open a pipe (is PIPE: mounted?)");
+                              : !vbuf ? "cannot set the helper's output pipe to full buffering"
+                              : "cannot open a pipe (is PIPE: mounted?)");
         UnLoadSeg(seg);
         if (wr) Close(wr);
         if (h->rd) Close(h->rd);

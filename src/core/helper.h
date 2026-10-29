@@ -30,7 +30,9 @@ int ua_helper_find(const char *name, char *path, size_t n);
 /* Start the program at path. args: its argument line, ending in "\n";
  * curdir: a lock for its current directory (duplicated; BNULL: none);
  * err_to_out: its error output goes to the same pipe as its output,
- * otherwise to NIL:. Input is NIL:. 0, or -1 with the reason in err. */
+ * otherwise to NIL:. Input is NIL:. The output pipe is fully buffered: the
+ * program's output is a stream, read in packets, never waited for line by
+ * line. 0, or -1 with the reason in err. */
 int ua_helper_start(ua_helper *h, const char *path, const char *name, const char *args,
                     BPTR curdir, int err_to_out, char *err, int errlen);
 /* The same, with the output going to a file in T: that reads return as it
