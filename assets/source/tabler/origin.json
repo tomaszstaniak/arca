@@ -1,0 +1,21 @@
+{
+  "repository": "https://github.com/tabler/tabler-icons",
+  "revision": "ed177a085b652fe04ec4f37ced867c94621e7840",
+  "variant": "outline",
+  "colour": "#2878b8",
+  "size": 64,
+  "icons": {
+    "archive": {
+      "upstream_path": "icons/outline/archive.svg",
+      "sha256": "f6a87827b2402644e13e854c6c0574232212b98e66e8eb51dde3589d4dcc6ffa"
+    },
+    "folder": {
+      "upstream_path": "icons/outline/folder.svg",
+      "sha256": "acdf398775addb8104673e5a8ef29d01d40184c6a5b3c62a93f10309cf9ef253"
+    },
+    "file-text": {
+      "upstream_path": "icons/outline/file-text.svg",
+      "sha256": "afc807ae397fc2419ac5cbca6a1e085a5f761277397682cbad3d907ca78693f5"
+    }
+  }
+}

@@ -78,3 +78,10 @@ GNU libiconv 1.14 (from the AROS ABIv11 SDK)
 AROS SDK startup code and link libraries
   Copyright (C) The AROS Development Team.
   Licence: AROS Public License 1.1 (licenses/AROS-APL-1.1.txt).
+
+Tabler Icons (archive, folder, file-text; outline)
+  Copyright (c) 2020-2026 Paweł Kuna.
+  Source: https://github.com/tabler/tabler-icons
+  Revision: ed177a085b652fe04ec4f37ced867c94621e7840
+  Licence: MIT (licenses/tabler-icons-MIT.txt).
+  SVG geometry unchanged; exported in blue to 64x64 PNG for AROS icons.
