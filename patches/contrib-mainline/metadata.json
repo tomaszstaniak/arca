@@ -1,0 +1,43 @@
+{
+  "id": "unarc-xad-lha-mainline-split",
+  "upstream": "https://github.com/aros-development-team/contrib",
+  "base": "6bbefa406c281909294c4c4e8743f7f892caa1cf",
+  "status": "accepted",
+  "v1_applicability": "All four XAD LhA fixes are accepted in shared contrib. No resubmission.",
+  "checked_upstream": "381addbd96f14178c7676eeac16f82d993ec924a",
+  "checked_date": "2026-11-02",
+  "validation": "Live PR state verified for all four split submissions. Historical tests remain described in each patch; no new build/runtime.",
+  "next_action": "Retain patches for the pinned contrib base; verify each consuming base before dropping backports.",
+  "submission_url": "https://github.com/aros-development-team/contrib/pull/81",
+  "submission_revision": "c0097d3ede7d4090c53ac0d7464496c2473ebe48",
+  "submission_revision_scope": "Final split submission only; all individual submissions are listed below.",
+  "accepted_commit": "eae2f3d0917cc085a9eb59350f5fedb2daf98c45",
+  "local_base_inclusion": false,
+  "local_base_inclusion_note": "The declared base is before the split fixes. Other SDK/runtime inclusion is not inferred.",
+  "submissions": [
+    {
+      "url": "https://github.com/aros-development-team/contrib/pull/78",
+      "merged_at": "2026-10-19T17:45:50Z",
+      "head": "877c69558d49dcb678bb93aede36545e2c918012",
+      "merge": "8e3b16259e4ceb739c0cd4a4d5bbfdd955d72296"
+    },
+    {
+      "url": "https://github.com/aros-development-team/contrib/pull/79",
+      "merged_at": "2026-10-19T17:46:17Z",
+      "head": "2c6968627d2d7bd43bb633de42c5df804d271ae1",
+      "merge": "dc4148b367f717ac96dd12bf71434119fd9a2dfe"
+    },
+    {
+      "url": "https://github.com/aros-development-team/contrib/pull/80",
+      "merged_at": "2026-10-19T17:48:39Z",
+      "head": "f8fb659433e75d7fbabafe1a5640a7c08aa7c6d0",
+      "merge": "34cd298fe2942e28341ac78f2da5d541bbbf8152"
+    },
+    {
+      "url": "https://github.com/aros-development-team/contrib/pull/81",
+      "merged_at": "2026-10-19T17:48:55Z",
+      "head": "c0097d3ede7d4090c53ac0d7464496c2473ebe48",
+      "merge": "eae2f3d0917cc085a9eb59350f5fedb2daf98c45"
+    }
+  ]
+}

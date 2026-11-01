@@ -1,0 +1,11 @@
+{
+  "id": "unarc-lha-helper-series",
+  "upstream": "https://github.com/sodero/lha",
+  "base": "1e7c8f1fc1bd0f72610ca381e21bbda9325cd4f5",
+  "status": "blocked",
+  "v1_applicability": "Separate external helper: not covered by accepted XAD/contrib fixes. Candidate patches 0001-0005 need independent qualification; 0006 is local modified-program identification.",
+  "checked_upstream": "1e7c8f1fc1bd0f72610ca381e21bbda9325cd4f5",
+  "checked_date": "2026-11-02",
+  "validation": "Historical headers record a 1229-entry round trip on AROS One 1.3 ABIv11 and external archive readers. No current v1 build/runtime or new Linux regression was run during metadata cleanup.",
+  "next_action": "Reconstruct the six-patch series, qualify generic changes on host and helper on v1/v11, then propose reusable changes separately. Keep the local unarc-lha identification out of generic upstream submissions."
+}

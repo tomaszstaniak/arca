@@ -1,0 +1,11 @@
+{
+  "id": "unarc-xad-legacy-pin-backports",
+  "upstream": "https://github.com/aros-development-team/contrib",
+  "base": "be30bc6ad191303ca8753bd3f15e4c78b1278f57",
+  "status": "local-only",
+  "v1_applicability": "LZX accepted in contrib #77; the combined LhA submission is superseded by accepted #78-81. This old-pin series is not a ready PR.",
+  "checked_upstream": "381addbd96f14178c7676eeac16f82d993ec924a",
+  "checked_date": "2026-11-02",
+  "validation": "Patch headers and declared upstream pin inspected; accepted state checked separately. No new tests.",
+  "next_action": "Keep for old pinned builds until dependency update is qualified. Use patches/contrib-mainline/metadata.json for the accepted split LhA record; do not resubmit the combined patch."
+}
