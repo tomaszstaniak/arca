@@ -32,7 +32,7 @@
 #include "fullpath.h"
 #include "zk_table.h"
 #include "zk_steps.h"
-#include "zk_icon.h"
+#include "pack_icon.h"
 #include "zk_drop.h"
 #include "../version.h"
 #include "../engines/xad_static.h"
@@ -51,7 +51,7 @@ enum { ID_OPEN = 0x100, ID_START_CLOSE, ID_DROP,
        ID_SETTINGS, ID_S_SAVE, ID_S_USE, ID_S_CANCEL, ID_S_WHERE };
 
 static Object *app, *wstart, *wbrowse, *wprog, *wask, *wdetail;
-static Object *o_icon, *o_drop, *b_open, *c_packfmt, *b_pack, *b_settings, *sl_level,
+static Object *o_icon, *t_iconformat, *o_drop, *b_open, *c_packfmt, *b_pack, *b_settings, *sl_level,
               *t_level, *cb_separate, *t_where, *g_fmthint;
 static Object *wsettings, *c_sstart, *c_sopen, *cb_sopendir, *cb_sclose, *c_spackwhere,
               *s_spackdir, *p_spackdir, *c_sname, *c_sexwhere, *s_sexdir, *p_sexdir, *c_snewdir,
@@ -1926,6 +1926,8 @@ static void start_show_level(void)
 static void start_format_changed(void)
 {
     int f = cur_fmt();
+    ua_pack_icon_set(o_icon, f);
+    settext(t_iconformat, "%s", pfmts[f].ext);
     SetAttrs(g_fmthint, MUIA_Group_ActivePage, f, TAG_DONE);
     SetAttrs(sl_level, MUIA_NoNotify, TRUE, MUIA_Numeric_Max, lvl_count(f) - 1,
              MUIA_Numeric_Value, pf_level[f], TAG_DONE);
@@ -2536,17 +2538,6 @@ static void table_selected_all(void *ctx)
     DoMethod(app, MUIM_Application_ReturnID, ID_B_SEL);
 }
 
-/* The program's own icon, under whatever name it was started. */
-static const char *icon_name(void)
-{
-    static char n[UA_PATHMAX];
-    char p[256];
-    if (!GetProgramName(p, sizeof(p)))
-        snprintf(p, sizeof(p), "%s", FindTask(NULL)->tc_Node.ln_Name);
-    snprintf(n, sizeof(n), "PROGDIR:%s", FilePart(p));
-    return n;
-}
-
 /* Why Arca cannot start, naming the part that is missing. Shown with an
  * Intuition requester, not a Zune one (Zune may be the part that fails), and
  * also printed when started from a Shell: from Workbench nothing else would
@@ -2606,13 +2597,13 @@ static int build(void)
          * name shown above it (start_show_level). */
         static struct TagItem chain[] = { { MUIA_CycleChain, 1 }, { TAG_DONE, 0 } };
         static struct TagItem back[] = { { MUIA_Background, MUII_TextBack }, { TAG_DONE, 0 } };
-        if (!zk_steps_init() || !zk_icon_init() || !zk_drop_init()) {
+        if (!zk_steps_init() || !ua_pack_icon_init() || !zk_drop_init()) {
             start_fail("Arca could not create its own Zune classes\n"
                        "(muimaster.library %d.%d).", MUIMasterBase->lib_Version,
                        MUIMasterBase->lib_Revision);
             return 0;
         }
-        if (!(sl_level = zk_steps_new(4, 0, chain)) || !(o_icon = zk_icon_new(icon_name(), NULL)) ||
+        if (!(sl_level = zk_steps_new(4, 0, chain)) || !(o_icon = ua_pack_icon_new()) ||
             !(o_drop = zk_drop_new(DROP_TITLE, DROP_TEXT, back))) {
             start_fail("Arca could not create the parts of its start window\n"
                        "(not enough memory?).");
@@ -2641,10 +2632,8 @@ static int build(void)
             MUIA_Window_Width, MUIV_Window_Width_Visible(45),
             MUIA_Window_AppWindow, TRUE,
             WindowContents, (IPTR)(VGroup,
-                /* Header: the program's icon and name, and the format the
-                 * next drop packs to. */
+                /* The application identity and the format for the next pack. */
                 Child, (IPTR)(HGroup,
-                    Child, (IPTR)o_icon,
                     Child, (IPTR)(TextObject,
                         MUIA_Font, MUIV_Font_Big,
                         MUIA_Text_Contents, (IPTR)"\33b" APPNAME,
@@ -2659,6 +2648,17 @@ static int build(void)
                          * change size when the format does. */
                         MUIA_FixWidthTxt, (IPTR)"MMtar.gzMM",
                     End),
+                End),
+                /* The system icon of the next archive, centered and independent
+                 * of the application's own Workbench icon. */
+                Child, (IPTR)(HGroup,
+                    Child, (IPTR)HSpace(0),
+                    Child, (IPTR)o_icon,
+                    Child, (IPTR)HSpace(0),
+                End),
+                Child, (IPTR)(t_iconformat = TextObject,
+                    MUIA_Text_PreParse, (IPTR)"\33c",
+                    MUIA_FixHeightTxt, (IPTR)"X",
                 End),
                 Child, (IPTR)o_drop,
                 /* What the next pack does, one row each, labels on the left. The
@@ -3629,7 +3629,7 @@ static int gui_main(int argc, char **argv)
     }
     MUI_DisposeObject(app);
     zk_drop_exit();
-    zk_icon_exit();
+    ua_pack_icon_exit();
     zk_steps_exit();
     zk_table_exit();
     DeleteMsgPort(jport);

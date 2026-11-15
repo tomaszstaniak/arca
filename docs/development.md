@@ -180,6 +180,11 @@ tool type `MODE=BROWSE` (`BROWSE` in the Shell), shows the contents first instea
 `MODE=EXTRACT` / `EXTRACT` force extraction. The setting is stored in
 `ENVARC:Arca.prefs`.
 
+The centered packing preview follows the format selector using system DefIcons.
+It falls back from format artwork to Archive and then the system project icon.
+Arca's own Workbench icon is independent of the preview. See
+[icon assets](../assets/README.md) for lookup and scaling details.
+
 No file type association is installed by the build. To try it, give an archive a
 project icon with `Arca` as its default tool, or set `Arca` as the default tool
 of the archive types in Wanderer's preferences.
@@ -234,6 +239,9 @@ starting a helper fail after its output file is open.
   host_test.py` checks the helper itself.
 - `tests/host/screen/`: screen recording over QMP and a blank-frame count, for
   flicker measurements.
+- `tests/probes/pack_icons.c` builds as `pack-icons-test` for each ABI. It checks
+  named DefIcon lookup/fallback and repeated preview switches over window
+  setup/cleanup. It removes its uniquely named temporary ENV icon.
 - `tests/probes/`: small programs that isolate platform behaviour (iconv, long
   paths, FFS file creation), `fake7z` (a helper of another release) and
   `uatool`, which makes project icons, opens objects as Workbench does, sends

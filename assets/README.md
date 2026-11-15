@@ -1,10 +1,10 @@
 # Arca icons
 
-Arca uses the original Tabler outline icons, with a blue stroke (`#2878b8`):
+The packaged Workbench icons use the original Tabler outline icons, with a blue stroke (`#2878b8`):
 
 | Use | Tabler icon | Runtime PNG |
 |---|---|---|
-| Application and start-window header | archive | runtime/tabler/archive.png |
+| Application Workbench icon | archive | runtime/tabler/archive.png |
 | Application drawer | folder | runtime/tabler/folder.png |
 | ReadMe document | file-text | runtime/tabler/file-text.png |
 
@@ -12,6 +12,19 @@ Unmodified upstream SVGs and their revision/checksums are in `source/tabler/`.
 Tabler Icons are copyright Paweł Kuna, MIT licensed; see
 `../licenses/tabler-icons-MIT.txt`. Only colour and raster size are set during export;
 paths, proportions and the standard two-unit stroke are unchanged.
+
+## Packing preview
+
+The start window loads system DefIcons through icon.library, independently of
+Arca.info. It tries the selected format's conventional names (LHA, ZIP, 7z/7zip,
+TGZ/GZIP), then Archive, then the system project default. Missing format artwork
+therefore does not require bundled interface icons. A system with one Archive
+icon may show the same image for several formats; the extension below it still
+changes. Custom file-identification hooks can use different names.
+
+The preview is scaled to a 96x96 bounding box with its aspect ratio preserved.
+Only these in-memory icons are scaled. System settings and files are unchanged;
+no companion .info is created for a packed archive. Preview images are reloaded whenever the window is reopened.
 
 ## Export
 
