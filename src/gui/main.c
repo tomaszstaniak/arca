@@ -33,7 +33,6 @@
 #include "zk_table.h"
 #include "zk_steps.h"
 #include "pack_icon.h"
-#include "zk_drop.h"
 #include "../version.h"
 #include "../engines/xad_static.h"
 
@@ -51,7 +50,7 @@ enum { ID_OPEN = 0x100, ID_START_CLOSE, ID_DROP,
        ID_SETTINGS, ID_S_SAVE, ID_S_USE, ID_S_CANCEL, ID_S_WHERE };
 
 static Object *app, *wstart, *wbrowse, *wprog, *wask, *wdetail;
-static Object *o_icon, *t_iconformat, *o_drop, *b_open, *c_packfmt, *b_pack, *b_settings, *sl_level,
+static Object *o_icon, *t_iconformat, *t_drop_title, *t_drop_text, *b_open, *c_packfmt, *b_pack, *b_settings, *sl_level,
               *t_level, *cb_separate, *t_where, *g_fmthint;
 static Object *wsettings, *c_sstart, *c_sopen, *cb_sopendir, *cb_sclose, *c_spackwhere,
               *s_spackdir, *p_spackdir, *c_sname, *c_sexwhere, *s_sexdir, *p_sexdir, *c_snewdir,
@@ -1951,10 +1950,9 @@ static void start_show_where(void)
  * ends (on_done). */
 static void start_note(const char *title, const char *text)
 {
-    if (title)
-        zk_drop_set(o_drop, title, text);
-    else
-        zk_drop_set(o_drop, DROP_TITLE, DROP_TEXT);
+    settext(t_drop_title, "%s", title ? title : DROP_TITLE);
+    if (!title || text)
+        settext(t_drop_text, "%s", title ? text : DROP_TEXT);
 }
 
 /* The name of a volume or assign ("Work" for "Work:"), or the last part. */
@@ -2596,15 +2594,13 @@ static int build(void)
         /* The level slider: one step per level of the format, the level's
          * name shown above it (start_show_level). */
         static struct TagItem chain[] = { { MUIA_CycleChain, 1 }, { TAG_DONE, 0 } };
-        static struct TagItem back[] = { { MUIA_Background, MUII_TextBack }, { TAG_DONE, 0 } };
-        if (!zk_steps_init() || !ua_pack_icon_init() || !zk_drop_init()) {
+        if (!zk_steps_init() || !ua_pack_icon_init()) {
             start_fail("Arca could not create its own Zune classes\n"
                        "(muimaster.library %d.%d).", MUIMasterBase->lib_Version,
                        MUIMasterBase->lib_Revision);
             return 0;
         }
-        if (!(sl_level = zk_steps_new(4, 0, chain)) || !(o_icon = ua_pack_icon_new()) ||
-            !(o_drop = zk_drop_new(DROP_TITLE, DROP_TEXT, back))) {
+        if (!(sl_level = zk_steps_new(4, 0, chain)) || !(o_icon = ua_pack_icon_new())) {
             start_fail("Arca could not create the parts of its start window\n"
                        "(not enough memory?).");
             return 0;
@@ -2632,12 +2628,8 @@ static int build(void)
             MUIA_Window_Width, MUIV_Window_Width_Visible(45),
             MUIA_Window_AppWindow, TRUE,
             WindowContents, (IPTR)(VGroup,
-                /* The application identity and the format for the next pack. */
+                /* The name is already in the window title. */
                 Child, (IPTR)(HGroup,
-                    Child, (IPTR)(TextObject,
-                        MUIA_Font, MUIV_Font_Big,
-                        MUIA_Text_Contents, (IPTR)"\33b" APPNAME,
-                    End),
                     Child, (IPTR)HSpace(0),
                     Child, (IPTR)Label1("_Format"),
                     Child, (IPTR)(c_packfmt = CycleObject,
@@ -2649,18 +2641,35 @@ static int build(void)
                         MUIA_FixWidthTxt, (IPTR)"MMtar.gzMM",
                     End),
                 End),
-                /* The system icon of the next archive, centered and independent
-                 * of the application's own Workbench icon. */
-                Child, (IPTR)(HGroup,
-                    Child, (IPTR)HSpace(0),
-                    Child, (IPTR)o_icon,
-                    Child, (IPTR)HSpace(0),
+                /* One drop target: native-size system icon and instructions.
+                 * The window remains the AppWindow and accepts drops anywhere. */
+                Child, (IPTR)(VGroup,
+                    GroupFrame,
+                    MUIA_Background, MUII_TextBack,
+                    MUIA_InnerTop, 12,
+                    MUIA_InnerBottom, 12,
+                    MUIA_InnerLeft, 12,
+                    MUIA_InnerRight, 12,
+                    Child, (IPTR)(HGroup,
+                        Child, (IPTR)HSpace(0),
+                        Child, (IPTR)o_icon,
+                        Child, (IPTR)HSpace(0),
+                    End),
+                    Child, (IPTR)(t_iconformat = TextObject,
+                        MUIA_Text_PreParse, (IPTR)"\33c",
+                        MUIA_FixHeightTxt, (IPTR)"X",
+                    End),
+                    Child, (IPTR)(t_drop_title = TextObject,
+                        MUIA_Text_PreParse, (IPTR)"\33c\33b",
+                        MUIA_Text_SetMin, FALSE,
+                        MUIA_Text_Contents, (IPTR)DROP_TITLE,
+                    End),
+                    Child, (IPTR)(t_drop_text = TextObject,
+                        MUIA_Text_PreParse, (IPTR)"\33c",
+                        MUIA_Text_SetMin, FALSE,
+                        MUIA_Text_Contents, (IPTR)DROP_TEXT,
+                    End),
                 End),
-                Child, (IPTR)(t_iconformat = TextObject,
-                    MUIA_Text_PreParse, (IPTR)"\33c",
-                    MUIA_FixHeightTxt, (IPTR)"X",
-                End),
-                Child, (IPTR)o_drop,
                 /* What the next pack does, one row each, labels on the left. The
                  * empty labels are labels, not HSpace: a space has weight and
                  * would widen the label column at the slider's cost. */
@@ -3628,7 +3637,6 @@ static int gui_main(int argc, char **argv)
         poll_jobs();
     }
     MUI_DisposeObject(app);
-    zk_drop_exit();
     ua_pack_icon_exit();
     zk_steps_exit();
     zk_table_exit();

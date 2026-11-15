@@ -14,8 +14,7 @@
 
 #define UA_ICON_FORMAT (TAG_USER | 0x55410001)
 #define NFORMATS 4
-#define PREVIEW_MIN 112
-#define ICON_SIZE 96
+#define PREVIEW_MIN 64
 
 struct preview_data {
     struct DiskObject *icons[NFORMATS];
@@ -51,9 +50,11 @@ static void load_icons(struct preview_data *d)
         if (d->icons[i]) continue;
         d->icons[i] = ua_default_icon(names[i], WBPROJECT);
         if (d->icons[i]) {
-            /* Only this preview is enlarged; do not change global icon settings. */
+            /* Keep the original pixel size even when the desktop has a global
+             * scale preference. Do not enlarge small DefIcons. */
             struct TagItem tags[] = {
-                { ICONCTRLA_SetScaleBox, PACK_ICON_SCALEBOX(ICON_SIZE, ICON_SIZE) },
+                { ICONCTRLA_SetScaleBox, PACK_ICON_SCALEBOX(d->icons[i]->do_Gadget.Width,
+                                                           d->icons[i]->do_Gadget.Height) },
                 { TAG_DONE, 0 }
             };
             IconControlA(d->icons[i], tags);

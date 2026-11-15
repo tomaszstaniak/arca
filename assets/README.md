@@ -22,8 +22,10 @@ therefore does not require bundled interface icons. A system with one Archive
 icon may show the same image for several formats; the extension below it still
 changes. Custom file-identification hooks can use different names.
 
-The preview is scaled to a 96x96 bounding box with its aspect ratio preserved.
-Only these in-memory icons are scaled. System settings and files are unchanged;
+The preview uses the original icon pixel dimensions, overriding desktop scaling
+only for these in-memory images. Small DefIcons are never enlarged. The icon and
+instructions share one drop target; there is no separate arrow. System settings
+and files are unchanged;
 no companion .info is created for a packed archive. Preview images are reloaded whenever the window is reopened.
 
 ## Export

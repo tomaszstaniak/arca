@@ -58,16 +58,16 @@ gobjs=()
 for o in "${objs[@]}"; do
   case $o in */main.o) ;; *) gobjs+=("$o") ;; esac
 done
-# The table, the step slider and the drop area come from zunekit
+# The table and the step slider come from zunekit
 # at the revision pinned in deps.lock.
 ZK=$R/deps/zunekit/src
-[ -f "$ZK/zk_drop.c" ] || { echo "deps/zunekit missing or old: run scripts/fetch-deps.sh" >&2; exit 1; }
+[ -f "$ZK/zk_steps.c" ] || { echo "deps/zunekit missing or old: run scripts/fetch-deps.sh" >&2; exit 1; }
 for f in gui/job gui/fullpath gui/pack_icon gui/main; do
   o=$B/obj/gui_$(basename "$f").o
   "$CC" "${CFLAGS[@]}" -I"$ZK" -c "$R/src/$f.c" -o "$o"
   gobjs+=("$o")
 done
-for c in zk_table zk_steps zk_drop; do
+for c in zk_table zk_steps; do
   "$CC" "${CFLAGS[@]}" -c "$ZK/$c.c" -o "$B/obj/$c.o"
   gobjs+=("$B/obj/$c.o")
 done
