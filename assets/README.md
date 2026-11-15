@@ -1,17 +1,22 @@
 # Arca icons
 
-The packaged Workbench icons use the original Tabler outline icons, with a blue stroke (`#2878b8`):
+The application Workbench icon uses the user-supplied orca archive-box artwork.
+The exact original is retained in `source/orca/original.png`; the cleaned master
+is `source/orca/application.png`. The white orca markings and silver highlights
+are preserved. Only exterior dust in the alpha mask is removed; the artwork is
+not regenerated. `runtime/orca/application.png` is the 64x64 RGBA package asset;
+48px and 128px exports are also provided. The source artwork was supplied for
+this application; the Tabler licence below does not apply to it.
 
-| Use | Tabler icon | Runtime PNG |
-|---|---|---|
-| Application Workbench icon | archive | runtime/tabler/archive.png |
-| Application drawer | folder | runtime/tabler/folder.png |
-| ReadMe document | file-text | runtime/tabler/file-text.png |
+Run `python3 scripts/render-application-icon.py` with Pillow to reproduce the
+cleaned master and exports. Normal packaging uses the checked-in PNG and needs
+no image-processing dependency.
 
-Unmodified upstream SVGs and their revision/checksums are in `source/tabler/`.
-Tabler Icons are copyright Paweł Kuna, MIT licensed; see
-`../licenses/tabler-icons-MIT.txt`. Only colour and raster size are set during export;
-paths, proportions and the standard two-unit stroke are unchanged.
+The application drawer and ReadMe retain the blue Tabler folder/file-text icons
+in `runtime/tabler/`. Unmodified upstream SVGs and their revision/checksums are
+in `source/tabler/`. Tabler Icons are copyright Paweł Kuna, MIT licensed; see
+`../licenses/tabler-icons-MIT.txt`. The former Tabler archive asset is retained
+as source history but is no longer used as the application icon.
 
 ## Packing preview
 

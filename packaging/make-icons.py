@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Attach AROS DiskObject metadata to the bundled Tabler PNG icons.
+"""Attach AROS DiskObject metadata to the bundled application and document icons.
 
 usage: make-icons.py OUTPUT_DIR
 No renderer is needed for packaging. To regenerate the PNG assets, see
@@ -11,7 +11,8 @@ import zlib
 from pathlib import Path
 
 SIZE = 64
-ASSETS = Path(__file__).resolve().parents[1] / "assets/runtime/tabler"
+RUNTIME = Path(__file__).resolve().parents[1] / "assets/runtime"
+ASSETS = RUNTIME / "tabler"
 
 ATTR_DRAWERX, ATTR_DRAWERY = 0x80001003, 0x80001004
 ATTR_DRAWERWIDTH, ATTR_DRAWERHEIGHT = 0x80001005, 0x80001006
@@ -26,7 +27,8 @@ def chunk(kind, data):
 
 
 def read_icon(name):
-    data = (ASSETS / (name + ".png")).read_bytes()
+    path = RUNTIME / "orca/application.png" if name == "application" else ASSETS / (name + ".png")
+    data = path.read_bytes()
     if data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR":
         raise ValueError(f"Invalid PNG: {name}")
     if struct.unpack(">II", data[16:24]) != (SIZE, SIZE):
@@ -47,7 +49,7 @@ def main():
     out = Path(sys.argv[1])
     out.mkdir(parents=True, exist_ok=True)
     icons = {
-        "Arca.info": (read_icon("archive"), [(ATTR_TYPE, WBTOOL), (ATTR_STACKSIZE, 262144), (ATTR_FRAMELESS, 1)]),
+        "Arca.info": (read_icon("application"), [(ATTR_TYPE, WBTOOL), (ATTR_STACKSIZE, 262144), (ATTR_FRAMELESS, 1)]),
         "drawer.info": (read_icon("folder"), [(ATTR_TYPE, WBDRAWER), (ATTR_FRAMELESS, 1),
                                         (ATTR_DRAWERX, 80), (ATTR_DRAWERY, 60),
                                         (ATTR_DRAWERWIDTH, 420), (ATTR_DRAWERHEIGHT, 200)]),

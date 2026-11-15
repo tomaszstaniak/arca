@@ -1,0 +1,13 @@
+{
+  "origin": "User-supplied Arca orca icon with transparent background.png, selected on 2026-11-15",
+  "original_sha256": "a2832b276c4cc97069352130a0fa252377d5defd6650c9dee1a83fa25b836e6b",
+  "processing": "Original artwork only; alpha-mask cleanup and Lanczos export, no regenerated artwork",
+  "source_alpha_cutoff": 16,
+  "export_alpha_cutoff": 8,
+  "export_sizes": [
+    48,
+    64,
+    128
+  ],
+  "package_size": 64
+}
