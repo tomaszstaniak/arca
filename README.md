@@ -17,9 +17,10 @@ apkg install arca
 ```
 
 Or download the ZIP for your system, unpack it and keep the Arca drawer together.
-Choose **ABIv1** for mainline AROS or **ABIv11** for AROS One / the 2026.09 base.
-Both builds are for x86_64 PC; they are not interchangeable. Start `Arca` from its
-icon. It uses the system Zune, NList, NListview and NFloattext classes.
+Choose the **x86_64 ABIv1 PC** package for mainline AROS, **x86_64 ABIv11 PC**
+for AROS One / the 2026.09 base, or **AArch64 ABIv1 Raspberry Pi** for native
+AROS on Pi. Pi checks use QEMU; real hardware has not been verified. Start
+`Arca` from its icon. It uses the system Zune, NList, NListview and NFloattext classes.
 
 ## Formats
 

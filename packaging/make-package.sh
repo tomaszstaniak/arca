@@ -1,7 +1,7 @@
 #!/bin/bash
 # Make the package for one ABI from the current build of that ABI:
-#   packaging/make-package.sh <version> [abiv11|v1]      e.g. 0.1.0
-# Writes dist/Arca-<version>-aros-x86_64-<abi>-pc.zip and an ABI checksum file.
+#   packaging/make-package.sh <version> [abiv11|v1|raspi]      e.g. 0.1.0
+# Writes the full-target ZIP name selected by scripts/abi.sh and a checksum file.
 # A file already in dist/ is never replaced: a new build needs a new version.
 #
 # The archive holds one drawer, Arca, and its icon. Inside: Arca (Zune),
@@ -11,11 +11,12 @@
 # with unarc-lha's source: its terms allow no binary-only distribution. Programs get the Unix mode 0755 in the ZIP, which AROS's UnZip
 # turns into the e bit.
 set -euo pipefail
-VER=${1:?usage: make-package.sh <version> [abiv11|v1]}
+VER=${1:?usage: make-package.sh <version> [abiv11|v1|raspi]}
 . "$(dirname "$0")/../scripts/abi.sh" "${2:-abiv11}"
 BIN=$B/bin
 Z7=$R/build/7z-backend/aros/bin/unarc-7z
 [ "$UNARC_ABI" = v1 ] && Z7=$R/build/7z-backend/aros-v1/bin/unarc-7z
+[ "$UNARC_ABI" = raspi ] && Z7=$R/build/7z-backend/aros-raspi/bin/unarc-7z
 LHA=$BIN/unarc-lha
 OUT=$R/dist/Arca-$VER-$PKG_SUFFIX.zip
 mkdir -p "$R/dist"
@@ -34,10 +35,10 @@ for f in "$BIN/Arca" "$BIN/arca-cli"; do
     echo "$f was built as \"$got\", not $VER: run UNARC_RELEASE=$VER scripts/build.sh $UNARC_ABI" >&2
     exit 1; }
 done
-if [ -n "$(git -C "$R" status --porcelain -- src experiments scripts packaging patches upstreams.json deps.lock)" ]; then
+if [ -n "$(git -C "$R" status --porcelain -- src experiments scripts packaging patches upstreams.json deps.lock licenses THIRD_PARTY_NOTICES docs README.md)" ]; then
   echo "the source tree has uncommitted changes; commit before packaging" >&2; exit 1
 fi
-STRIP="$TC/x86_64-aros-strip"
+STRIP="$TC/$CROSS_PREFIX-strip"
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 python3 "$R/packaging/make-icons.py" "$T/icons" >/dev/null
@@ -51,7 +52,14 @@ BIN="$T/bin"; Z7="$BIN/unarc-7z"; LHA="$BIN/unarc-lha"
 # it (they are the document of the changes its terms ask for), applied.
 LHAPIN=$(python3 -c "import json;print(json.load(open('$R/upstreams.json'))['repositories']['lha']['commit'])")
 mkdir -p "$T/lhasrc/unarc-lha-source/unarc-patches"
-( cd "$R/upstream/lha" && git archive --format=tar "$LHAPIN" ) | tar -x -C "$T/lhasrc/unarc-lha-source"
+git -C "$R/upstream/lha" archive --format=tar --output="$T/lha.tar" "$LHAPIN"
+python3 - "$T/lha.tar" "$T/lhasrc/unarc-lha-source" <<'PYLHA'
+import pathlib, sys, tarfile
+with tarfile.open(sys.argv[1]) as archive:
+    members = [m for m in archive if pathlib.Path(m.name).name.lower()
+               not in ('agents.md', 'claude.md', 'project.json')]
+    archive.extractall(sys.argv[2], members=members, filter='data')
+PYLHA
 cp "$R/patches/lha/"*.patch "$R/patches/lha/series" "$T/lhasrc/unarc-lha-source/unarc-patches/"
 ( cd "$T/lhasrc/unarc-lha-source" && while read -r p; do [ -n "$p" ] && patch -s -p1 < "unarc-patches/$p"; done < unarc-patches/series )
 {
@@ -73,7 +81,10 @@ sed -n '/^@NODE "License"/,/^@ENDNODE/p' "$R/upstream/lha/dist/LHa_4U4A.guide" |
   echo "built $(date -u +%Y-%m-%d) for $ABI_TEXT"
 } >"$T/Revision"
 # The ReadMe names the system this package is for.
-if [ "$UNARC_ABI" = v1 ]; then
+if [ "$UNARC_ABI" = raspi ]; then
+  printf '%s\n' "This release is for native AROS Raspberry Pi AArch64 ABIv1." \
+    "Use the x86_64 packages for PC systems. Hosted AROS is a separate target." >"$T/target"
+elif [ "$UNARC_ABI" = v1 ]; then
   printf '%s\n' "This release is for mainline AROS (ABIv1) on x86_64. It does not run" \
     "on ABIv11 systems such as AROS One: use the -aros-x86_64-abiv11-pc package there." >"$T/target"
 else

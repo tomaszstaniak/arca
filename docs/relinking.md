@@ -1,12 +1,12 @@
 # Rebuilding with modified LGPL libraries
 
-Arca statically links XAD on both ABIs and GNU libiconv on ABIv11. The separate
+Arca statically links XAD on all three release targets and GNU libiconv on ABIv11. The separate
 unarc-7z program links 7-Zip's decoder code. These components retain their LGPL
 licences; the RAR decoder also retains its unRAR restriction.
 
 The GitHub release provides the application source, full pinned dependency
-sources and a relink kit for each ABI. Keep the selected SDK/compiler matched to
-the ABI. No private workspace repository is needed: deps.lock and upstreams.json
+sources and a relink kit for each target. Keep the selected SDK/compiler matched to
+the target. No private workspace repository is needed: deps.lock and upstreams.json
 use public sources, and the release source bundle contains their pinned contents.
 
 ## Rebuild the application
@@ -15,24 +15,31 @@ use public sources, and the release source bundle contains their pinned contents
 2. Run scripts/fetch-deps.sh. The release bundle also supplies standalone dependency
    archives under DependencySources/ for inspection and modified builds. They do
    not populate the Git checkouts expected by the standard fetch/build scripts.
-3. For ABIv11, XAD uses patches/contrib/; mainline uses patches/contrib-mainline/.
+3. For ABIv11, XAD uses patches/contrib/; PC and Pi mainline use patches/contrib-mainline/.
    Add a new source patch to the appropriate ordered series.
-4. Run scripts/build-deps.sh <abi>, then scripts/build.sh <abi>.
+4. Run `scripts/build-deps.sh <target>`, then `scripts/build.sh <target>`.
 
 To use a modified libiconv, build GNU libiconv 1.14 from the source included in
 the release, then replace ICONVLIB in scripts/build.sh with your library path and
 put its headers first. build-abiv11.sh is a wrapper for build.sh. The exact
 unpatched GNU source and AROS recipe provenance are recorded under
-third_party/libiconv/abiv11/. libiconv is not linked into the v1 build.
+third_party/libiconv/abiv11/. libiconv is not linked into either mainline build.
 
 ## Relink without rebuilding Arca's own source
 
 Each relink kit provides the application object files, the static dependency
 archives and relink.sh. Point ARCA_SDK and ARCA_TOOLCHAIN at the matching SDK and
-compiler. Replace lib/libxadstatic.a or (ABIv11 only) lib/libiconv.a with your
+compiler. The Pi kit uses `aarch64-aros-clang` and sets `RPI_SDK` to
+`ARCA_SDK`; use a native Raspberry Pi SDK. Replace lib/libxadstatic.a or (ABIv11 only) lib/libiconv.a with your
 modified library, then run relink.sh. The script links Arca and arca-cli; it never
 installs either into the system. 7-Zip can be rebuilt with
-experiments/7z-backend/build.sh using the complete release source bundle.
+`experiments/7z-backend/build.sh aros`, `aros-v1` or `aros-raspi`, using the
+release source bundle. The helper's 7-Zip sources are fully included there.
+For Pi, set `UNARC_CXXRT_RASPI` to the LLVM runtime prefix. The runtime's
+exact upstream source URL, tarball hash, bundled AROS patches and rebuild
+settings are recorded in
+[llvm-runtime](../experiments/7z-backend/llvm-runtime/README.md). The LLVM
+tarball itself is not included in the source bundle.
 
 The SDK startup/link libraries retain the AROS Public License. Full library and
 helper notices are in THIRD_PARTY_NOTICES and licenses/.

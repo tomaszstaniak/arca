@@ -1,17 +1,18 @@
 ---
 type: guide
-updated: 2026-10-17
+updated: 2026-11-16
 ---
 
 # Development
 
 ## Supported scope
 
-The release builds AROS x86_64 PC for mainline ABIv1 (`v1`) and ABIv11
-(`abiv11`) independently, using GCC 10.5.0 and matching SDKs. ABIv11 is tested on
-AROS One 1.3; mainline is tested on the current recorded nightly. Neither result
-establishes support for other CPUs or hosted systems. Build directories retain
-the project's existing `build/v1-x86_64` and `build/abiv11-x86_64` names.
+Release targets are x86_64 PC mainline ABIv1 (`v1`), x86_64 PC ABIv11
+(`abiv11`) and native Raspberry Pi AArch64 ABIv1 (`raspi`). PC builds use
+GCC 10.5.0; Pi uses Clang 20.1.0, each with its matching SDK. Pi validation
+uses QEMU and does not establish support on real Raspberry Pi hardware.
+Hosted AROS is a separate target. Outputs are separated under
+`build/v1-x86_64`, `build/abiv11-x86_64` and `build/raspi-aarch64`.
 
 ## Setup
 
@@ -24,6 +25,9 @@ Copy `local.env.example` to `local.env` and set:
   `UNARC_V1_HOST_BUILD`, that build's host tree (its `genmodule` writes XAD's
   headers, which the mainline SDK lacks, and its GCC tree rebuilds libgcc's
   unwinder, see below);
+- for native Pi, `UNARC_TOOLCHAIN_RASPI` (the directory containing
+  `aarch64-aros-clang`), `UNARC_SDK_RASPI` (native `Developer` directory), and
+  `UNARC_CXXRT_RASPI` (the LLVM runtime prefix used by `unarc-7z`);
 - optionally `UNARC_DEPS_MIRROR`: local clones to fetch dependencies from.
 
 Environment variables already set take precedence over `local.env`. The scripts
@@ -31,20 +35,26 @@ need bash, CMake, git and patch.
 
 ## Build
 
-Each script takes the ABI, `abiv11` (the default) or `v1`:
+Each script takes the target: `abiv11` (default), `v1` or `raspi`:
 
     scripts/fetch-deps.sh                 # pinned sources from deps.lock into deps/
-    scripts/build-deps.sh <abi>           # static liblzma, libarchive, XAD into build/<abi>-x86_64/prefix
-    scripts/build.sh <abi>                # build/<abi>-x86_64/bin/arca-cli and Arca
-    scripts/build-lha.sh <abi>            # build/<abi>-x86_64/bin/unarc-lha (LHa for UNIX + patches/lha)
-    experiments/7z-backend/build.sh aros  # unarc-7z for ABIv11 (aros-v1 for mainline)
+    scripts/build-deps.sh <target>           # static liblzma, libarchive, XAD into build/<target>-<arch>/prefix
+    scripts/build.sh <target>                # build/<target>-<arch>/bin/arca-cli and Arca
+    scripts/build-lha.sh <target>            # build/<target>-<arch>/bin/unarc-lha (LHa for UNIX + patches/lha)
+    experiments/7z-backend/build.sh aros  # unarc-7z for ABIv11 (aros-v1 for PC mainline, aros-raspi for Pi)
 
 The `*-abiv11.sh` names still work and build ABIv11. Mainline differs in three
 places, each handled in the scripts: its SDK has no iconv (libarchive is built
 without it and uses Arca's `locale_charset()`); it has no XAD headers
 (generated with that build's genmodule); and its libgcc catches no C++ throw,
 so `scripts/build-unwind-fix-v1.sh` must run before `unarc-7z` is built for
-`aros-v1`, which links the rebuilt `unwind-dw2.o`.
+`aros-v1`, which links the rebuilt `unwind-dw2.o`. This GCC workaround is
+PC-only. The Pi helper preserves exceptions with statically linked LLVM
+libc++, libc++abi and libunwind, and uses emulated TLS. Source identities,
+licences and runtime rebuild settings are in
+[llvm-runtime](../experiments/7z-backend/llvm-runtime/README.md). Native Pi
+scripts select the SDK through `RPI_SDK` and use signed plain `char`, matching
+the PC builds.
 
 `fetch-deps.sh` puts unmodified dependencies (`deps.lock`) in `deps/` and the
 repositories we patch (`upstreams.json`) as clean checkouts in `upstream/`.
@@ -250,7 +260,7 @@ starting a helper fail after its output file is open.
 
 ## Package
 
-Build for a release name first: `UNARC_RELEASE=0.1.0 scripts/build.sh <abi>`.
+Build for a release name first: `UNARC_RELEASE=0.1.1 scripts/build.sh <target>`.
 The name goes into both programs' `$VER` after the date and into what they
 show (the settings window, `arca-cli HELP`); without it they are
 `0.0.4-dev`. The `$VER` version.revision is major.(minor * 100 + patch), since
@@ -258,8 +268,10 @@ show (the settings window, `arca-cli HELP`); without it they are
 it from the name and refuses a patch number of 100 or more, where the pairs
 would stop being unique (`src/version.h`).
 
-`packaging/make-package.sh <version> [abiv11|v1]` writes
-`dist/Arca-<version>-aros-x86_64-abiv11-pc.zip` or `dist/Arca-<version>-aros-x86_64-abiv1-pc.zip`
+`packaging/make-package.sh <version> [abiv11|v1|raspi]` writes
+`dist/Arca-<version>-aros-x86_64-abiv11-pc.zip`,
+`dist/Arca-<version>-aros-x86_64-abiv1-pc.zip` or
+`dist/Arca-<version>-aros-aarch64-abiv1-raspi.zip`
 (one drawer: the four programs, ReadMe, icons from `packaging/make-icons.py`,
 and a Licences drawer with every licence text, THIRD_PARTY_NOTICES and the
 source revision) and writes `dist/SHA256SUMS.<abi>`. It refuses to replace a
@@ -284,16 +296,20 @@ Existing Workbench default-tool associations must be updated to Arca manually.
 
 ## Publishing a release
 
-Set `APKG_PACK` to the absolute path of apkg-pack.pyz 0.2.0. Build both ABIs with
-`UNARC_RELEASE=<version> scripts/build.sh <abi>`, then run
-`packaging/make-package.sh <version> <abi>`. Packages contain the per-ABI embedded
+Set `APKG_PACK` to the absolute path of apkg-pack.pyz 0.2.0. Build all three targets with
+`UNARC_RELEASE=<version> scripts/build.sh <target>`, then run
+`packaging/make-package.sh <version> <target>`. Packages contain the per-ABI embedded
 manifest and application.json and use full AROS target names. Packaging strips
 debug sections from private copies of the four executables; it keeps code and
 relocations intact. Existing archives are never replaced.
 
 `packaging/make-source-materials.py <version> --libiconv-tar <GNU1.14.tar.gz>`
-creates complete pinned dependency-source archives and per-ABI relink kits. Supply
-UNARC_SDK_V1 and UNARC_SDK_ABIV11 for the matching SDK archive files, and
-UNARC_STRIP for the x86_64-aros-strip executable. Check and test
+creates pinned application/dependency sources and three application relink kits.
+Export `UNARC_SDK_V1`, `UNARC_SDK_ABIV11` and `UNARC_SDK_RASPI`, plus the matching
+`UNARC_TOOLCHAIN_V1`, `UNARC_TOOLCHAIN_ABIV11` and `UNARC_TOOLCHAIN_RASPI`
+directories. Each kit uses that target's strip tool; the Pi relink script uses
+Clang and exports `RPI_SDK`. These kits contain Arca/arca-cli objects and LGPL
+library archives; rebuild the separate 7-Zip helper from source. LLVM runtime
+sources are linked by exact upstream URL and hash rather than bundled. Check and test
 the actual apkg ZIPs before uploading. Package metadata does not establish runtime
 support by itself; publish only the targets checked on their own systems.

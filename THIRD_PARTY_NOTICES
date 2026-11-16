@@ -95,3 +95,15 @@ Application icon
   Included under the application MIT licence. Original artwork and deterministic
   alpha cleanup/export are preserved in assets/source/orca/ and scripts/.
   The Tabler licence applies to the folder/document artwork, not this icon.
+
+LLVM libc++, libc++abi and libunwind 20.1.0 (Raspberry Pi unarc-7z only)
+  Copyright (C) The LLVM Project and contributors.
+  Licence: Apache License 2.0 with LLVM Exceptions, with component-specific
+  notices in licenses/LLVM-libcxx-LICENSE.txt,
+  licenses/LLVM-libcxxabi-LICENSE.txt and licenses/LLVM-libunwind-LICENSE.txt.
+  Linked statically into the native Raspberry Pi helper. AROS modifications
+  retain their notices and the AROS Public License 1.1. Exact LLVM release
+  URL, source/patch SHA-256 hashes, upstream AROS patch revision and rebuild
+  settings are in experiments/7z-backend/llvm-runtime/. The LLVM source tarball
+  is available at the recorded upstream URL; it is not bundled in Arca's source
+  archive. The AROS patches are bundled. No Boxer application code is used.
