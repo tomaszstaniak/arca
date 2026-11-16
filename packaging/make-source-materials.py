@@ -54,7 +54,7 @@ with tempfile.TemporaryDirectory() as d:
   libs='lib/libarchive.a lib/libxadstatic.a lib/liblzma.a lib/libbz2_nostdio.a lib/libz.static.a'+(' lib/libiconv.a' if abi=='abiv11' else '')+' -lpthread'
   (root/'relink.sh').write_text('#!/bin/bash\nset -euo pipefail\ncd "$(dirname "$0")"\n: "${ARCA_TOOLCHAIN:?directory containing x86_64-aros-gcc}" "${ARCA_SDK:?matching SDK Developer directory}"\n"$ARCA_TOOLCHAIN/x86_64-aros-gcc" --sysroot="$ARCA_SDK" -o arca-cli @cli.objects '+libs+'\n"$ARCA_TOOLCHAIN/x86_64-aros-gcc" --sysroot="$ARCA_SDK" -o Arca @gui.objects '+libs+'\n')
   with (root/'relink.sh').open('a') as script:
-   script.write('for program in arca-cli Arca; do\n  undef=$("$ARCA_TOOLCHAIN/x86_64-aros-nm" -u "$program" | grep -v ' w ' || true)\n  if [ -n "$undef" ]; then echo "unresolved symbols in $program: $undef"; exit 1; fi\ndone\n')
+   script.write('for program in arca-cli Arca; do\n  undef=$("$ARCA_TOOLCHAIN/x86_64-aros-nm" -u "$program" | grep -v \' w \' || true)\n  if [ -n "$undef" ]; then echo "unresolved symbols in $program: $undef"; exit 1; fi\ndone\n')
   (root/'relink.sh').chmod(0o755)
   (root/'README.txt').write_text(f'Arca {args.version}, source {revision}, {targetabi} x86_64. Set ARCA_TOOLCHAIN and ARCA_SDK, replace the LGPL library archive you wish to modify, then bash relink.sh. Complete library/application sources are in Arca-{args.version}-source.tar.gz. Debug sections are removed from the supplied relink objects. They retain code, relocations and symbols required to link replacement libraries.\n')
   target=out/(root.name+'.tar.gz')
