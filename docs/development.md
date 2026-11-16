@@ -250,7 +250,7 @@ starting a helper fail after its output file is open.
 
 ## Package
 
-Build for a release name first: `UNARC_RELEASE=0.0.4-test7 scripts/build.sh <abi>`.
+Build for a release name first: `UNARC_RELEASE=0.1.0 scripts/build.sh <abi>`.
 The name goes into both programs' `$VER` after the date and into what they
 show (the settings window, `arca-cli HELP`); without it they are
 `0.0.4-dev`. The `$VER` version.revision is major.(minor * 100 + patch), since
@@ -260,19 +260,19 @@ would stop being unique (`src/version.h`).
 
 `packaging/make-package.sh <version> [abiv11|v1]` writes
 `dist/Arca-<version>-aros-x86_64-abiv11-pc.zip` or `dist/Arca-<version>-aros-x86_64-abiv1-pc.zip`
-(one drawer: the three programs, ReadMe, icons from `packaging/make-icons.py`,
+(one drawer: the four programs, ReadMe, icons from `packaging/make-icons.py`,
 and a Licences drawer with every licence text, THIRD_PARTY_NOTICES and the
-source revision) and adds it to `dist/SHA256SUMS`. It refuses to replace a
+source revision) and writes `dist/SHA256SUMS.<abi>`. It refuses to replace a
 file in `dist/`, to package uncommitted sources, and to package programs built
 for another release name.
 
-Mainline AROS ships no UnZip (and no lha). `packaging/zip-to-pkg.py
+For systems using the older `C:Unpack` installer, `packaging/zip-to-pkg.py
 dist/Arca-<version>-aros-x86_64-abiv1-pc.zip` writes the same files, byte for byte, as an
 AROS `.pkg` next to it, which the system's own `C:Unpack` installs
-(`Unpack Arca-<version>-x86_64-v1.pkg TO SYS:Utilities`). Unpack keeps no
+(`Unpack Arca-<version>-aros-x86_64-abiv1-pc.pkg TO SYS:Utilities`). Unpack keeps no
 protection bits or dates; the files get the volume's defaults (`rwed`).
 
-## Provisional application name
+## Application names
 
 The application is now Arca and the command is arca-cli. The repository,
 UNARC_* build variables, test variables and helper filenames remain unchanged.
@@ -293,6 +293,7 @@ relocations intact. Existing archives are never replaced.
 
 `packaging/make-source-materials.py <version> --libiconv-tar <GNU1.14.tar.gz>`
 creates complete pinned dependency-source archives and per-ABI relink kits. Supply
-UNARC_SDK_V1 and UNARC_SDK_ABIV11 for the matching SDK archive files. Check and test
+UNARC_SDK_V1 and UNARC_SDK_ABIV11 for the matching SDK archive files, and
+UNARC_STRIP for the x86_64-aros-strip executable. Check and test
 the actual apkg ZIPs before uploading. Package metadata does not establish runtime
 support by itself; publish only the targets checked on their own systems.
