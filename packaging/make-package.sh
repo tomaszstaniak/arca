@@ -86,10 +86,10 @@ if [ "$UNARC_ABI" = raspi ]; then
     "Use the x86_64 packages for PC systems. Hosted AROS is a separate target." >"$T/target"
 elif [ "$UNARC_ABI" = v1 ]; then
   printf '%s\n' "This release is for mainline AROS (ABIv1) on x86_64. It does not run" \
-    "on ABIv11 systems such as AROS One: use the -aros-x86_64-abiv11-pc package there." >"$T/target"
+    "on ABIv11 systems: use the -aros-x86_64-abiv11-pc package there." >"$T/target"
 else
-  printf '%s\n' "This release is for AROS ABIv11 on x86_64 (AROS One and the 2026.09" \
-    "base). It does not run on mainline AROS (ABIv1): use the -aros-x86_64-abiv1-pc package" "there." >"$T/target"
+  printf '%s\n' "This release is for AROS ABIv11 on x86_64 using the 2026.09" \
+    "base. It does not run on mainline AROS (ABIv1): use the -aros-x86_64-abiv1-pc package" "there." >"$T/target"
 fi
 python3 - "$OUT" "$T" "$R" "$BIN" "$Z7" "$LHA" <<'PY'
 import os, sys, time, zipfile

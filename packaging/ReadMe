@@ -1,10 +1,12 @@
 Arca
 ====
 
-Arca lists, extracts and makes archives on AROS. It comes as two programs
-over one core: Arca, a Zune program, and arca-cli, a Shell command. Two
-helper programs come with them and are started when needed: unarc-7z reads
-7z, RAR and ZIP with 7-Zip's own code, and unarc-lha makes LhA archives.
+Arca is an archive manager for AROS. Use its Zune interface to browse,
+extract and create archives, or run arca-cli from the Shell. Both programs
+use the same archive engine.
+
+The package includes two helpers that Arca starts when needed: unarc-7z
+reads 7z, RAR and ZIP with 7-Zip's code; unarc-lha creates LhA archives.
 
 @TARGET@
 
@@ -15,13 +17,13 @@ or later with stdc.library 0.53.
 Installing
 ----------
 
-Copy the Arca drawer anywhere, for example to SYS:Utilities or to a drawer
-whose name has spaces. Nothing else is installed and nothing outside the
-drawer is changed, apart from ENVARC:Arca.prefs when you change a setting.
-Keep unarc-7z and unarc-lha in the same drawer as Arca and arca-cli. To
-remove Arca, delete the drawer (and ENVARC:Arca.prefs).
+Copy the complete Arca drawer to a location of your choice, such as
+SYS:Utilities. Drawer names can contain spaces. Keep unarc-7z and unarc-lha
+beside Arca and arca-cli. Arca saves preferences in ENVARC:Arca.prefs; it
+needs no other installation outside its drawer. To remove a manually
+installed copy, delete the drawer and ENVARC:Arca.prefs.
 
-Arca was previously tested as Unarc.
+Earlier versions were called Unarc.
 It reads Unarc.prefs if Arca.prefs is absent and saves changes as Arca.prefs.
 The old preferences are left intact. Existing archive icons that name Unarc
 must be changed to Arca. The helper filenames remain unarc-7z and unarc-lha.
@@ -29,61 +31,64 @@ must be changed to Arca. The helper filenames remain unarc-7z and unarc-lha.
 The GUI uses Zune and the NList, NListview and NFloattext classes that come
 with AROS. If one of them is missing, Arca names it when it starts.
 
-No file type is associated with Arca. To open archives with it from
-Wanderer, give an archive a project icon whose default tool is Arca, or set
-Arca as the default tool of the archive types in Wanderer's preferences.
+To open archives with Arca from Wanderer, give an archive a project icon
+with Arca as its default tool, or set Arca as the default tool for archive
+types in Wanderer's preferences. Installation does not change these
+associations.
 
 
-The Zune program
-----------------
+Using Arca
+----------
 
-Started on its own, Arca opens its start window. Choose the format with
-the button at the top (LhA, ZIP, 7z or tar.gz) and the compression with the
-slider, then drop files or drawers on the marked area: they are packed at
-once, next to where they are. "Separate archives" makes one
-archive per dropped item. An archive dropped on the window is extracted
-instead. Packing first counts what was dropped ("Preparing..."), then shows
-how much of it is packed; Cancel works in both steps and leaves no archive.
+Start Arca from its icon. Choose LhA, ZIP, 7z or tar.gz with the format
+button and set the compression with the slider. Drop files or drawers onto
+the marked area to pack them. By default, Arca saves the archive beside the
+source files. "Separate archives" creates one archive per dropped item.
+Drop an archive onto the window to extract it.
 
-When a job ends, the window shows a short summary: what was done, the
-drawer and any notes. "Details..." shows the whole text, with full paths and
-every message.
+Packing starts by counting the files ("Preparing..."), then shows progress.
+Cancel stops either step and removes the unfinished archive.
 
-"Create archive..." does the same through a file requester: choose files, or press OK
-in a drawer with no file chosen to pack the whole drawer. "Open archive..."
+When a job finishes, the result window shows what happened, the destination
+and any notes. "Details..." shows all messages and full paths.
+
+"Create archive..." opens a file requester. Choose files, or press OK with
+no file selected to pack the current drawer. "Open archive..."
 shows an archive's contents first.
 
-When an archive of the same name already exists, Arca offers a new name
-("Website 2.zip"), which Return chooses; replacing the old one needs its own
-button. The old archive is removed only after the new one is complete. If it
-cannot be removed (something has it open), it stays as "<name>.old" and the
-result says so.
+If the archive name is already taken, Arca suggests a new one, such as
+"Website 2.zip". Return accepts the new name. Use Replace to overwrite the
+existing archive. Arca removes the old archive after the new one is complete.
+If another program holds it open and prevents removal, Arca keeps it as
+"<name>.old" and reports this in the result.
 
-Started with an archive (a double-click on an archive whose default tool is
-Arca), it extracts the archive next to itself into a new drawer and shows
-what happened. Settings, or the tool type MODE=BROWSE, can show the contents
-first instead. When a file to extract is already there, Arca asks: it
-shows the file's name, its drawer and both sizes and dates, and Return
-skips the file; replacing it needs its own button.
+Double-clicking an archive whose default tool is Arca extracts it into a
+new drawer beside the archive, then shows the result. To browse its contents
+first, change the double-click action in Settings or use the tool type
+MODE=BROWSE.
 
-Settings... has three pages. General: what to show at start, what a
-double-click on an archive does, whether to open the drawer with the result
-and whether to close the result window by itself (only when there is nothing
-to report; warnings and errors always stay open). Packing: where archives
-are saved (next to the items, ask each time, or one drawer) and how several
-items are named. Extracting: where to extract, when to make a new drawer,
-and what to do when a file exists (ask, skip it, or keep both; files on disk
-are never replaced without asking).
+If a file already exists at the destination, Arca shows its name, drawer,
+and the sizes and dates of both copies. Return skips the file. Use Replace
+to overwrite it.
+
+Settings... has three pages:
+
+- General: choose the startup window and double-click action. You can open
+  the destination drawer after a job or close successful results
+  automatically. Results with warnings or errors stay open.
+- Packing: save beside the source files, choose a destination each time,
+  or use a fixed drawer. Choose the name for an archive with several items.
+- Extracting: choose the destination, when to create a new drawer and how
+  to handle existing files. Arca can ask, skip them or keep both copies.
+  Replacing a file always requires confirmation.
 
 In the browser you can select entries and extract only those, extract everything,
 or drag the selected entries onto an open Wanderer drawer window. Amiga+A
 selects every entry. Several archives dropped at once are extracted one
 after another; the progress window lists them and ends with one summary.
 
-When a file already exists, Arca asks; Return skips the file, and replacing
-it needs its own button. Cancel keeps the files already finished and removes
-the one in progress. Nothing that was there before is overwritten unless you
-say so.
+During extraction, Cancel keeps completed files and removes the file in
+progress. Arca asks before overwriting existing files.
 
 
 The Shell command
@@ -106,23 +111,25 @@ Formats
 
 Extracting: ZIP (also ZIP64), 7z, RAR 1.5 to 5, LhA,
 LZX, DMS, tar, tar.gz, tar.bz2, tar.xz, gzip, bzip2, xz, ISO 9660 and more.
-Making: LhA, ZIP, tar.gz and 7z.
+Creating: LhA, ZIP, tar.gz and 7z.
 
 Multi-volume sets (name.part1.rar, name.rar + name.r00, name.7z.001) can be
 opened through any of their volumes. A set with a volume missing is refused
 before anything is written, and the message names the missing volume.
 
-Archives with Amiga protection bits and comments (LhA, LZX) keep them, and
-LhA archives made by Arca store them too.
+Extraction preserves Amiga protection bits and comments stored in LhA and
+LZX archives. Arca also stores these attributes when creating LhA archives.
 
 
 Passwords
 ---------
 
-Encrypted 7z, RAR and ZIP archives (ZipCrypto and AES) are read through
-unarc-7z. When the list of entries itself is encrypted, Arca asks for the
-password at once; when only the data is, before anything is written. The
-Shell command asks without showing what you type; in scripts, give it with
+Arca uses unarc-7z to read encrypted 7z, RAR and ZIP archives, including
+ZipCrypto and AES ZIP files. If filenames are encrypted, Arca asks for the
+password before listing the contents. If only file data is encrypted, it
+asks before writing any files.
+
+The Shell command hides the password as you type. In scripts, supply it with
 PASSWORD. Without a password, encrypted entries are left out and reported.
 The password is not saved or logged anywhere.
 
@@ -131,7 +138,7 @@ unarc-7z
 --------
 
 unarc-7z is 7-Zip 26.04 (7z, RAR and ZIP handlers only), built for AROS as a
-program of its own. Arca uses it for:
+separate program. Arca uses it for:
 
 - every RAR archive;
 - encrypted 7z and ZIP archives;
@@ -150,9 +157,9 @@ time zone.
 unarc-lha
 ---------
 
-unarc-lha is LHa for UNIX 1.14i in its Amiga version (by Ola Söder), with a
-few changes of ours, built as a program of its own. Arca and arca-cli use
-it to make LhA archives: header level 1 as Amiga LhA writes it, with file
+unarc-lha is LHa for UNIX 1.14i in its Amiga version (by Ola Söder), with the
+changes included in this package, built as a separate program. Arca and
+arca-cli use it to create LhA archives: header level 1 as Amiga LhA writes it, with file
 and drawer comments, all protection bits (h, s, p, a and rwed), dates to the
 second, and empty drawers. Its archives open with LhA on any Amiga, with XAD
 and with LHa for UNIX. "None" stores (lh0), "Normal" packs (lh5).
@@ -160,7 +167,7 @@ and with LHa for UNIX. "None" stores (lh0), "Normal" packs (lh5).
 LhA packing refuses a volume as a whole (choose the drawers and files on it),
 a drawer that would contain the archive itself, and a tree with links in it
 (LhA would follow them); use ZIP or 7z for those. Without unarc-lha, Arca
-makes ZIP, 7z and tar.gz archives as before.
+can still create ZIP, 7z and tar.gz archives.
 
 
 Known limitations
@@ -168,9 +175,8 @@ Known limitations
 
 - Archive files over 2 GB: files over 2 GB inside an archive extract
   correctly, and the volumes of a RAR set are found whatever their size.
-  But on SFS volumes (the usual AROS system disk) a file over 2 GB cannot be
-  read from anywhere but its start: SFS refuses every seek in such a file.
-  So a 7z or ZIP archive that is itself over 2 GB cannot be opened there.
+  Older SFS versions cannot seek within files over 2 GB. On those versions,
+  a 7z or ZIP archive larger than 2 GB cannot be opened.
   Keep such archives under 2 GB, or split them into volumes.
 - Names are shown and written in ISO-8859-1, AROS's character set. A name
   with characters outside it is changed, and Arca lists such changes before
