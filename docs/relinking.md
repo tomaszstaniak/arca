@@ -12,7 +12,9 @@ use public sources, and the release source bundle contains their pinned contents
 ## Rebuild the application
 
 1. Follow development.md and create local.env with the SDK/toolchain locations.
-2. Run scripts/fetch-deps.sh or unpack the complete release source bundle.
+2. Run scripts/fetch-deps.sh. The release bundle also supplies standalone dependency
+   archives under DependencySources/ for inspection and modified builds. They do
+   not populate the Git checkouts expected by the standard fetch/build scripts.
 3. For ABIv11, XAD uses patches/contrib/; mainline uses patches/contrib-mainline/.
    Add a new source patch to the appropriate ordered series.
 4. Run scripts/build-deps.sh <abi>, then scripts/build.sh <abi>.
