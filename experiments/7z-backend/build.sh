@@ -126,8 +126,8 @@ build_target() {
     local elf_sections elf_relocs
     elf_sections=$("$tc/aarch64-aros-readelf" -SW "$B/bin/unarc-7z")
     elf_relocs=$("$tc/aarch64-aros-readelf" -rW "$B/bin/unarc-7z")
-    if printf '%s\n' "$elf_sections" | grep -Eq '\.(tdata|tbss)([[:space:].]|$)' ||
-       printf '%s\n' "$elf_relocs" | grep -Eq 'R_AARCH64_TLS'; then
+    if grep -Eq '\.(tdata|tbss)([[:space:].]|$)' <<< "$elf_sections" ||
+       grep -Eq 'R_AARCH64_TLS' <<< "$elf_relocs"; then
       echo "native TLS in Pi unarc-7z is unsupported" >&2; exit 1
     fi
   fi
