@@ -1664,9 +1664,8 @@ static void extract_done(uj_job *j)
                  where);
     } else if (r->failed) {
         snprintf(head, sizeof(head), "Stopped: %s", r->why);
-        snprintf(body, sizeof(body), "%s (%s) were extracted to\n%s\nbefore it stopped. "
-                 "Existing files were preserved.", fc, sz, r_root);
-        snprintf(sum, sizeof(sum), "%s (%s) in\n%s\nExisting files were preserved.", fc, sz,
+        snprintf(body, sizeof(body), "%s (%s) were extracted to\n%s\nbefore it stopped.", fc, sz, r_root);
+        snprintf(sum, sizeof(sum), "%s (%s) in\n%s", fc, sz,
                  where);
         more = strlen(head) > RES_COLS;
     } else if (r->errors) {
@@ -1890,7 +1889,7 @@ static const struct pfmt {
     { "ZIP", UA_PACK_ZIP, ".zip", 4, { "Store only", "Fast", "Normal", "Best" }, { 0, 1, -1, 9 },
       "Widely supported. Does not preserve Amiga comments." },
     { "7z", UA_PACK_7Z, ".7z", 3, { "Fast", "Normal", "Best" }, { 1, -1, 9 },
-      "Requires a reader that supports 7z, such as 7-Zip or Arca." },
+      "7-Zip format. Does not preserve Amiga comments." },
     { "tar.gz", UA_PACK_TGZ, ".tar.gz", 3, { "Fast", "Normal", "Best" }, { 1, -1, 9 },
       "Tar archive with gzip compression. Does not preserve Amiga comments." },
 };
@@ -2240,7 +2239,7 @@ static void pack_done(uj_job *j)
         snprintf(sum, sizeof(sum), "%s", body);
     } else if (j->extract_rc < 0) {
         snprintf(head, sizeof(head), "Not created: %s", r->why[0] ? r->why : j->err);
-        snprintf(body, sizeof(body), "No archive was created.\nThe existing archive is unchanged.");
+        snprintf(body, sizeof(body), "No archive was created. See Details.");
         snprintf(sum, sizeof(sum), "%s", body);
         more = strlen(head) > RES_COLS;
     } else if (r->errors) {
