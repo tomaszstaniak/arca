@@ -2239,7 +2239,7 @@ static void pack_done(uj_job *j)
         snprintf(sum, sizeof(sum), "%s", body);
     } else if (j->extract_rc < 0) {
         snprintf(head, sizeof(head), "Not created: %s", r->why[0] ? r->why : j->err);
-        snprintf(body, sizeof(body), "No archive was created. See Details.");
+        snprintf(body, sizeof(body), "Archive creation failed. See Details.");
         snprintf(sum, sizeof(sum), "%s", body);
         more = strlen(head) > RES_COLS;
     } else if (r->errors) {

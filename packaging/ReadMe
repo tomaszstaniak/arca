@@ -8,6 +8,9 @@ helper programs come with them and are started when needed: unarc-7z reads
 
 @TARGET@
 
+Mainline ABIv1 packages (PC and Raspberry Pi) require nightly 2026-11-06
+or later with stdc.library 0.53.
+
 
 Installing
 ----------
