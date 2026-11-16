@@ -1,6 +1,6 @@
 ---
 type: guide
-updated: 2026-10-15
+updated: 2026-11-01
 ---
 
 # Reproducing and saving upstream changes
@@ -49,6 +49,8 @@ target where it was not run.
 
 | Repository | Patch | Status |
 |---|---|---|
-| contrib | `0001-xad-LZX-store-the-pure-bit-as-FIBF_PURE.patch` | candidate, not submitted; tested on ABIv11 x86_64 only |
-| contrib | `0002-xad-LhA-directories-protection-bits-and-names.patch` | candidate, not submitted; tested on AROS One 1.3 (ABIv11 x86_64) only |
+| contrib | `0001-xad-LZX-store-the-pure-bit-as-FIBF_PURE.patch` | accepted upstream in [contrib #77](https://github.com/aros-development-team/contrib/pull/77); retained for the pinned base; tested on ABIv11 x86_64 only |
+| contrib | `0002-xad-LhA-directories-protection-bits-and-names.patch` | submission superseded by accepted [contrib #78](https://github.com/aros-development-team/contrib/pull/78), [#79](https://github.com/aros-development-team/contrib/pull/79), [#80](https://github.com/aros-development-team/contrib/pull/80) and [#81](https://github.com/aros-development-team/contrib/pull/81); retained for the old pin |
 | lha | `0001`-`0005` (no UNIX permission headers in Amiga archives; no NUL without a comment; `--list=FILE`; Ctrl-C between blocks; options not expanded as patterns) | candidate, not submitted; tested on AROS One 1.3 (ABIv11 x86_64) only |
+
+Upstream status checked on 2026-11-01. Accepted upstream does not establish inclusion in our pinned dependencies. The separate sodero/lha helper patches are not covered by the contrib merges and remain candidates; no new runtime validation was performed.

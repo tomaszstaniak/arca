@@ -40,7 +40,7 @@ Base: be30bc6ad191303ca8753bd3f15e4c78b1278f57
 Requires: 0001-xad-LZX-store-the-pure-bit-as-FIBF_PURE.patch (context only)
 Scope: all targets of XAD's LhA client
 Tested: AROS One 1.3, ABIv11 x86_64 (2026-10-18), Unarc's static XAD: an archive from LHa for UNIX's Amiga build with h, s, p, a bits, comments on files and a drawer, an empty drawer and names with spaces lists and extracts identically to its source
-Upstream-Status: candidate (not submitted)
+Upstream-Status: superseded for submission by accepted contrib PRs #78-81; retained for the pinned base
 Removal: when contrib carries an equivalent change and the pin moves past it
 ---
  workbench/libs/xad/portable/clients/LhA.c | 27 ++++++++++++++++++-----

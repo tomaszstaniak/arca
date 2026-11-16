@@ -16,7 +16,7 @@ Repository: contrib (https://github.com/aros-development-team/contrib.git)
 Base: 6bbefa406c281909294c4c4e8743f7f892caa1cf
 Requires: none
 Scope: XAD LhA level 1 and 2 metadata decoding
-Upstream-Status: submitted (https://github.com/aros-development-team/contrib/pull/78)
+Upstream-Status: accepted (https://github.com/aros-development-team/contrib/pull/78; commit 8e3b16259e4ceb739c0cd4a4d5bbfdd955d72296)
 Verification: mainline ABIv1 x86_64, GCC 10.5.0, QEMU; 18 metadata fixtures and unchanged controls. See docs/upstream-xad-lha.md.
 Removal: retire after the application pin includes the accepted upstream change
 
