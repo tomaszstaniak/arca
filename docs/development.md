@@ -25,8 +25,8 @@ Copy `local.env.example` to `local.env` and set:
   `UNARC_V1_HOST_BUILD`, that build's host tree (its `genmodule` writes XAD's
   headers, which the mainline SDK lacks, and its GCC tree rebuilds libgcc's
   unwinder, see below);
-- for native Pi, `UNARC_TOOLCHAIN_RASPI` (the directory containing
-  `aarch64-aros-clang`), `UNARC_SDK_RASPI` (native `Developer` directory), and
+- for native Pi, `UNARC_TOOLCHAIN_RASPI` (the bin directory containing
+  `aarch64-aros-clang` and its `aarch64-aros-gcc` compatibility alias), `UNARC_SDK_RASPI` (native `Developer` directory), and
   `UNARC_CXXRT_RASPI` (the LLVM runtime prefix used by `unarc-7z`);
 - optionally `UNARC_DEPS_MIRROR`: local clones to fetch dependencies from.
 

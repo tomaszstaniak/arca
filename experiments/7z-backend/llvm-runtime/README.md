@@ -5,7 +5,7 @@ The `aros-raspi` helper statically links LLVM libc++, libc++abi and libunwind
 licences are in `LLVM-LICENSE.TXT`, `libcxxabi-LICENSE.TXT` and
 `libunwind-LICENSE.TXT`. Preserve these files with binary distributions.
 The AROS changes are supplied here as unmodified upstream patches; the AROS
-Public License 1.1 is in the project's `LICENSES/AROS-APL-1.1.txt`.
+Public License 1.1 is in the project's `licenses/AROS-APL-1.1.txt`.
 
 Source inputs are recorded by SHA-256 in `PINS`:
 
