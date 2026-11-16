@@ -21,6 +21,13 @@ with tempfile.TemporaryDirectory() as d:
   cmd=['git','-C',str(r/key),'archive','--format=tar',v['revision']]
   if key.startswith('upstream/contrib'):cmd+=['workbench/libs/xad']
   data=subprocess.check_output(cmd)
+  cleaned=io.BytesIO();omitted=[]
+  with tarfile.open(fileobj=io.BytesIO(data),mode='r:') as original, tarfile.open(fileobj=cleaned,mode='w:') as public:
+   for member in original:
+    if Path(member.name).name.lower() in ('agents.md','claude.md','project.json'):
+     omitted.append(member.name);continue
+    public.addfile(member,original.extractfile(member) if member.isfile() else None)
+  data=cleaned.getvalue();v['omitted_maintainer_files']=omitted
   target=deps/(key.replace('/','-')+'.tar.gz')
   import gzip
   with target.open('wb') as f:
@@ -28,7 +35,7 @@ with tempfile.TemporaryDirectory() as d:
   v['archive']=target.name;v['sha256']=hashlib.sha256(target.read_bytes()).hexdigest()
  shutil.copyfile(iconv,deps/'libiconv-1.14.tar.gz')
  (deps/'sources.json').write_text(json.dumps(pins,indent=2)+'\n')
- (deps/'README.txt').write_text('Complete unmodified pinned dependency sources. Apply the matching ordered patches in ../patches for XAD and LHa. libiconv1.14 is unmodified. Standard build scripts fetch the same public Git pins; these archives provide the complete source independently of those hosts. Source tarballs omit Git metadata.\n')
+ (deps/'README.txt').write_text('Pinned dependency sources. Maintainer-only AGENTS.md, CLAUDE.md and project.json files are omitted; sources.json records the exclusions. Program and library source contents are unchanged. Apply the matching ordered patches in ../patches for XAD and LHa. libiconv1.14 is unmodified. Standard build scripts fetch the same public Git pins; these archives provide the complete source independently of those hosts. Source tarballs omit Git metadata.\n')
  target=out/f'Arca-{args.version}-source.tar.gz'
  if target.exists():raise SystemExit(f'{target} already exists')
  with tarfile.open(target,'w:gz') as z:z.add(root,arcname=root.name)
