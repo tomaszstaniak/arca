@@ -51,7 +51,7 @@ enum { ID_OPEN = 0x100, ID_START_CLOSE, ID_DROP,
 
 static Object *app, *wstart, *wbrowse, *wprog, *wask, *wdetail;
 static Object *o_icon, *t_iconformat, *t_drop_title, *t_drop_text, *b_open, *c_packfmt, *b_pack, *b_settings, *sl_level,
-              *t_level, *cb_separate, *t_where, *g_fmthint;
+              *t_level, *cb_separate, *t_where;
 static Object *wsettings, *c_sstart, *c_sopen, *cb_sopendir, *cb_sclose, *c_spackwhere,
               *s_spackdir, *p_spackdir, *c_sname, *c_sexwhere, *s_sexdir, *p_sexdir, *c_snewdir,
               *c_sexists, *b_ssave, *b_suse, *b_scancel;
@@ -312,7 +312,7 @@ static int need_full(const char *in, char *out, size_t n)
     if (full_path(in, out, n))
         return 1;
     dbg("full_path refused \"%s\": %s", in, fp_why);
-    say("Arca could not find the full name of\n%s\n%s\nNothing was started.", in, fp_why);
+    say("Cannot resolve this path:\n%s\n%s", in, fp_why);
     return 0;
 }
 
@@ -324,7 +324,7 @@ static int add_name(char *out, const char *name, size_t n)
     snprintf(dir, sizeof(dir), "%s", out);
     if (AddPart((STRPTR)out, (STRPTR)name, n))
         return 1;
-    say("The name\n%s\nin\n%s\nis too long for Arca. Nothing was started.", name, dir);
+    say("The filename is too long:\n%s\nIn: %s", name, dir);
     return 0;
 }
 
@@ -472,8 +472,8 @@ static int ask_password(const char *archive, int wrong, int can_skip)
         MUIA_Window_Title, (IPTR)"Password",
         WindowContents, (IPTR)(VGroup,
             Child, (IPTR)(TextObject, MUIA_Text_Contents, (IPTR)(wrong ?
-                "That password does not open it. Try again:" :
-                "This archive is encrypted. Password:"), End),
+                "Incorrect password. Try again:" :
+                "Enter the archive password:"), End),
             Child, (IPTR)(TextObject, MUIA_Text_Contents, (IPTR)leafname(archive),
                 MUIA_Text_SetMin, FALSE, End),
             Child, (IPTR)(str = StringObject, StringFrame, MUIA_String_Secret, TRUE,
@@ -670,8 +670,8 @@ static void prefs_save(void)
 static void b_note_selection(void);
 static void start_note(const char *title, const char *text);
 
-#define DROP_TITLE "Drop files or an archive here"
-#define DROP_TEXT "Files are packed, an archive is extracted."
+#define DROP_TITLE "Drop files to pack, or an archive to extract"
+#define DROP_TEXT ""
 
 /* Protection bits as List shows them ("hspa" set, "rwed" granted). */
 static void protstr(const ua_entry *e, char *prot, size_t n)
@@ -905,11 +905,11 @@ static void b_note_selection(void)
     }
     sizestr(bytes, sz, sizeof(sz));
     if (hidden)
-        snprintf(extra, sizeof(extra), ", %lu of them not shown by the filter",
+        snprintf(extra, sizeof(extra), ", %lu hidden by filter",
                  (unsigned long)hidden);
     if (changes)
         snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra),
-                 ". Names that change on disk: %lu", (unsigned long)changes);
+                 ". Renamed on extraction: %lu", (unsigned long)changes);
     settext(t_bstatus, "%lu %s, %lu selected (%s)%s.", (unsigned long)b_count,
             b_count == 1 ? "entry" : "entries", (unsigned long)sel, sz, extra);
     SetAttrs(b_exsel, MUIA_Disabled, !b_loaded || !sel || b_status == UA_OPEN_PARTIAL ||
@@ -932,8 +932,8 @@ static void b_show_active(void)
     if (e->map_flags & UA_MAP_UNSAFE)
         snprintf(on, sizeof(on), "Not extracted: the path would leave the destination.");
     else if (e->encrypted)
-        snprintf(on, sizeof(on), e->skip ? "Not extracted: encrypted, and this format's reader "
-                 "takes no password." : "Encrypted: the password is asked before extracting.");
+        snprintf(on, sizeof(on), e->skip ? "Cannot extract encrypted files in this format." :
+                 "Encrypted: a password is required to extract.");
     else if (e->target && b_loaded)
         snprintf(on, sizeof(on), "On disk: %s%s%s%s", e->target[0] ? e->target : "(the folder itself)",
                  e->map_flags & UA_MAP_COLLISION ? " (renamed: another entry has the same name)" :
@@ -997,7 +997,7 @@ static int archive_usable(const char *path)
 static void browse(const char *archive)
 {
     if (job) {
-        say("Arca is busy with another archive. Wait for it to finish, or cancel it.");
+        say("Wait for the current task to finish, or cancel it.");
         return;
     }
     if (!archive_usable(archive))
@@ -1068,7 +1068,7 @@ static void start_extract(const char *archive, const char *dest, int recover, in
 {
     uj_job *j;
     if (job) {
-        say("Arca is busy with another archive. Wait for it to finish, or cancel it.");
+        say("Wait for the current task to finish, or cancel it.");
         return;
     }
     j = uj_new(UJ_EXTRACT, archive, jport);
@@ -1138,7 +1138,7 @@ static void extract_now(const char *archive)
     }
     if (!writable(dest)) {
         char other[UA_PATHMAX];
-        if (!ask_drawer("The archive's drawer cannot be written. Extract to:", "RAM:", other,
+        if (!ask_drawer("Destination is not writable. Extract to:", "RAM:", other,
                         sizeof(other)))
             return;
         snprintf(dest, sizeof(dest), "%s", other);
@@ -1301,7 +1301,7 @@ static void recover(const char *archive)
         return;
     archive_drawer(archive, dest, sizeof(dest));
     if (!dest[0] || !writable(dest)) {
-        if (!ask_drawer("The archive's drawer cannot be written. Recover to:", "RAM:", dest,
+        if (!ask_drawer("Archive folder is not writable. Recover to:", "RAM:", dest,
                         sizeof(dest)))
             return;
     }
@@ -1550,8 +1550,7 @@ static void list_done(uj_job *j)
             pw_restart_list = 1;     /* on_done starts it again once this job is freed */
             settext(t_bstatus, "Reading the archive...");
         } else {
-            settext(t_bstatus, "The list of entries is encrypted; nothing can be shown "
-                    "without its password.");
+            settext(t_bstatus, "Archive contents are encrypted. Reopen to enter a password.");
         }
         return;
     }
@@ -1573,9 +1572,8 @@ static void list_done(uj_job *j)
         if (j->open_status == UA_OPEN_PARTIAL) {
             SetAttrs(b_brecover, MUIA_ShowMe, TRUE, TAG_DONE);
             b_note_selection();
-            settext(t_active, "The archive is damaged: this list is what could be read before "
-                    "the damage. Nothing is extracted from it as it is;\n\"Recover...\" extracts "
-                    "what can be read into a new folder.");
+            settext(t_active, "Damaged archive: only readable entries are shown.\n"
+                    "Use Recover to extract them into a new folder.");
         } else {
             b_note_selection();
             settext(t_active, "Will extract to %s", bplan.root);
@@ -1667,8 +1665,8 @@ static void extract_done(uj_job *j)
     } else if (r->failed) {
         snprintf(head, sizeof(head), "Stopped: %s", r->why);
         snprintf(body, sizeof(body), "%s (%s) were extracted to\n%s\nbefore it stopped. "
-                 "Nothing that was there before was lost.", fc, sz, r_root);
-        snprintf(sum, sizeof(sum), "%s (%s) in\n%s\nNothing that was there before was lost.", fc, sz,
+                 "Existing files were preserved.", fc, sz, r_root);
+        snprintf(sum, sizeof(sum), "%s (%s) in\n%s\nExisting files were preserved.", fc, sz,
                  where);
         more = strlen(head) > RES_COLS;
     } else if (r->errors) {
@@ -1709,7 +1707,7 @@ static void extract_done(uj_job *j)
         snprintf(head, sizeof(head), "Done, with notes");
     if (extracted_any && j->have_plan && j->plan.root_renamed) {
         snprintf(body + strlen(body), sizeof(body) - strlen(body),
-                 "\nA drawer of the archive's name was already there, so a new one was made.");
+                 "\nThe destination folder already existed; a new folder was created.");
         more = 1;
     }
     if (r->overwritten) {
@@ -1888,13 +1886,13 @@ static const struct pfmt {
     const char *hint;
 } pfmts[4] = {
     { "LhA", UA_PACK_LHA, ".lha", 2, { "Store only", "Normal" }, { 0, -1 },
-      "Keeps Amiga comments and protection bits." },
+      "Preserves Amiga comments and protection bits." },
     { "ZIP", UA_PACK_ZIP, ".zip", 4, { "Store only", "Fast", "Normal", "Best" }, { 0, 1, -1, 9 },
-      "Opens almost everywhere; no Amiga comments." },
+      "Widely supported. Does not preserve Amiga comments." },
     { "7z", UA_PACK_7Z, ".7z", 3, { "Fast", "Normal", "Best" }, { 1, -1, 9 },
-      "Smallest archives; opens with 7-Zip or Arca." },
+      "Requires a reader that supports 7z, such as 7-Zip or Arca." },
     { "tar.gz", UA_PACK_TGZ, ".tar.gz", 3, { "Fast", "Normal", "Best" }, { 1, -1, 9 },
-      "For Unix systems; no Amiga comments." },
+      "Tar archive with gzip compression. Does not preserve Amiga comments." },
 };
 
 static const char *pack_ext(int f)
@@ -1927,7 +1925,7 @@ static void start_format_changed(void)
     int f = cur_fmt();
     ua_pack_icon_set(o_icon, f);
     settext(t_iconformat, "%s", pfmts[f].ext);
-    SetAttrs(g_fmthint, MUIA_Group_ActivePage, f, TAG_DONE);
+    SetAttrs(c_packfmt, MUIA_ShortHelp, (IPTR)pfmts[f].hint, TAG_DONE);
     SetAttrs(sl_level, MUIA_NoNotify, TRUE, MUIA_Numeric_Max, lvl_count(f) - 1,
              MUIA_Numeric_Value, pf_level[f], TAG_DONE);
     start_show_level();
@@ -1938,11 +1936,11 @@ static void start_show_where(void)
     char where[RES_COLS + 1];
     if (pf_pack_where == 2 && pf_pack_dir[0]) {
         shortpath(where, sizeof(where), pf_pack_dir, 40);
-        settext(t_where, "In %s", where);
+        settext(t_where, "%s", where);
     } else if (pf_pack_where == 1)
-        settext(t_where, "Asked for each archive");
+        settext(t_where, "Ask each time");
     else
-        settext(t_where, "Next to the items");
+        settext(t_where, "Source folder");
 }
 
 /* The drop area says what a drop does; while a drop cannot be taken, or
@@ -1951,8 +1949,10 @@ static void start_show_where(void)
 static void start_note(const char *title, const char *text)
 {
     settext(t_drop_title, "%s", title ? title : DROP_TITLE);
-    if (!title || text)
+    if (!title || text) {
         settext(t_drop_text, "%s", title ? text : DROP_TEXT);
+        SetAttrs(t_drop_text, MUIA_ShowMe, title && text && *text, TAG_DONE);
+    }
 }
 
 /* The name of a volume or assign ("Work" for "Work:"), or the last part. */
@@ -2162,7 +2162,7 @@ static void pack_now(char **items, int n)
 {
     int i;
     if (job || nk) {
-        say("Arca is busy with another job. Wait for it to finish, or cancel it.");
+        say("Wait for the current task to finish, or cancel it.");
         for (i = 0; i < n; i++)
             free(items[i]);
         free(items);
@@ -2236,12 +2236,11 @@ static void pack_done(uj_job *j)
     if (j->extract_rc < 0 && r->cancelled) {
         snprintf(head, sizeof(head), "Cancelled");
         snprintf(body, sizeof(body), "No archive was created.%s", r->replaced ? "" :
-                 "\nAn archive that was there before is unchanged.");
+                 "\nThe existing archive is unchanged.");
         snprintf(sum, sizeof(sum), "%s", body);
     } else if (j->extract_rc < 0) {
         snprintf(head, sizeof(head), "Not created: %s", r->why[0] ? r->why : j->err);
-        snprintf(body, sizeof(body), "No archive was created.\nAn archive that was there "
-                 "before is unchanged.");
+        snprintf(body, sizeof(body), "No archive was created.\nThe existing archive is unchanged.");
         snprintf(sum, sizeof(sum), "%s", body);
         more = strlen(head) > RES_COLS;
     } else if (r->errors) {
@@ -2266,8 +2265,7 @@ static void pack_done(uj_job *j)
     }
     if (j->extract_rc == 0 && r->kept[0])
         snprintf(body + strlen(body), sizeof(body) - strlen(body),
-                 "\nThe old archive could not be deleted (something had it open);\n"
-                 "it is kept as %s.", r->kept);
+                 "\nThe old archive could not be deleted.\nKept as %s.", r->kept);
     else if (j->extract_rc == 0 && r->replaced) {
         strncat(body, "\nThe old archive was replaced.", sizeof(body) - strlen(body) - 1);
         more = 1;
@@ -2415,9 +2413,9 @@ static void handle_drop(void)
     if (ndrop_lost) {
         /* Not with the rest: the user dropped these together. */
         if (ndropped + ndrop_lost > MAXDROP)
-            start_note("Too many items", "Arca takes up to 64 items in one drop.");
+            start_note("Too many items", "Drop up to 64 items at a time.");
         else
-            start_note("Not started", "A dropped name could not be read in full.");
+            start_note("Not started", "Could not read a dropped item's path.");
         drops_clear();
         return;
     }
@@ -2440,7 +2438,7 @@ static void handle_drop(void)
         }
         queue_next();
     } else if (job) {
-        start_note("Busy", "Files to pack can be dropped when this job is done.");
+        start_note("Busy", "Drop files when the current task finishes.");
     } else {
         /* Files and drawers, or archives mixed with them: that is packing;
          * the pack window shows what and where before anything starts. */
@@ -2470,16 +2468,16 @@ static Object *button(const char *label)
     return o;
 }
 
-static const char *onopen_labels[] = { "Extract next to the archive", "Show their contents", NULL };
+static const char *onopen_labels[] = { "Extract", "Browse contents", NULL };
 static const char *packfmt_labels[] = { "LhA", "ZIP", "7z", "tar.gz", NULL };
 static const char *reg_titles[] = { "General", "Packing", "Extracting", NULL };
-static const char *start_labels[] = { "The start window", "A requester to open an archive", NULL };
-static const char *packwhere_labels[] = { "Next to the items", "Ask each time", "In this drawer:",
+static const char *start_labels[] = { "Start window", "Open archive dialog", NULL };
+static const char *packwhere_labels[] = { "Source folder", "Ask each time", "Choose folder",
                                           NULL };
-static const char *name_labels[] = { "After the drawer they are in", "Archive", NULL };
-static const char *exwhere_labels[] = { "Next to the archive", "Ask each time", "In this drawer:",
+static const char *name_labels[] = { "Source folder name", "Archive", NULL };
+static const char *exwhere_labels[] = { "Archive folder", "Ask each time", "Choose folder",
                                         NULL };
-static const char *newdir_labels[] = { "When the archive needs one", "Never", NULL };
+static const char *newdir_labels[] = { "When needed", "Never", NULL };
 static const char *exists_labels[] = { "Ask", "Skip the file", "Keep both", NULL };
 
 /* ------------------------------------------------------------- queue */
@@ -2519,7 +2517,7 @@ static char drag_why[160];
 static void table_drag_started(void *ctx)
 {
     (void)ctx;
-    settext(t_active, "Release over a drawer window to extract the selected entries there.");
+    settext(t_active, "Drop on a folder window to extract the selection.");
 }
 
 static void table_drag_ended(void *ctx, const char *target, const char *why)
@@ -2580,14 +2578,12 @@ static int build(void)
     /* NList.mcc first: zk_table_init opens it with care (its first open
      * starts a process that would keep our drawer in use). */
     if (!zk_table_init()) {
-        start_fail("Arca needs the Zune class NList.mcc (in SYS:Classes/Zune/),\n"
-                   "which could not be opened.");
+        start_fail("Cannot open NList.mcc.\nInstall it in SYS:Classes/Zune/ and try again.");
         return 0;
     }
     for (k = 0; k < sizeof(ext) / sizeof(ext[0]); k++)
         if (!have_class(ext[k])) {
-            start_fail("Arca needs the Zune class %s (in SYS:Classes/Zune/),\n"
-                       "which could not be opened.", ext[k]);
+            start_fail("Cannot open %s.\nInstall it in SYS:Classes/Zune/ and try again.", ext[k]);
             return 0;
         }
     {
@@ -2595,20 +2591,19 @@ static int build(void)
          * name shown above it (start_show_level). */
         static struct TagItem chain[] = { { MUIA_CycleChain, 1 }, { TAG_DONE, 0 } };
         if (!zk_steps_init() || !ua_pack_icon_init()) {
-            start_fail("Arca could not create its own Zune classes\n"
+            start_fail("Arca could not initialize its interface\n"
                        "(muimaster.library %d.%d).", MUIMasterBase->lib_Version,
                        MUIMasterBase->lib_Revision);
             return 0;
         }
         if (!(sl_level = zk_steps_new(4, 0, chain)) || !(o_icon = ua_pack_icon_new())) {
-            start_fail("Arca could not create the parts of its start window\n"
-                       "(not enough memory?).");
+            start_fail("Arca could not create the start window.\nThere may not be enough memory.");
             return 0;
         }
     }
     lvview = zk_table_new(&tcfg, &lv, NULL);
     if (!lvview) {
-        start_fail("Arca could not create its list (NList.mcc was found).");
+        start_fail("Arca could not create the archive list.");
         return 0;
     }
     qdisplay_hook.h_Entry = (HOOKFUNC)AROS_ASMSYMNAME(qdisplay_func);
@@ -2617,7 +2612,7 @@ static int build(void)
     app = ApplicationObject,
         MUIA_Application_Title, (IPTR)APPNAME,
         MUIA_Application_Version, (IPTR)version,
-        MUIA_Application_Description, (IPTR)"Extracts archives",
+        MUIA_Application_Description, (IPTR)"Creates and extracts archives",
         MUIA_Application_Base, (IPTR)"UNARC",
         SubWindow, (IPTR)(wstart = WindowObject,
             MUIA_Window_Title, (IPTR)APPNAME,
@@ -2668,6 +2663,7 @@ static int build(void)
                         MUIA_Text_PreParse, (IPTR)"\33c",
                         MUIA_Text_SetMin, FALSE,
                         MUIA_Text_Contents, (IPTR)DROP_TEXT,
+                        MUIA_ShowMe, FALSE,
                     End),
                 End),
                 /* What the next pack does, one row each, labels on the left. The
@@ -2676,11 +2672,7 @@ static int build(void)
                 Child, (IPTR)(ColGroup(2),
                     Child, (IPTR)Label1("Compression"),
                     Child, (IPTR)(HGroup,
-                        Child, (IPTR)(TextObject, MUIA_Text_Contents, (IPTR)"Faster",
-                            MUIA_Text_SetMax, TRUE, End),
                         Child, (IPTR)sl_level,
-                        Child, (IPTR)(TextObject, MUIA_Text_Contents, (IPTR)"Smaller",
-                            MUIA_Text_SetMax, TRUE, End),
                         /* The level's name, as wide as the longest. */
                         Child, (IPTR)(t_level = TextObject,
                             MUIA_FixWidthTxt, (IPTR)"MStore onlyM",
@@ -2689,28 +2681,17 @@ static int build(void)
                     Child, (IPTR)Label1(""),
                     Child, (IPTR)(HGroup,
                         Child, (IPTR)(cb_separate = MUI_MakeObject(MUIO_Checkmark,
-                                                                  (IPTR)"_Each item into its own archive")),
-                        Child, (IPTR)LLabel1("_Each item into its own archive"),
+                                                                  (IPTR)"_Separate archives")),
+                        Child, (IPTR)LLabel1("_Separate archives"),
                         Child, (IPTR)HSpace(0),
                     End),
-                    Child, (IPTR)Label1(""),
-                    /* One page per format (pfmts' order): a page group is as
-                     * wide as its widest page, so no note is cut and the
-                     * window does not change size with the format. */
-                    Child, (IPTR)(g_fmthint = VGroup,
-                        MUIA_Group_PageMode, TRUE,
-                        Child, (IPTR)(TextObject, MUIA_Text_Contents, (IPTR)pfmts[0].hint, End),
-                        Child, (IPTR)(TextObject, MUIA_Text_Contents, (IPTR)pfmts[1].hint, End),
-                        Child, (IPTR)(TextObject, MUIA_Text_Contents, (IPTR)pfmts[2].hint, End),
-                        Child, (IPTR)(TextObject, MUIA_Text_Contents, (IPTR)pfmts[3].hint, End),
-                    End),
-                    Child, (IPTR)Label1("Save to"),
+                    Child, (IPTR)Label1("Destination"),
                     Child, (IPTR)(t_where = TextObject, MUIA_Text_SetMin, FALSE, End),
                 End),
                 Child, (IPTR)MUI_MakeObject(MUIO_HBar, 2),
                 Child, (IPTR)(HGroup,
                     Child, (IPTR)(b_open = button("_Open archive...")),
-                    Child, (IPTR)(b_pack = button("_Pack...")),
+                    Child, (IPTR)(b_pack = button("_Create archive...")),
                     Child, (IPTR)HSpace(0),
                     Child, (IPTR)(b_settings = button("Se_ttings...")),
                 End),
@@ -2747,8 +2728,8 @@ static int build(void)
                     MUIA_Text_SetMin, FALSE,
                 End),
                 Child, (IPTR)(HGroup,
-                    Child, (IPTR)(cb_newfolder = MUI_MakeObject(MUIO_Checkmark, (IPTR)"_New folder")),
-                    Child, (IPTR)LLabel1("_New folder when the archive needs one"),
+                    Child, (IPTR)(cb_newfolder = MUI_MakeObject(MUIO_Checkmark, (IPTR)"_Create folder when needed")),
+                    Child, (IPTR)LLabel1("_Create folder when needed"),
                     Child, (IPTR)HSpace(0),
                 End),
                 Child, (IPTR)(HGroup,
@@ -2843,7 +2824,7 @@ static int build(void)
              * sizes the window to its own names. */
             WindowContents, (IPTR)(VGroup,
                 Child, (IPTR)(t_askq = TextObject,
-                    MUIA_Text_Contents, (IPTR)"A file of this name is already there.",
+                    MUIA_Text_Contents, (IPTR)"A file with this name already exists.",
                 End),
                 Child, (IPTR)(ColGroup(2),
                     GroupFrame,
@@ -2858,8 +2839,8 @@ static int build(void)
                     Child, (IPTR)(t_asknew = TextObject, End),
                 End),
                 Child, (IPTR)(HGroup,
-                    Child, (IPTR)(cb_all = MUI_MakeObject(MUIO_Checkmark, (IPTR)"_Do the same for the rest")),
-                    Child, (IPTR)LLabel1("_Do the same for the rest"),
+                    Child, (IPTR)(cb_all = MUI_MakeObject(MUIO_Checkmark, (IPTR)"_Apply to remaining conflicts")),
+                    Child, (IPTR)LLabel1("_Apply to remaining conflicts"),
                     Child, (IPTR)HSpace(0),
                 End),
                 Child, (IPTR)(HGroup,
@@ -2879,7 +2860,7 @@ static int build(void)
                     MUIA_CycleChain, 1,
                     Child, (IPTR)(VGroup,
                         Child, (IPTR)(ColGroup(2),
-                            Child, (IPTR)Label1("At start, show"),
+                            Child, (IPTR)Label1("On startup"),
                             Child, (IPTR)(c_sstart = CycleObject,
                                 MUIA_Cycle_Entries, (IPTR)start_labels, MUIA_CycleChain, 1, End),
                             Child, (IPTR)Label1("Double-clicked archives"),
@@ -2887,22 +2868,21 @@ static int build(void)
                                 MUIA_Cycle_Entries, (IPTR)onopen_labels, MUIA_CycleChain, 1, End),
                         End),
                         Child, (IPTR)(VGroup,
-                            GroupFrameT("When a job ends"),
+                            GroupFrameT("After a successful task"),
                             Child, (IPTR)(HGroup,
                                 Child, (IPTR)(cb_sopendir = MUI_MakeObject(MUIO_Checkmark,
-                                    (IPTR)"_Open the drawer with the result")),
-                                Child, (IPTR)LLabel1("_Open the drawer with the result"),
+                                    (IPTR)"_Open destination folder")),
+                                Child, (IPTR)LLabel1("_Open destination folder"),
                                 Child, (IPTR)HSpace(0),
                             End),
                             Child, (IPTR)(HGroup,
                                 Child, (IPTR)(cb_sclose = MUI_MakeObject(MUIO_Checkmark,
-                                    (IPTR)"_Close the result when there is nothing to report")),
-                                Child, (IPTR)LLabel1("_Close the result when there is nothing to report"),
+                                    (IPTR)"_Close result window")),
+                                Child, (IPTR)LLabel1("_Close result window"),
                                 Child, (IPTR)HSpace(0),
                             End),
                             Child, (IPTR)(TextObject,
-                                MUIA_Text_Contents, (IPTR)"Both only after a job without problems; "
-                                    "warnings and errors always stay open.",
+                                MUIA_Text_Contents, (IPTR)"Results with warnings or errors stay open.",
                                 MUIA_Text_SetMin, FALSE,
                             End),
                         End),
@@ -2923,7 +2903,7 @@ static int build(void)
                                 ASLFR_DrawersOnly, TRUE,
                                 ASLFR_TitleText, (IPTR)"Save archives in",
                             End),
-                            Child, (IPTR)Label1("Name of several items"),
+                            Child, (IPTR)Label1("Name for combined archive"),
                             Child, (IPTR)(c_sname = CycleObject,
                                 MUIA_Cycle_Entries, (IPTR)name_labels, MUIA_CycleChain, 1, End),
                         End),
@@ -2944,7 +2924,7 @@ static int build(void)
                                 ASLFR_DrawersOnly, TRUE,
                                 ASLFR_TitleText, (IPTR)"Extract to",
                             End),
-                            Child, (IPTR)Label1("New drawer"),
+                            Child, (IPTR)Label1("Create folder"),
                             Child, (IPTR)(c_snewdir = CycleObject,
                                 MUIA_Cycle_Entries, (IPTR)newdir_labels, MUIA_CycleChain, 1, End),
                             Child, (IPTR)Label1("When a file exists"),
@@ -2991,9 +2971,9 @@ static int build(void)
         End),
     End;
     if (!app) {
-        start_fail("Arca could not create its windows. The Zune classes it needs\n"
-                   "were found (muimaster.library %d.%d); not enough memory,\n"
-                   "or a class that failed to make its object.",
+        start_fail("Arca could not create its windows.\n"
+                   "There may not be enough memory, or a Zune class failed.\n"
+                   "muimaster.library %d.%d",
                    MUIMasterBase->lib_Version, MUIMasterBase->lib_Revision);
         return 0;
     }
@@ -3060,6 +3040,13 @@ static void notify(void)
     SetAttrs(c_packfmt, MUIA_NoNotify, TRUE, MUIA_Cycle_Active, packfmt_pref, TAG_DONE);
     SetAttrs(cb_separate, MUIA_NoNotify, TRUE, MUIA_Selected, pf_separate, MUIA_CycleChain, 1,
              TAG_DONE);
+    SetAttrs(cb_separate, MUIA_ShortHelp,
+             (IPTR)"Create one archive for each selected file or folder.", TAG_DONE);
+    SetAttrs(cb_newfolder, MUIA_ShortHelp,
+             (IPTR)"Create a folder unless the archive already contains a single top-level folder.",
+             TAG_DONE);
+    SetAttrs(b_ssave, MUIA_ShortHelp, (IPTR)"Keep these settings after reboot.", TAG_DONE);
+    SetAttrs(b_suse, MUIA_ShortHelp, (IPTR)"Use these settings until reboot.", TAG_DONE);
     start_format_changed();
     start_show_where();
 }
@@ -3224,7 +3211,7 @@ static void b_start_extract(int all)
         return;
     if (!writable(dest)) {
         char other[UA_PATHMAX];
-        if (!ask_drawer("That drawer cannot be written. Extract to:", "RAM:", other, sizeof(other)))
+        if (!ask_drawer("Destination is not writable. Extract to:", "RAM:", other, sizeof(other)))
             return;
         snprintf(dest, sizeof(dest), "%s", other);
         SetAttrs(s_to, MUIA_String_Contents, (IPTR)dest, TAG_DONE);
@@ -3266,8 +3253,8 @@ static void b_drag_extract(void)
     ULONG n;
 
     if (!drag_target[0]) {
-        settext(t_active, "Nothing extracted: %s.\nDrop on an open drawer window to extract "
-                "the selected entries there.", drag_why[0] ? drag_why : "no drawer there");
+        settext(t_active, "Cannot extract here: %s.\nDrop on an open folder window.",
+                drag_why[0] ? drag_why : "no folder window");
         dbg("drag out: no target (%s)", drag_why);
         return;
     }
@@ -3286,7 +3273,7 @@ static void b_drag_extract(void)
     b_sync_selection();
     n = b_mark_selection();
     if (!n) {
-        settext(t_active, "Nothing extracted: no entry selected that can be extracted.");
+        settext(t_active, "No extractable entries selected.");
         b_replan();
         return;
     }
@@ -3413,7 +3400,7 @@ static int gui_main(int argc, char **argv)
     dbg("muimaster.library %d.%d", MUIMasterBase->lib_Version, MUIMasterBase->lib_Revision);
     jport = CreateMsgPort();
     if (!jport) {
-        start_fail("Arca could not create a message port (no free signal or memory).");
+        start_fail("Arca could not start: no free signal or memory.");
         return 20;
     }
     if (!build()) {
@@ -3461,7 +3448,7 @@ static int gui_main(int argc, char **argv)
         case ID_DROP:
             dbg("drop %d items, first %s", ndropped, ndropped ? dropped[0] : "-");
             if (job && qcur < 0)
-                start_note("Busy", "Drop again when this archive is done.");
+                start_note("Busy", "Drop again when the current task finishes.");
             else
                 handle_drop();
             DoMethod(lq, MUIM_List_Redraw, MUIV_List_Redraw_All);
