@@ -1,4 +1,3 @@
-status = "approved"
 id = "arca"
 version = "@VERSION@"
 revision = 1
