@@ -29,6 +29,7 @@ cmake --install "$B/xz" >"$B/xz-install.log"
 # left unresolved, so calls AROS does not have are reported as present; force those
 # off. arc4random_buf, tzset and the threaded xz encoder only showed up once the
 # write side was linked (packing); xz is built without threads.
+LA_CFLAGS="$LA_CFLAGS -Werror=implicit-function-declaration"
 # CFLAGS from the environment come before the toolchain file's --sysroot.
 CFLAGS="$LA_CFLAGS" cmake -S "$R/deps/libarchive" -B "$B/libarchive" -DCMAKE_TOOLCHAIN_FILE="$TCF" \
   -DCMAKE_INSTALL_PREFIX="$UNARC_PREFIX" -DBUILD_SHARED_LIBS=OFF -DENABLE_WERROR=OFF \
@@ -38,7 +39,8 @@ CFLAGS="$LA_CFLAGS" cmake -S "$R/deps/libarchive" -B "$B/libarchive" -DCMAKE_TOO
   -DHAVE_FSTATVFS=0 -DHAVE_LINKAT=0 -DHAVE_FORK=0 -DHAVE_NL_LANGINFO=0 -DHAVE_GETPWNAM_R=0 \
   -DHAVE_GETGRNAM_R=0 -DHAVE_STATFS=0 -DHAVE_FSTATFS=0 \
   -DHAVE_MKFIFO=0 -DHAVE_LCHMOD=0 -DHAVE_LCHOWN=0 \
-  -DHAVE_CHFLAGS=0 -DHAVE_FCHFLAGS=0 -DHAVE_LCHFLAGS=0 -DHAVE_CLOSEFROM=0 -DHAVE_CLOSE_RANGE=0 \
+  -DHAVE_CHFLAGS=0 -DHAVE_FCHFLAGS=0 -DHAVE_LCHFLAGS=0 -DHAVE_CLOSEFROM=0 -DHAVE_CLOSE_RANGE=0 -DHAVE_POSIX_SPAWNP=0 -DHAVE_VFORK=0 -DHAVE_READLINKAT=0 \
+  -DHAVE_FDOPENDIR=0 -DHAVE_GETPWUID_R=0 -DHAVE_GETGRGID_R=0 \
   -DHAVE_ARC4RANDOM_BUF=0 -DHAVE_TZSET=0 -DHAVE_LZMA_STREAM_ENCODER_MT=0 \
   -DENABLE_OPENSSL=OFF -DENABLE_MBEDTLS=OFF -DENABLE_NETTLE=OFF -DENABLE_LIBB2=OFF \
   -DENABLE_LZ4=OFF -DENABLE_EXPAT=OFF -DENABLE_LIBXML2=OFF -DENABLE_PCREPOSIX=OFF \
