@@ -1576,7 +1576,7 @@ static void list_done(uj_job *j)
                     "Use Recover to extract them into a new folder.");
         } else {
             b_note_selection();
-            settext(t_active, "Will extract to %s", bplan.root);
+            settext(t_active, "Destination: %s", bplan.root);
         }
         detail_text(j, "Listing", NULL);
     } else {
@@ -1884,13 +1884,13 @@ static const struct pfmt {
     int val[4];
     const char *hint;
 } pfmts[4] = {
-    { "LhA", UA_PACK_LHA, ".lha", 2, { "Store only", "Normal" }, { 0, -1 },
+    { "LhA", UA_PACK_LHA, ".lha", 2, { "None", "Normal" }, { 0, -1 },
       "Preserves Amiga comments and protection bits." },
-    { "ZIP", UA_PACK_ZIP, ".zip", 4, { "Store only", "Fast", "Normal", "Best" }, { 0, 1, -1, 9 },
+    { "ZIP", UA_PACK_ZIP, ".zip", 4, { "None", "Fast", "Normal", "Maximum" }, { 0, 1, -1, 9 },
       "Widely supported. Does not preserve Amiga comments." },
-    { "7z", UA_PACK_7Z, ".7z", 3, { "Fast", "Normal", "Best" }, { 1, -1, 9 },
+    { "7z", UA_PACK_7Z, ".7z", 3, { "Fast", "Normal", "Maximum" }, { 1, -1, 9 },
       "7-Zip format. Does not preserve Amiga comments." },
-    { "tar.gz", UA_PACK_TGZ, ".tar.gz", 3, { "Fast", "Normal", "Best" }, { 1, -1, 9 },
+    { "tar.gz", UA_PACK_TGZ, ".tar.gz", 3, { "Fast", "Normal", "Maximum" }, { 1, -1, 9 },
       "Tar archive with gzip compression. Does not preserve Amiga comments." },
 };
 
@@ -2674,7 +2674,7 @@ static int build(void)
                         Child, (IPTR)sl_level,
                         /* The level's name, as wide as the longest. */
                         Child, (IPTR)(t_level = TextObject,
-                            MUIA_FixWidthTxt, (IPTR)"MStore onlyM",
+                            MUIA_FixWidthTxt, (IPTR)"MMaximumM",
                         End),
                     End),
                     Child, (IPTR)Label1(""),
@@ -2703,7 +2703,7 @@ static int build(void)
             MUIA_Window_Height, MUIV_Window_Height_Screen(60),
             WindowContents, (IPTR)(VGroup,
                 Child, (IPTR)(HGroup,
-                    Child, (IPTR)Label2("_Find"),
+                    Child, (IPTR)Label2("_Filter"),
                     Child, (IPTR)(s_find = StringObject,
                         StringFrame,
                         MUIA_String_MaxLen, sizeof(b_filter),
@@ -3162,7 +3162,7 @@ static void b_replan(void)
     if (ua_plan_make(&blist, b_planname, dest, !b_newfolder(), &bplan, err, sizeof(err)))
         settext(t_active, "Cannot extract there: %s", err);
     else
-        settext(t_active, "Will extract to %s%s", bplan.root,
+        settext(t_active, "Destination: %s%s", bplan.root,
                 bplan.kind == UA_ROOT_DEST ? "" : bplan.kind == UA_ROOT_TOPDIR ?
                 " (the archive's own folder)" : " (a new folder)");
     DoMethod(lv, MUIM_NList_Redraw, MUIV_NList_Redraw_All);

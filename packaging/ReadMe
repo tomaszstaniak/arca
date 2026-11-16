@@ -155,7 +155,7 @@ few changes of ours, built as a program of its own. Arca and arca-cli use
 it to make LhA archives: header level 1 as Amiga LhA writes it, with file
 and drawer comments, all protection bits (h, s, p, a and rwed), dates to the
 second, and empty drawers. Its archives open with LhA on any Amiga, with XAD
-and with LHa for UNIX. "Store only" stores (lh0), "Normal" packs (lh5).
+and with LHa for UNIX. "None" stores (lh0), "Normal" packs (lh5).
 
 LhA packing refuses a volume as a whole (choose the drawers and files on it),
 a drawer that would contain the archive itself, and a tree with links in it
