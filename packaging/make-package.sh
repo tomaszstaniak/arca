@@ -18,7 +18,10 @@ Z7=$R/build/7z-backend/aros/bin/unarc-7z
 [ "$UNARC_ABI" = v1 ] && Z7=$R/build/7z-backend/aros-v1/bin/unarc-7z
 [ "$UNARC_ABI" = raspi ] && Z7=$R/build/7z-backend/aros-raspi/bin/unarc-7z
 LHA=$BIN/unarc-lha
-OUT=$R/dist/Arca-$VER-$PKG_SUFFIX.zip
+PACKAGE_REVISION=$(python3 -c 'import sys,tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["revision"])' "$R/packaging/arca.$UNARC_ABI.toml")
+PACKAGE_VERSION=$VER
+[ "$PACKAGE_REVISION" -eq 1 ] || PACKAGE_VERSION=$VER-r$PACKAGE_REVISION
+OUT=$R/dist/Arca-$PACKAGE_VERSION-$PKG_SUFFIX.zip
 mkdir -p "$R/dist"
 if [ -e "$OUT" ]; then echo "$OUT exists; delivered files are not replaced" >&2; exit 1; fi
 for f in "$BIN/Arca" "$BIN/arca-cli" "$Z7" "$LHA"; do
@@ -81,16 +84,7 @@ sed -n '/^@NODE "License"/,/^@ENDNODE/p' "$R/upstream/lha/dist/LHa_4U4A.guide" |
   echo "built $(date -u +%Y-%m-%d) for $ABI_TEXT"
 } >"$T/Revision"
 # The ReadMe names the system this package is for.
-if [ "$UNARC_ABI" = raspi ]; then
-  printf '%s\n' "This release is for native AROS Raspberry Pi AArch64 ABIv1." \
-    "Use the x86_64 packages for PC systems. Hosted AROS is a separate target." >"$T/target"
-elif [ "$UNARC_ABI" = v1 ]; then
-  printf '%s\n' "This release is for mainline AROS (ABIv1) on x86_64. It does not run" \
-    "on ABIv11 systems: use the -aros-x86_64-abiv11-pc package there." >"$T/target"
-else
-  printf '%s\n' "This release is for AROS ABIv11 on x86_64 using the 2026.09" \
-    "base. It does not run on mainline AROS (ABIv1): use the -aros-x86_64-abiv1-pc package" "there." >"$T/target"
-fi
+bash "$R/packaging/target-description.sh" "$UNARC_ABI" >"$T/target"
 python3 - "$OUT" "$T" "$R" "$BIN" "$Z7" "$LHA" <<'PY'
 import os, sys, time, zipfile
 out, t, r, bindir, z7, lha = sys.argv[1:7]

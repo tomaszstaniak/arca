@@ -1,6 +1,6 @@
 id = "arca"
 version = "@VERSION@"
-revision = 1
+revision = 2
 summary = "Pack, browse and extract archives with a native Zune interface"
 category = "utility/archive"
 license = "MIT; bundled libraries and helpers retain their own licences"
@@ -32,7 +32,7 @@ min_version = 19
 
 [source]
 repository = "https://github.com/tomaszstaniak/arca"
-revision = "v@VERSION@"
+revision = "v@VERSION@-r2"
 built_with = "AROS ABIv11 2026.09 SDK, GCC 10.5.0"
 
 [launch]
