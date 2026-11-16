@@ -12,6 +12,30 @@ Status, 2026-10-16:
 - It has **not been run on AROS**.
 - The same sources built for macOS pass all host checks (below).
 
+## Native Raspberry Pi AArch64 ABIv1
+
+`build.sh aros-raspi` builds `build/7z-backend/aros-raspi/lib7zbackend.a` and
+`build/7z-backend/aros-raspi/bin/unarc-7z`. Configure these `local.env` keys:
+
+```
+UNARC_TOOLCHAIN_RASPI=/path/to/raspi-aarch64/bin
+UNARC_SDK_RASPI=/path/to/native/Developer
+UNARC_CXXRT_RASPI=/path/to/maintained/cxxrt
+```
+
+This target uses Clang 20.1, the selected native SDK through `RPI_SDK`, and
+statically linked LLVM runtimes. Exceptions remain enabled and use LLVM's
+AROS libunwind, without the x86 GCC frame-registry workaround. All 7-Zip
+units use `-fsigned-char` to retain the existing x86 plain-char semantics;
+7-Zip's explicit `Byte`, `Int8` and `UInt8` types keep their stated signs.
+`-femulated-tls` avoids loader-unsupported native TLS. The build rejects
+undefined non-weak symbols, native TLS sections and AArch64 TLS relocations.
+
+See [runtime inputs, licensing and rebuild settings](llvm-runtime/README.md).
+A successful cross build establishes compile/link support; native encrypted,
+malformed and multi-volume archive checks are still required for runtime
+validation.
+
 ## Files
 
 | File | What it is |

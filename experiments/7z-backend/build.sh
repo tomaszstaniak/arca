@@ -2,7 +2,7 @@
 # Rebuild the 7-Zip backend probe from clean: lib7zbackend.a and unarc-7z,
 # for AROS ABIv11 x86_64 (aros), mainline AROS ABIv1 x86_64 (aros-v1) and,
 # if clang++ is present, for the host.
-# usage: build.sh [aros|aros-v1|host|all]   (default all: aros and host)
+# usage: build.sh [aros|aros-v1|aros-raspi|host|all]   (default all: aros and host)
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
@@ -29,7 +29,7 @@ list_sources() {
 
 
 build_target() {
-  local t=$1 CC CXX AR NM extra_c extra_cxx tc sdk unwind=()
+  local t=$1 CC CXX AR NM extra_c extra_cxx tc sdk unwind=() link_flags=()
   case $t in
     aros|aros-v1)
       if [ "$t" = aros ]; then
@@ -56,6 +56,25 @@ build_target() {
       extra_cxx=(-I"$HERE/shim" -include "$HERE/shim/aros_shim.h")
       # Mainline's wctype.h declares towupper/towlower; ABIv11's does not.
       [ "$t" = aros-v1 ] && extra_cxx+=(-DUNARC_SDK_HAS_TOWUPPER)
+      ;;
+    aros-raspi)
+      : "${UNARC_TOOLCHAIN_RASPI:?set in local.env}" "${UNARC_SDK_RASPI:?set in local.env}"
+      : "${UNARC_CXXRT_RASPI:?set to the maintained LLVM 20.1 AROS runtime}"
+      tc=$UNARC_TOOLCHAIN_RASPI sdk=$UNARC_SDK_RASPI
+      export RPI_SDK="$sdk"
+      CC="$tc/aarch64-aros-clang"
+      CXX="$tc/aarch64-aros-clang++"
+      AR="$tc/aarch64-aros-ar"
+      NM="$tc/aarch64-aros-nm"
+      [ -f "$UNARC_CXXRT_RASPI/lib/libc++.a" ] || { echo "missing Pi libc++ runtime" >&2; exit 1; }
+      # Keep plain-char semantics consistent with the x86 builds. Native TLS
+      # is not supported by the Pi loader; exceptions use LLVM's AROS unwinder.
+      extra_c=(-fsigned-char -femulated-tls -Werror=implicit-function-declaration
+        -I"$HERE/shim" -include "$HERE/shim/aros_shim.h")
+      extra_cxx=(-fsigned-char -femulated-tls -nostdinc++
+        -isystem "$UNARC_CXXRT_RASPI/include/c++/v1"
+        -I"$HERE/shim" -include "$HERE/shim/aros_shim.h" -DUNARC_SDK_HAS_TOWUPPER)
+      link_flags=(-L"$UNARC_CXXRT_RASPI/lib" -stdlib=libc++ -femulated-tls)
       ;;
     host)
       CC="clang"; CXX="clang++"; AR="ar"; NM="nm"
@@ -93,7 +112,7 @@ build_target() {
   if [ "$t" = host ]; then
     $CXX -o "$B/bin/unarc-7z" "$B/obj/unarc7z.o" -Wl,-force_load,"$B/lib7zbackend.a"
   else
-    $CXX -o "$B/bin/unarc-7z" "$B/obj/unarc7z.o" ${unwind[@]+"${unwind[@]}"} \
+    $CXX ${link_flags[@]+"${link_flags[@]}"} -o "$B/bin/unarc-7z" "$B/obj/unarc7z.o" ${unwind[@]+"${unwind[@]}"} \
       -Wl,--whole-archive "$B/lib7zbackend.a" -Wl,--no-whole-archive
   fi
   # collect-aros can exit 0 with unresolved symbols left; check ourselves.
@@ -101,13 +120,25 @@ build_target() {
     local undef; undef=$($NM -u "$B/bin/unarc-7z" | grep -v ' w ' || true)
     if [ -n "$undef" ]; then echo "unresolved symbols in unarc-7z:"; echo "$undef"; exit 1; fi
   fi
+  if [ "$t" = aros-raspi ]; then
+    # A native TLS section or relocation makes an otherwise linked program
+    # unloadable on the native Pi target. GetTLSValues calls are ordinary calls.
+    local elf_sections elf_relocs
+    elf_sections=$("$tc/aarch64-aros-readelf" -SW "$B/bin/unarc-7z")
+    elf_relocs=$("$tc/aarch64-aros-readelf" -rW "$B/bin/unarc-7z")
+    if printf '%s\n' "$elf_sections" | grep -Eq '\.(tdata|tbss)([[:space:].]|$)' ||
+       printf '%s\n' "$elf_relocs" | grep -Eq 'R_AARCH64_TLS'; then
+      echo "native TLS in Pi unarc-7z is unsupported" >&2; exit 1
+    fi
+  fi
   ls -l "$B/bin/unarc-7z"
 }
 
 case $WHAT in
   aros) build_target aros ;;
   aros-v1) build_target aros-v1 ;;
+  aros-raspi) build_target aros-raspi ;;
   host) build_target host ;;
   all)  build_target aros; if command -v clang++ >/dev/null; then build_target host; fi ;;
-  *) echo "usage: $0 [aros|aros-v1|host|all]" >&2; exit 2 ;;
+  *) echo "usage: $0 [aros|aros-v1|aros-raspi|host|all]" >&2; exit 2 ;;
 esac
