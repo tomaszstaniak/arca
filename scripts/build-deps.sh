@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build the static dependencies for one ABI into build/<abi>-x86_64/prefix.
+# Build the static dependencies for one ABI into build/<target>-<arch>/prefix.
 #   scripts/build-deps.sh abiv11|v1
 set -euo pipefail
 . "$(dirname "$0")/abi.sh" "${1:-abiv11}"
@@ -11,7 +11,7 @@ mkdir -p "$UNARC_PREFIX/lib" "$UNARC_PREFIX/include"
 # src/core/compat.c); mainline's SDK has no iconv at all, so libarchive is
 # built without it there and Arca converts names itself (src/core/names.c).
 ICONV=ON
-[ "$UNARC_ABI" = v1 ] && ICONV=OFF LA_CFLAGS="-I$R/scripts/include-noiconv"
+[ "$UNARC_ABI" != abiv11 ] && ICONV=OFF LA_CFLAGS="-I$R/scripts/include-noiconv"
 
 # xz/liblzma: the SDKs ship only stubs for lzma.library. AROS has no CPU-count
 # or physical-memory query that tuklib knows; we use neither (no threads, no memlimit
@@ -34,8 +34,11 @@ CFLAGS="$LA_CFLAGS" cmake -S "$R/deps/libarchive" -B "$B/libarchive" -DCMAKE_TOO
   -DCMAKE_INSTALL_PREFIX="$UNARC_PREFIX" -DBUILD_SHARED_LIBS=OFF -DENABLE_WERROR=OFF \
   -DENABLE_TAR=OFF -DENABLE_CPIO=OFF -DENABLE_CAT=OFF -DENABLE_UNZIP=OFF -DENABLE_TEST=OFF \
   -DHAVE_OPENAT=0 -DHAVE_FSTATAT=0 -DHAVE_FUTIMENS=0 -DHAVE_TIMEGM=0 -DHAVE_STATVFS=0 \
+  -DHAVE_FUTIMES=0 -DHAVE_FUTIMESAT=0 -DHAVE_LUTIMES=0 -DHAVE__FSEEKI64=0 \
   -DHAVE_FSTATVFS=0 -DHAVE_LINKAT=0 -DHAVE_FORK=0 -DHAVE_NL_LANGINFO=0 -DHAVE_GETPWNAM_R=0 \
   -DHAVE_GETGRNAM_R=0 -DHAVE_STATFS=0 -DHAVE_FSTATFS=0 \
+  -DHAVE_MKFIFO=0 -DHAVE_LCHMOD=0 -DHAVE_LCHOWN=0 \
+  -DHAVE_CHFLAGS=0 -DHAVE_FCHFLAGS=0 -DHAVE_LCHFLAGS=0 -DHAVE_CLOSEFROM=0 -DHAVE_CLOSE_RANGE=0 \
   -DHAVE_ARC4RANDOM_BUF=0 -DHAVE_TZSET=0 -DHAVE_LZMA_STREAM_ENCODER_MT=0 \
   -DENABLE_OPENSSL=OFF -DENABLE_MBEDTLS=OFF -DENABLE_NETTLE=OFF -DENABLE_LIBB2=OFF \
   -DENABLE_LZ4=OFF -DENABLE_EXPAT=OFF -DENABLE_LIBXML2=OFF -DENABLE_PCREPOSIX=OFF \
@@ -67,11 +70,13 @@ cp "$R/deps/libarchive/libarchive/archive.h" "$R/deps/libarchive/libarchive/arch
 XS=$B/contrib-src
 rm -rf "$XS"
 mkdir -p "$XS/workbench/libs"
-cp -R "$R/upstream/contrib/workbench/libs/xad" "$XS/workbench/libs/xad"
+CONTRIB=contrib
+[ "$UNARC_ABI" = abiv11 ] || CONTRIB=contrib-mainline
+cp -R "$R/upstream/$CONTRIB/workbench/libs/xad" "$XS/workbench/libs/xad"
 while read -r pt; do
   case $pt in ''|'#'*) continue ;; esac
-  patch -s -p1 -d "$XS" < "$R/patches/contrib/$pt"
-done < "$R/patches/contrib/series"
+  patch -s -p1 -d "$XS" < "$R/patches/$CONTRIB/$pt"
+done < "$R/patches/$CONTRIB/series"
 X=$XS/workbench/libs/xad/portable
 O=$B/xad
 mkdir -p "$O"
@@ -89,7 +94,8 @@ if [ ! -f "$SDK/include/proto/xadmaster.h" ]; then
   cp "$XS/workbench/libs/xad/amiga/include/C/libraries/xadmaster.h" "$XINC/libraries/"
 fi
 XFLAGS="--sysroot=$SDK -O2 -DHAVE_STDINT_H -D__DOS_NOLIBBASE__ -D__UTILITY_NOLIBBASE__ \
-  ${XINC:+-I$XINC} -I$SDK/include/SDI -I$X/include -I$X -I$X/amiga -Wno-uninitialized -Wno-parentheses"
+  ${XINC:+-I$XINC} -I$SDK/include/SDI -I$X/include -I$X -I$X/amiga -Wno-uninitialized -Wno-parentheses -Werror=implicit-function-declaration"
+[ "$UNARC_ABI" != raspi ] || XFLAGS="$XFLAGS -fsigned-char"
 : >"$B/xad-build.log"
 objs=()
 for f in clientfunc copymem crc dates diskfile diskunarc error filename fileunarc hook \
@@ -98,9 +104,9 @@ for f in clientfunc copymem crc dates diskfile diskunarc error filename fileunar
          cs_ibmcp437_to_unicode cs_macroman_to_unicode cs_unicode_to_iso8859-1 \
          cs_windowscp1252_to_unicod clients; do
   o=$O/$(basename "$f").o
-  "$TC/x86_64-aros-gcc" $XFLAGS -c "$X/$f.c" -o "$o" 2>>"$B/xad-build.log"
+  "$TC/$CROSS_PREFIX-gcc" $XFLAGS -c "$X/$f.c" -o "$o" 2>>"$B/xad-build.log"
   objs+=("$o")
 done
 rm -f "$UNARC_PREFIX/lib/libxadstatic.a"
-"$TC/x86_64-aros-ar" rcs "$UNARC_PREFIX/lib/libxadstatic.a" "${objs[@]}"
+"$TC/$CROSS_PREFIX-ar" rcs "$UNARC_PREFIX/lib/libxadstatic.a" "${objs[@]}"
 echo "deps built in $UNARC_PREFIX"

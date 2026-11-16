@@ -21,15 +21,16 @@ autoreconf -fi >/dev/null 2>&1 || { aclocal && autoheader && automake -a && auto
 export PATH="$TC:$PATH"
 # The settings of sodero's own AROS build (cicd/aros_x86_64.sh), with our
 # version string and the SDK as sysroot.
-export CC="x86_64-aros-gcc --sysroot=$SDK"
+export CC="$CROSS_PREFIX-gcc --sysroot=$SDK"
 export CFLAGS="-O2 -DUNARC_LHA -DEXPAND_WILDCARDS -D__VER__=1.14i-unarc -D__DAY__=$(date +%d.%m.%Y)"
-./configure --host=x86_64-aros --disable-iconv --disable-largefile --with-tmp-file=no \
+[ "$UNARC_ABI" != raspi ] || CFLAGS="$CFLAGS -std=gnu99 -fsigned-char -Werror=implicit-function-declaration"
+./configure --host="$CROSS_PREFIX" --disable-iconv --disable-largefile --with-tmp-file=no \
   --with-additional-suffixes="lha," >/dev/null
 # configure records its options, the compiler with this machine's SDK path
 # among them, and lha --version prints them: replace them with a description.
 sed -i.orig 's|^#define LHA_CONFIGURE_OPTIONS .*|#define LHA_CONFIGURE_OPTIONS "cross build for $ABI_TEXT (aros-unarc scripts/build-lha.sh)"|' config.h
 make -C src >/dev/null
 cp src/lha "$B/bin/unarc-lha"
-undef=$("$TC/x86_64-aros-nm" -u "$B/bin/unarc-lha" | grep -v ' w ' || true)
+undef=$("$TC/$CROSS_PREFIX-nm" -u "$B/bin/unarc-lha" | grep -v ' w ' || true)
 if [ -n "$undef" ]; then echo "unresolved symbols in unarc-lha:"; echo "$undef"; exit 1; fi
 ls -l "$B/bin/unarc-lha"
