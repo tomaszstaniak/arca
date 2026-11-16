@@ -7,12 +7,11 @@ updated: 2026-10-17
 
 ## Supported scope
 
-Intended targets, in order: AROS ABIv11 on x86_64 first; then ABIv11 on the other
-AROS architectures; then mainline AROS (ABIv1). Built: ABIv11 x86_64 and, from
-0.0.4-test12, mainline ABIv1 x86_64 (`v1`). ABIv11 and mainline binaries are not
-interchangeable; each has its own toolchain, SDK, build directory
-(`build/abiv11-x86_64`, `build/v1-x86_64`), package and test. Passing on one
-says nothing about the other.
+The release builds AROS x86_64 PC for mainline ABIv1 (`v1`) and ABIv11
+(`abiv11`) independently, using GCC 10.5.0 and matching SDKs. ABIv11 is tested on
+AROS One 1.3; mainline is tested on the current recorded nightly. Neither result
+establishes support for other CPUs or hosted systems. Build directories retain
+the project's existing `build/v1-x86_64` and `build/abiv11-x86_64` names.
 
 ## Setup
 
@@ -260,7 +259,7 @@ it from the name and refuses a patch number of 100 or more, where the pairs
 would stop being unique (`src/version.h`).
 
 `packaging/make-package.sh <version> [abiv11|v1]` writes
-`dist/Arca-<version>-x86_64-abiv11.zip` or `dist/Arca-<version>-x86_64-v1.zip`
+`dist/Arca-<version>-aros-x86_64-abiv11-pc.zip` or `dist/Arca-<version>-aros-x86_64-abiv1-pc.zip`
 (one drawer: the three programs, ReadMe, icons from `packaging/make-icons.py`,
 and a Licences drawer with every licence text, THIRD_PARTY_NOTICES and the
 source revision) and adds it to `dist/SHA256SUMS`. It refuses to replace a
@@ -268,7 +267,7 @@ file in `dist/`, to package uncommitted sources, and to package programs built
 for another release name.
 
 Mainline AROS ships no UnZip (and no lha). `packaging/zip-to-pkg.py
-dist/Arca-<version>-x86_64-v1.zip` writes the same files, byte for byte, as an
+dist/Arca-<version>-aros-x86_64-abiv1-pc.zip` writes the same files, byte for byte, as an
 AROS `.pkg` next to it, which the system's own `C:Unpack` installs
 (`Unpack Arca-<version>-x86_64-v1.pkg TO SYS:Utilities`). Unpack keeps no
 protection bits or dates; the files get the volume's defaults (`rwed`).
@@ -282,3 +281,18 @@ existing staging scripts; packages contain only the new application names.
 The MUI application base stays UNARC to preserve MUI preferences. Application
 settings load Arca.prefs first, fall back to Unarc.prefs, and save Arca.prefs.
 Existing Workbench default-tool associations must be updated to Arca manually.
+
+## Publishing a release
+
+Set `APKG_PACK` to the absolute path of apkg-pack.pyz 0.2.0. Build both ABIs with
+`UNARC_RELEASE=<version> scripts/build.sh <abi>`, then run
+`packaging/make-package.sh <version> <abi>`. Packages contain the per-ABI embedded
+manifest and application.json and use full AROS target names. Packaging strips
+debug sections from private copies of the four executables; it keeps code and
+relocations intact. Existing archives are never replaced.
+
+`packaging/make-source-materials.py <version> --libiconv-tar <GNU1.14.tar.gz>`
+creates complete pinned dependency-source archives and per-ABI relink kits. Supply
+UNARC_SDK_V1 and UNARC_SDK_ABIV11 for the matching SDK archive files. Check and test
+the actual apkg ZIPs before uploading. Package metadata does not establish runtime
+support by itself; publish only the targets checked on their own systems.

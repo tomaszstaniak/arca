@@ -1,8 +1,7 @@
 #!/bin/bash
 # Make the package for one ABI from the current build of that ABI:
-#   packaging/make-package.sh <version> [abiv11|v1]      e.g. 0.0.3-test1
-# Writes dist/Arca-<version>-x86_64-abiv11.zip (or -x86_64-v1.zip for
-# mainline AROS) and adds it to dist/SHA256SUMS.
+#   packaging/make-package.sh <version> [abiv11|v1]      e.g. 0.1.0
+# Writes dist/Arca-<version>-aros-x86_64-<abi>-pc.zip and an ABI checksum file.
 # A file already in dist/ is never replaced: a new build needs a new version.
 #
 # The archive holds one drawer, Arca, and its icon. Inside: Arca (Zune),
@@ -38,9 +37,16 @@ done
 if [ -n "$(git -C "$R" status --porcelain -- src experiments scripts packaging patches upstreams.json deps.lock)" ]; then
   echo "the source tree has uncommitted changes; commit before packaging" >&2; exit 1
 fi
+STRIP="$TC/x86_64-aros-strip"
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 python3 "$R/packaging/make-icons.py" "$T/icons" >/dev/null
+# Debug sections contain build-host paths. Preserve executable code/relocations.
+mkdir -p "$T/bin"
+for f in Arca arca-cli; do cp "$BIN/$f" "$T/bin/$f"; "$STRIP" --strip-debug "$T/bin/$f"; done
+cp "$Z7" "$T/bin/unarc-7z"; "$STRIP" --strip-debug "$T/bin/unarc-7z"
+cp "$LHA" "$T/bin/unarc-lha"; "$STRIP" --strip-debug "$T/bin/unarc-lha"
+BIN="$T/bin"; Z7="$BIN/unarc-7z"; LHA="$BIN/unarc-lha"
 # unarc-lha's source as built: LHa for UNIX at its pin, our patches beside
 # it (they are the document of the changes its terms ask for), applied.
 LHAPIN=$(python3 -c "import json;print(json.load(open('$R/upstreams.json'))['repositories']['lha']['commit'])")
@@ -68,11 +74,11 @@ sed -n '/^@NODE "License"/,/^@ENDNODE/p' "$R/upstream/lha/dist/LHa_4U4A.guide" |
 } >"$T/Revision"
 # The ReadMe names the system this package is for.
 if [ "$UNARC_ABI" = v1 ]; then
-  printf '%s\n' "This is a test build for mainline AROS (ABIv1) on x86_64. It does not run" \
-    "on ABIv11 systems such as AROS One: use the -x86_64-abiv11 package there." >"$T/target"
+  printf '%s\n' "This release is for mainline AROS (ABIv1) on x86_64. It does not run" \
+    "on ABIv11 systems such as AROS One: use the -aros-x86_64-abiv11-pc package there." >"$T/target"
 else
-  printf '%s\n' "This is a test build for AROS ABIv11 on x86_64 (AROS One and the 2026.09" \
-    "base). It does not run on mainline AROS (ABIv1): use the -x86_64-v1 package" "there." >"$T/target"
+  printf '%s\n' "This release is for AROS ABIv11 on x86_64 (AROS One and the 2026.09" \
+    "base). It does not run on mainline AROS (ABIv1): use the -aros-x86_64-abiv1-pc package" "there." >"$T/target"
 fi
 python3 - "$OUT" "$T" "$R" "$BIN" "$Z7" "$LHA" <<'PY'
 import os, sys, time, zipfile
@@ -107,6 +113,10 @@ with zipfile.ZipFile(out, "w") as z:
     add(z, "Arca/Source", isdir=True, mode=0o755)
     add(z, "Arca/Source/unarc-lha-source.zip", os.path.join(t, "unarc-lha-source.zip"))
 PY
-( cd "$R/dist" && shasum -a 256 "$(basename "$OUT")" >>SHA256SUMS )
+
 ls -l "$OUT"
-tail -1 "$R/dist/SHA256SUMS"
+
+
+# Embed the per-ABI apkg manifest and application.json in the final ZIP.
+python3 "$R/packaging/embed-apkg.py" "$OUT" "$VER" "$UNARC_ABI"
+( cd "$R/dist" && shasum -a 256 "$(basename "$OUT")" >SHA256SUMS."$UNARC_ABI" )

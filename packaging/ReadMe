@@ -1,5 +1,5 @@
-Arca (working name), test build
-=================================
+Arca
+====
 
 Arca lists, extracts and makes archives on AROS. It comes as two programs
 over one core: Arca, a Zune program, and arca-cli, a Shell command. Two
@@ -18,7 +18,7 @@ drawer is changed, apart from ENVARC:Arca.prefs when you change a setting.
 Keep unarc-7z and unarc-lha in the same drawer as Arca and arca-cli. To
 remove Arca, delete the drawer (and ENVARC:Arca.prefs).
 
-Arca is the provisional name of the application previously tested as Unarc.
+Arca was previously tested as Unarc.
 It reads Unarc.prefs if Arca.prefs is absent and saves changes as Arca.prefs.
 The old preferences are left intact. Existing archive icons that name Unarc
 must be changed to Arca. The helper filenames remain unarc-7z and unarc-lha.
@@ -197,6 +197,6 @@ into something you sell.
 The full texts are in the Licences drawer, and THIRD_PARTY_NOTICES there
 lists what is used where.
 
-This test build comes from the aros-unarc source tree at the revision named
+This release comes from the Arca source tree at the revision named
 in the file Revision; the sources of the libraries are the upstream releases
 named in THIRD_PARTY_NOTICES.

@@ -1,34 +1,52 @@
 # Arca
 
-Arca (provisional name; source repository `aros-unarc`) is an archiver for AROS: a Zune program (`Arca`) and a
-Shell program (`arca-cli`) over one core. It lists and extracts ZIP, LhA, LZX,
-7z, RAR, tar and compressed tar archives and more through libarchive and a
-statically linked XAD, and makes LhA, ZIP, tar.gz and 7z archives. It is in
-development: nothing has been released, and only AROS ABIv11 on x86_64 is built
-and tested.
+Arca packs, browses and extracts archives on AROS. Drop files or drawers to create
+an archive, drop an archive to extract it, or open it to inspect its contents.
+The native Zune interface uses system DefIcons; `arca-cli` provides the same core
+from the Shell.
 
-## Start here
+[Website](https://tomaszstaniak.github.io/arca/) · [Downloads](https://github.com/tomaszstaniak/arca/releases/latest)
 
-- [Documentation](docs/README.md): installation, usage, and public guides.
-- [Development](docs/development.md): contributor setup, build, and tests.
+## Install
 
-## Shared rules
+With apkg:
 
-`AGENTS.md` locates the applicable standard through workspace configuration.
-`project.json` records profiles, structure version, review, and participation separately.
-Local work notes, current-state references, backlog, and run evidence live in private
-`<workspace>/docs/` outside repository Git; they are not required to read this published README or use the project.
+```text
+apkg update
+apkg install arca
+```
 
-## Project boundaries
+Or download the ZIP for your system, unpack it and keep the Arca drawer together.
+Choose **ABIv1** for mainline AROS or **ABIv11** for AROS One / the 2026.09 base.
+Both builds are for x86_64 PC; they are not interchangeable. Start `Arca` from its
+icon. It uses the system Zune, NList, NListview and NFloattext classes.
 
-Original code lives in `src/`, tests in `tests/`, build and test entry points in
-`scripts/`. Dependencies are fetched at pinned revisions (`deps.lock`,
-`upstreams.json`); changes to them are kept as patches in `patches/`. Intended
-platform: AROS, ABIv11 first (x86_64 first, then other architectures), then
-mainline ABIv1. No target is supported yet.
+## Formats
 
-Our own code is under the MIT licence (`LICENSE`). The XAD glue
-(`src/engines/xad_static.*`) is LGPL-2.1-or-later, and every dependency keeps its
-own licence: see `THIRD_PARTY_NOTICES` and `licenses/`. A built program is
-therefore not MIT-only; `docs/relinking.md` explains how to rebuild it with a
-modified XAD or libiconv.
+- Create LhA, ZIP, 7z and tar.gz archives.
+- Browse and extract ZIP, LhA, LZX, 7z, RAR, tar and other libarchive/XAD formats.
+- Read encrypted ZIP/7z and multi-volume archives through the included 7-Zip helper.
+- Preserve Amiga comments and protection bits when creating LhA archives.
+- Extract selected entries, drag them to a Wanderer drawer, or process a queue.
+
+```text
+arca-cli archive.zip LIST
+arca-cli archive.zip TO Work:Extracted
+arca-cli Work:backup.zip PACK FILES Work:Documents FORMAT ZIP
+```
+
+Read the [package guide](packaging/ReadMe) for settings and limits. Names outside
+ISO-8859-1 are mapped to AROS's character set and reported. Stored links are not
+created. Older SFS versions cannot seek within an archive file larger than 2 GB;
+use smaller archives or split volumes there. ABIv11 can be slower on large RAR
+archives and long listings than mainline AROS.
+
+## Build and licences
+
+[Development](docs/development.md) · [Relinking LGPL libraries](docs/relinking.md)
+· [Patch provenance](docs/patching.md)
+
+The application code is MIT licensed. Bundled libraries and helper programs keep
+their own licences, including LGPL and the LHa for UNIX terms. The release includes
+helper source and full dependency sources/relink materials; see
+[THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES) and the package's Licences/Source drawers.

@@ -9,11 +9,11 @@ case $UNARC_ABI in
   abiv11)
     : "${UNARC_TOOLCHAIN_ABIV11:?set in local.env}" "${UNARC_SDK_ABIV11:?set in local.env}"
     TC=$UNARC_TOOLCHAIN_ABIV11 SDK=$UNARC_SDK_ABIV11
-    ABI_TEXT="AROS ABIv11 x86_64" PKG_SUFFIX=x86_64-abiv11 ;;
+    ABI_TEXT="AROS ABIv11 x86_64" PKG_SUFFIX=aros-x86_64-abiv11-pc ;;
   v1)
     : "${UNARC_TOOLCHAIN_V1:?set in local.env}" "${UNARC_SDK_V1:?set in local.env}"
     TC=$UNARC_TOOLCHAIN_V1 SDK=$UNARC_SDK_V1
-    ABI_TEXT="mainline AROS (ABIv1) x86_64" PKG_SUFFIX=x86_64-v1 ;;
+    ABI_TEXT="mainline AROS (ABIv1) x86_64" PKG_SUFFIX=aros-x86_64-abiv1-pc ;;
   *) echo "unknown ABI \"$UNARC_ABI\": abiv11 or v1" >&2; exit 2 ;;
 esac
 R=$UNARC_ROOT

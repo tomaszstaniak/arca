@@ -1,0 +1,11 @@
+GNU libiconv 1.14, unmodified
+Source: https://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.14.tar.gz
+SHA256: 72b24ded17d687193c3366d0ebe7cde1e6b18f0df8c55438ac95be39e8a30613
+The complete release source bundle includes this tarball.
+AROS recipe: development/libs/libiconv/mmakefile.src in deadwood2/contrib,
+commit ddbc21eb8b4dd324f82caa69304ef4f827371178. patch=no.
+The ABIv11 SDK's three archive object members match the objects reproduced
+from this unpatched source/recipe. The SDK's own recipe revision is not recorded.
+To rebuild a modified library, configure GNU libiconv with the matching AROS
+cross compiler, --host=x86_64-aros --disable-shared --disable-nls --without-x,
+then replace the library used by scripts/build.sh or the supplied relink kit.

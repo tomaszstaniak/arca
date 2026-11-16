@@ -1,4 +1,4 @@
-Third-party software in unarc
+Third-party software in Arca
 =============================
 
 The program's own source code is under the MIT licence (LICENSE). The binary is
@@ -63,11 +63,11 @@ libarchive 3.9.0
 liblzma from XZ Utils 5.8.3
   Licence: BSD Zero Clause (licenses/xz-COPYING.0BSD.txt).
 
-zlib 1.3.1 (from the AROS ABIv11 SDK)
+zlib 1.3.1 (from the matching AROS SDK)
   Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler.
   Licence: zlib (licenses/zlib-LICENSE.txt).
 
-bzip2 / libbzip2 1.0.8 (from the AROS ABIv11 SDK)
+bzip2 / libbzip2 1.0.8 (from the matching AROS SDK)
   Copyright (C) 1996-2019 Julian R Seward.
   Licence: bzip2 (licenses/bzip2-LICENSE.txt).
 
@@ -85,3 +85,13 @@ Tabler Icons (archive, folder, file-text; outline)
   Revision: ed177a085b652fe04ec4f37ced867c94621e7840
   Licence: MIT (licenses/tabler-icons-MIT.txt).
   SVG geometry unchanged; exported in blue to 64x64 PNG for AROS icons.
+
+Zunekit (table and discrete slider, source pin in deps.lock)
+  Copyright (c) 2026 Tomasz Staniak. Licence: MIT
+  (licenses/zunekit-MIT.txt). Compiled into Arca.
+
+Application icon
+  Orca archive-box artwork supplied by the application author, Tomasz Staniak.
+  Included under the application MIT licence. Original artwork and deterministic
+  alpha cleanup/export are preserved in assets/source/orca/ and scripts/.
+  The Tabler licence applies to the folder/document artwork, not this icon.

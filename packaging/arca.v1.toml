@@ -1,0 +1,45 @@
+status = "approved"
+id = "arca"
+version = "@VERSION@"
+revision = 1
+summary = "Pack, browse and extract archives with a native Zune interface"
+category = "utility/archive"
+license = "MIT; bundled libraries and helpers retain their own licences"
+kind = "app"
+arch = "x86_64"
+abi = "v1"
+depends = []
+depends_checked = true
+subdir = "Arca"
+icon = "Arca.info"
+post_install_notes = [
+  "Requires the system NList, NListview and NFloattext Zune classes.",
+  "Keep unarc-7z and unarc-lha beside Arca. Preferences are stored in ENVARC:Arca.prefs.",
+  "Older SFS versions cannot seek inside archive files larger than 2 GB; use smaller archives or split volumes.",
+]
+
+[[requires_system]]
+type = "library"
+id = "posixc.library"
+
+[[requires_system]]
+type = "library"
+id = "stdc.library"
+
+[[requires_system]]
+type = "library"
+id = "stdcio.library"
+
+[[requires_system]]
+type = "library"
+id = "muimaster.library"
+min_version = 19
+
+[source]
+repository = "https://github.com/tomaszstaniak/arca"
+revision = "v@VERSION@"
+built_with = "AROS mainline x86_64 SDK, GCC 10.5.0"
+
+[launch]
+executable = "Arca"
+mode = "workbench"
