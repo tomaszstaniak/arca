@@ -2,10 +2,14 @@
 """Create complete dependency-source and per-ABI LGPL relink release assets."""
 import argparse,hashlib,io,json,os,re,shutil,subprocess,tarfile,tempfile
 from pathlib import Path
-p=argparse.ArgumentParser();p.add_argument('version');p.add_argument('--libiconv-tar',required=True);args=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('version');p.add_argument('--libiconv-tar',required=True);p.add_argument('--targets',default='v1,abiv11,raspi',help='comma-separated: v1, abiv11, raspi (a release of some targets only)');args=p.parse_args()
+ALL=(('v1','abiv1','x86_64','pc'),('abiv11','abiv11','x86_64','pc'),('raspi','abiv1','aarch64','raspi'))
+wanted=args.targets.split(',')
+assert wanted and all(w in [a[0] for a in ALL] for w in wanted), args.targets
+TARGETS=tuple(a for a in ALL if a[0] in wanted)
 r=Path(__file__).resolve().parents[1];out=r/'dist';out.mkdir(exist_ok=True)
 revision=subprocess.check_output(['git','-C',str(r),'rev-parse','HEAD'],text=True).strip()
-outputs=[out/f'Arca-{args.version}-source.tar.gz']+[out/f'Arca-{args.version}-relink-aros-{arch}-{abi}-{platform}.tar.gz' for arch,abi,platform in [('x86_64','abiv1','pc'),('x86_64','abiv11','pc'),('aarch64','abiv1','raspi')]]
+outputs=[out/f'Arca-{args.version}-source.tar.gz']+[out/f'Arca-{args.version}-relink-aros-{arch}-{abi}-{platform}.tar.gz' for _,abi,arch,platform in TARGETS]
 for target in outputs:
  if target.exists():raise SystemExit(f'{target} already exists')
 
@@ -52,7 +56,7 @@ with tempfile.TemporaryDirectory() as d:
  cli=[Path(x).name+'.o' for x in loops[0].split()]+['xad_static.o']
  gui=[x for x in cli if x!='main.o']+['gui_'+Path(x).name+'.o' for x in loops[1].split()]
  gui += [x+'.o' for x in re.search(r'for c in ([^;]+); do',recipe).group(1).split()]
- for abi,targetabi,arch,platform in (('v1','abiv1','x86_64','pc'),('abiv11','abiv11','x86_64','pc'),('raspi','abiv1','aarch64','raspi')):
+ for abi,targetabi,arch,platform in TARGETS:
   cross=f'{arch}-aros'
   toolchain=Path(os.environ[{'v1':'UNARC_TOOLCHAIN_V1','abiv11':'UNARC_TOOLCHAIN_ABIV11','raspi':'UNARC_TOOLCHAIN_RASPI'}[abi]])
   strip=str(toolchain/f'{cross}-strip')
@@ -83,4 +87,4 @@ with tempfile.TemporaryDirectory() as d:
   target=out/(root.name+'.tar.gz')
   if target.exists():raise SystemExit(f'{target} already exists')
   with tarfile.open(target,'w:gz') as z:z.add(root,arcname=root.name)
-print('Created complete source and three application relink assets for',revision)
+print('Created complete source and',len(TARGETS),'application relink asset(s) for',revision)
