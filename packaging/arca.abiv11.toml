@@ -1,6 +1,6 @@
 id = "arca"
 version = "@VERSION@"
-revision = 2
+revision = 1
 summary = "Pack, browse and extract archives with a native Zune interface"
 category = "utility/archive"
 license = "MIT; bundled libraries and helpers retain their own licences"

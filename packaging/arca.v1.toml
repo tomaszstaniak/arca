@@ -1,6 +1,6 @@
 id = "arca"
 version = "@VERSION@"
-revision = 2
+revision = 1
 summary = "Pack, browse and extract archives with a native Zune interface"
 category = "utility/archive"
 license = "MIT; bundled libraries and helpers retain their own licences"
@@ -12,7 +12,7 @@ depends_checked = true
 subdir = "Arca"
 icon = "Arca.info"
 post_install_notes = [
-  "Requires mainline nightly 2026-11-06 or later (stdc.library 0.53).",
+  "Needs an AROS nightly of 2026-11-24 or later; for earlier nightlies use Arca 0.1.1 from the project page.",
   "Requires the system NList, NListview and NFloattext Zune classes.",
   "Keep unarc-7z and unarc-lha beside Arca. Preferences are stored in ENVARC:Arca.prefs.",
   "Older SFS versions cannot seek inside archive files larger than 2 GB; use smaller archives or split volumes.",

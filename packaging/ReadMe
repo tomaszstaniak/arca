@@ -10,8 +10,9 @@ reads 7z, RAR and ZIP with 7-Zip's code; unarc-lha creates LhA archives.
 
 @TARGET@
 
-Mainline ABIv1 packages (PC and Raspberry Pi) require nightly 2026-11-06
-or later with stdc.library 0.53.
+Mainline ABIv1 packages (PC and Raspberry Pi) of Arca 0.1.2 require a nightly
+build of 2026-11-24 or later. On an earlier nightly, from 2026-11-06 on, use
+Arca 0.1.1.
 
 
 Installing
